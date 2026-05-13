@@ -1339,3 +1339,59 @@ Python orchestrator
 **Key benefit**: For the 8.5 MB PPTX test, the old one-shot mode loaded the presentation 4 times (once per chunk worker). Pool mode loads it once per worker, and since the document is already in memory, each render is just the PDF export — no I/O, no parse, no layout.
 
 ---
+
+## Performance Iteration #3 — Auto Re-planning, Format Retry, UI Dashboard
+**Timestamp**: 2026-05-13T17:30:00Z
+**User Input**: Series of test-driven iterations fixing real-world conversion failures.
+
+### Fixes Implemented
+
+**1. Auto re-planning from actual page count**
+- **Problem**: Size-based page estimate (290 pages) didn't match actual (44 pages). Chunks requested non-existent pages.
+- **Fix**: After pool workers load and report real page count, orchestrator re-plans chunks using actual count. Works for all formats automatically.
+- **Files**: `office_convert/orchestrator.py` (re-plan logic), `office_convert/worker_pool.py` (expose `actual_page_count`)
+
+**2. Stale DOCX metadata detection**
+- **Problem**: `enterprise_real.docx` (5.8 MB, 44 pages) had `app.xml` saying 1 page (stale metadata). Only 1 page was rendered.
+- **Fix**: `probe_lite.py` now detects implausible metadata (1 page but file >200 KB) and falls back to size estimate.
+- **Files**: `office_convert/probe_lite.py`
+
+**3. Format mismatch auto-retry**
+- **Problem**: Files with wrong extensions (`.doc` that's actually Excel) failed with cryptic errors.
+- **Fix**: When a worker returns `input_unprocessable` with a format hint ("This is a word doc"), probe retries with the hinted format. Orchestrator uses corrected format for dispatch.
+- **Files**: `office_convert/probe.py` (retry logic), `office_convert/orchestrator.py` (use `probe_result.format`)
+
+**4. OLE2 detection improvements**
+- **Problem**: 65KB scan window missed stream signatures in large OLE2 files.
+- **Fix**: Scan 512KB. Collect all matching signatures. Priority order: Word > PowerPoint > Excel (handles embedded objects).
+- **Files**: `office_convert/probe.py` (`_classify_ole2`)
+
+**5. Pool load timeout**
+- **Problem**: 10 MB DOCX took >2 min to load, exceeding 120s pool timeout.
+- **Fix**: Increased pool load timeout from 120s to 600s.
+- **Files**: `office_convert/worker_pool.py`
+
+**6. Access log spam removed**
+- **Problem**: Health check logs flooding output (every 2s from UI + every 10s from Docker healthcheck).
+- **Fix**: Added `--no-access-log` to uvicorn CMD. Structured logging still captures conversion events.
+- **Files**: `Dockerfile`
+
+**7. Streamlit Test UI**
+- **New**: `test_ui.py` + `Dockerfile.ui` + compose `test-ui` service
+- Features: Live stats (CPU, memory, workers) refreshing every 2s even during conversion. Background thread conversion. Error display. Download history with time taken. No timeout/size limits.
+- **Files**: `test_ui.py`, `Dockerfile.ui`, `compose.yaml`
+
+**8. XLSX chunk floor lowered**
+- **Change**: `xlsx_min_pages_per_chunk` 1500→500 for better parallelism on large workbooks.
+- **Files**: `office_convert/config.py`
+
+### Verified Results
+
+| File | Pages | Time | Notes |
+|------|-------|------|-------|
+| enterprise_real.docx (5.8 MB) | 44 | 9.6s | Pool mode, re-planned from 290→44 |
+| sample_sales_10mb.xlsx (10 MB) | 2501 | ~10 min | 6 chunks, 4 parallel pool workers |
+| Small XLSX (14 KB) | 1 | 0.14s | One-shot mode |
+| Extranet usages BAS Parts.pptx (8.5 MB) | 28 | 11.6s | Pool mode |
+
+---

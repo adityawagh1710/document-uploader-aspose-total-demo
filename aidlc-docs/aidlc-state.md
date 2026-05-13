@@ -261,5 +261,17 @@ Six-strategy performance optimization pass addressing slow conversion of large f
 |------|------|
 | PPTX 8.5 MB (28 slides) | 11.6 sec |
 | DOCX 42 KB (1 page) | 0.6 sec |
-| XLSX 10 MB (2501 pages) | ~16 min |
+| DOCX 5.8 MB (44 pages) | 9.6 sec |
+| XLSX 10 MB (2501 pages) | ~10 min |
+| XLSX 14 KB (1 page) | 0.14 sec |
 | Probe (any format) | <0.01 sec |
+
+**Additional fixes (2026-05-13, iteration #3)**:
+- **Auto re-planning**: Pool workers report actual page count → orchestrator re-plans chunks if estimate was wrong. Works for all formats automatically.
+- **Stale metadata detection**: DOCX `app.xml` saying 1 page but file >200 KB → falls back to size estimate.
+- **Format mismatch auto-retry**: When worker rejects file with format hint → retries with correct worker automatically.
+- **OLE2 scan expanded**: 65KB→512KB scan window. Collects all signatures, priority: Word > PowerPoint > Excel.
+- **Pool load timeout**: 120s→600s for large documents.
+- **Access log silenced**: `--no-access-log` in uvicorn CMD.
+- **Streamlit Test UI**: `test_ui.py` + `Dockerfile.ui` with live stats, background conversion, download history with time taken.
+- **Architecture diagram**: `aidlc-docs/construction/office-converter/architecture-diagram.md` with Mermaid flowcharts.

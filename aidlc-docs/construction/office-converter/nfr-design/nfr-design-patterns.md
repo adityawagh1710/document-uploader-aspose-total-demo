@@ -636,3 +636,67 @@ def _pptx_slide_count_from_zip(path: Path) -> int | None:
 2. ZIP directory slide count (instant, always accurate)
 3. Size-based estimate (instant, conservative fallback)
 4. Full Aspose probe (never reached for valid PPTX files)
+
+
+## 21. Auto Re-planning from Actual Page Count (Correctness, added 2026-05-13)
+
+**Pattern**: After pool workers load the document and report the real page
+count, the orchestrator compares it to the estimate. If they differ, it
+re-plans chunks using the actual count before dispatching renders.
+
+**Why**: Size-based estimates can be wildly off (e.g., 5.8 MB DOCX estimated
+at 290 pages but actually has 44). Without re-planning, chunks request
+non-existent pages, producing incomplete output.
+
+**Implementation**:
+```python
+async with WorkerPool(...) as pool:
+    if pool.actual_page_count != plan.total_pages:
+        plan = plan_chunks(actual_probe, ...)  # re-plan
+    # render using corrected plan
+```
+
+**Properties**:
+- Works for all formats (DOCX, PPTX, XLSX, PDF)
+- Zero cost when estimate is correct (no re-plan)
+- Pool workers already pay the load cost — page count is free
+
+## 22. Format Mismatch Auto-Retry (Resilience, added 2026-05-13)
+
+**Pattern**: When a worker returns `input_unprocessable` with a hint about
+the correct format (e.g., "This is a word doc file"), the probe automatically
+retries with the hinted format.
+
+**Why**: Files with wrong extensions (`.doc` that's actually Excel) or
+ambiguous OLE2 streams would fail permanently. Auto-retry handles these
+gracefully without user intervention.
+
+**Implementation**:
+```python
+except InputUnprocessableError as e:
+    if "word doc" in str(e).lower() and format != "docx":
+        # Retry probe with docx worker
+        result = await _run_worker(mode="probe", format="docx", ...)
+```
+
+**Properties**:
+- Single retry only (no infinite loops)
+- Orchestrator uses corrected format for all subsequent dispatch
+- Handles: Excel-as-.doc, Word-as-.ppt, etc.
+
+## 23. Stale Metadata Detection (Correctness, added 2026-05-13)
+
+**Pattern**: When OOXML `app.xml` reports an implausibly low page count
+for the file size (e.g., 1 page for a 5 MB file), fall back to size-based
+estimation instead of trusting the metadata.
+
+**Why**: `app.xml` page count is written at save time. If the document was
+edited after saving (common with collaborative editing), the count is stale.
+A 5 MB file with "1 page" is clearly wrong.
+
+**Threshold**: file > 200 KB AND metadata says 1 page → use size estimate.
+
+**Properties**:
+- Only triggers for obviously stale metadata (1 page + large file)
+- Conservative: size estimate over-counts pages (safe for chunking)
+- Pool mode's re-planning corrects the estimate anyway
