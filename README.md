@@ -2,34 +2,41 @@
 
 **v1.0 — local PoC** · Chunked Office document → PDF conversion service.
 
-Converts DOCX, PPTX, XLSX, and PDF inputs to PDF over a local HTTP API,
-using **Aspose.Total C++** rendering with a RAM-isolated subprocess
-worker and **qpdf** streaming merge. Output PDFs are never buffered in
-memory.
+Converts DOCX, PPTX, XLSX, PDF, and legacy DOC/XLS/PPT inputs to PDF
+over a local HTTP API, using **Aspose.Total C++** rendering with
+RAM-isolated subprocess workers and **qpdf** streaming merge.
 
 ```
-┌──────────────────────── Docker container (python:3.11-slim) ────────────────────────┐
-│                                                                                     │
-│   FastAPI / Uvicorn  ──┐                                                            │
-│   (Python orchestrator)│                                                            │
-│       │                │                                                            │
-│       │ async dispatch │                                                            │
-│       ▼                │   asyncio.create_subprocess_exec + prlimit RLIMIT_AS=2G    │
-│   ┌─────────────┐      │   ┌──────────────────────────────────────────────────┐     │
-│   │ chunk       │      └──▶│ office-convert-worker (C++, ephemeral per chunk) │     │
-│   │ planner     │          │ ├ Aspose.Total C++ (.so dynamic link)            │     │
-│   │ + cache     │          │ └ format dispatch: Words/Slides/Cells/Pdf        │     │
-│   └─────────────┘          └──────────────────────────────────────────────────┘     │
-│       │                                                                             │
-│       │ chunk PDFs (paths)                                                          │
-│       ▼                                                                             │
-│   qpdf --empty --pages ... -- -  ═══════ streamed bytes ═══════▶  HTTP response     │
-│   (subprocess, never buffers full PDF in memory)                                    │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────── Docker container (4GB RAM + 2GB swap) ──────────────────────┐
+│                                                                                    │
+│   FastAPI / Uvicorn (Python orchestrator)                                          │
+│   ┌─────────────────────────────────────────────────────────────────────────┐      │
+│   │ 1. Format Detection (magic bytes + OLE2 streams, format retry)          │      │
+│   │ 2. Probe Lite (ZIP metadata / size estimate — instant)                  │      │
+│   │ 3. Adaptive Chunk Planner (RAM-aware, parallelism-aware)                │      │
+│   │ 4. Worker Pool (persistent processes, document loaded once)             │      │
+│   │ 5. Auto Re-plan (actual page count from workers → corrected chunks)     │      │
+│   └─────────────────────────────────────────────────────────────────────────┘      │
+│       │                                                                            │
+│       │ Pool mode: load once → render N chunks (stdin/stdout JSON protocol)        │
+│       ▼                                                                            │
+│   ┌──────────────────────────────────────────────────────────────────────┐         │
+│   │ C++ Worker Pool (4 per-format binaries, prlimit RLIMIT_AS=6GB)       │         │
+│   │ ├─ office-convert-worker-docx  (Aspose.Words, PageSet slicing)       │         │
+│   │ ├─ office-convert-worker-pptx  (Aspose.Slides, slide-index array)    │         │
+│   │ ├─ office-convert-worker-xlsx  (Aspose.Cells, PageIndex/PageCount)   │         │
+│   │ └─ office-convert-worker-pdf   (Aspose.PDF, page Delete + Save)      │         │
+│   └──────────────────────────────────────────────────────────────────────┘         │
+│       │                                                                            │
+│       │ chunk PDFs                                                                 │
+│       ▼                                                                            │
+│   qpdf --empty --pages ... -- -  ═══ streaming bytes ═══▶  HTTP response           │
+│   (never buffers full PDF in memory)                                               │
+└────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-For the full architecture (Mermaid diagrams, technology tables, design
-rationale), see `aidlc-docs/inception/application-design/application-design.md`.
+For detailed Mermaid diagrams (request flow, format detection, pool mode),
+see `aidlc-docs/construction/office-converter/architecture-diagram.md`.
 
 ---
 
