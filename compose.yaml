@@ -136,11 +136,10 @@ services:
   # ============================================================
   # Test UI — Streamlit dashboard for large file testing.
   # Shows live worker count, CPU usage, no timeout/size limits.
-  # Start: docker compose --profile ui up -d test-ui
+  # Starts with: docker compose up -d
   # Open:  http://localhost:8501
   # ============================================================
   test-ui:
-    profiles: [ui]
     container_name: office-convert-ui
     build:
       context: .
