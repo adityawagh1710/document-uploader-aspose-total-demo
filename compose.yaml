@@ -1,0 +1,163 @@
+# compose.yaml — Docker Compose configuration for office-convert.
+#
+# Brings up the production service with the recommended security posture:
+# non-root, read-only root filesystem, tmpfs scratch, dropped capabilities,
+# localhost-only port binding.
+#
+# Quick start:
+#   1. Place Aspose SDK tarball next to this file:
+#        cp /path/to/Aspose.Total.for.C++_*.tar.gz aspose-total-cpp.tar.gz
+#   2. Place your Aspose license next to this file:
+#        Aspose.TotalforC++.lic
+#   3. docker compose up -d --build
+#   4. curl http://localhost:8080/health
+#
+# To run tests via Compose:
+#   docker compose --profile test run --rm tests
+#
+# All targets in the Makefile also work — they delegate to compose where
+# appropriate. Compose is canonical; Make is convenience.
+
+services:
+
+  # ============================================================
+  # Production service — the office-convert HTTP server.
+  # ============================================================
+  office-convert:
+    container_name: office-convert
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: office-convert:dev
+    ports:
+      # localhost-only by default. Change to "8080:8080" to expose on all
+      # interfaces (NOT recommended — there's no application-layer auth).
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # The Aspose license is bind-mounted from the host, read-only. The
+      # file MUST exist before `compose up`; compose will surface a clear
+      # error if it doesn't.
+      - ./Aspose.TotalforC++.lic:/aspose/license.lic:ro
+    environment:
+      OFFICE_CONVERT_MAX_JOBS: "2"
+      OFFICE_CONVERT_PARALLEL: "4"
+      # human format is the default — step-by-step events with k=v fields,
+      # designed for `docker compose logs -f` / `make logs`. Switch to
+      # "json" for log-aggregation pipelines (Loki, CloudWatch, etc.).
+      OFFICE_CONVERT_LOG_FORMAT: "human"
+      OFFICE_CONVERT_LOG_LEVEL: "info"
+      # Bumped from 600s to 1800s on 2026-05-13 for the XLSX page-range
+      # work: probe of a 1M-row workbook does a full Aspose pagination
+      # pass before the orchestrator can plan chunks, and each render
+      # chunk pays a Workbook.Load + pagination cost of its own. 600s
+      # was tight enough that even the probe alone risked timing out.
+      # If this needs another bump, the structural fix is to teach the
+      # worker to share pagination state across chunks of the same job.
+      OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS: "1800"
+      OFFICE_CONVERT_MAX_INPUT_BYTES: "1073741824"
+      # Worker per-process RLIMIT_AS ceiling. Sized to match the container's
+      # memswap_limit (6g = 6442450944 bytes) so the virtual-address cap
+      # does NOT block swap usage. If RLIMIT_AS < memswap_limit, the worker
+      # malloc()s fail before the kernel ever pages out — defeating the
+      # point of the swap cushion.
+      OFFICE_CONVERT_WORKER_RAM_BYTES: "6442450944"
+      # Content-addressable cache disabled for now — enable once conversions
+      # are verified working end-to-end.
+      # OFFICE_CONVERT_CACHE_DIR: "/cache"
+      # Fontconfig needs a writable cache dir for font resolution. With
+      # read_only: true, we point HOME to /tmp (which is a tmpfs) so
+      # ~/.cache/fontconfig resolves to a writable location.
+      HOME: "/tmp"
+    # Defense-in-depth runtime posture (matches the recommended
+    # operator flags from the README).
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run
+      - /var/cache/fontconfig
+    # Healthcheck uses Python's urllib (already in the runtime image)
+    # because the slim base image doesn't ship curl. Tests:
+    #   /health returns 200 → healthy
+    #   anything else → unhealthy after `retries` failures
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=5).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+    # Resource limits — ENFORCED by the container runtime via cgroups.
+    # `mem_limit` caps physical RAM; `memswap_limit` is the TOTAL of RAM
+    # + swap (so `memswap_limit - mem_limit` = 2 GiB swap budget). When
+    # RAM pressure hits, the kernel pages out to the host's swap device
+    # (NVMe) instead of OOM-killing the worker. `mem_swappiness=60` is
+    # the kernel default; lower = avoid swap (sticks to RAM longer,
+    # OOMs sooner), higher = swap aggressively.
+    #
+    # NOTE: requires host swap configured and kernel swap accounting
+    # enabled (default on cgroupv2 kernels ≥ 5.x).
+    mem_limit: 4g
+    memswap_limit: 6g
+    mem_swappiness: 60
+    # cpus: 4
+
+  # ============================================================
+  # Test runner — opt-in profile. Not started by default.
+  # Use: docker compose --profile test run --rm tests
+  #      docker compose --profile test run --rm tests pytest tests/unit -v
+  # ============================================================
+  tests:
+    profiles: [test]
+    container_name: office-convert-tests
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    image: office-convert:test
+    # Default command runs the in-process suite. Override on the
+    # command line:
+    #   docker compose --profile test run --rm tests pytest tests/property
+    #   docker compose --profile test run --rm tests ruff check .
+    #   docker compose --profile test run --rm tests mypy office_convert
+    command:
+      - pytest
+      - tests/unit
+      - tests/property
+      - tests/integration
+      - -v
+    # No volumes / ports / env vars needed — the test image is
+    # self-contained (Python + dev deps + qpdf; no Aspose SDK).
+
+  # ============================================================
+  # Test UI — Streamlit dashboard for large file testing.
+  # Shows live worker count, CPU usage, no timeout/size limits.
+  # Start: docker compose --profile ui up -d test-ui
+  # Open:  http://localhost:8501
+  # ============================================================
+  test-ui:
+    profiles: [ui]
+    container_name: office-convert-ui
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    image: office-convert:ui
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      API_URL: "http://office-convert:8080"
+    depends_on:
+      - office-convert
+
+# ============================================================
+# Named volumes (reserved for future cache enablement)
+# ============================================================
+# volumes:
+#   office-convert-cache:
+#     driver: local

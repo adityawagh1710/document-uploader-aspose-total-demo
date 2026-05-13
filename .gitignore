@@ -1,0 +1,114 @@
+# =============================================================================
+# Aspose licensing & SDK — NEVER commit these
+# =============================================================================
+# Any license file, in any directory. Catches:
+#   Aspose.TotalforC++.lic, license.lic, Aspose.Total.lic, foo.LIC,
+#   nested copies like worker_cpp/license.lic
+*.lic
+*.LIC
+*.Lic
+# Backup/rotation patterns operators sometimes leave behind
+*.lic.bak
+*.lic.orig
+*.lic.old
+*.lic.~*
+# Aspose SDK parent bundles (the OS-specific Total zips operators download)
+aspose-total-cpp*.tar.gz
+aspose-total-cpp*.tgz
+aspose-total-cpp*.zip
+aspose.total_for_cpp*.zip
+aspose.total_for_cpp*.tar.gz
+aspose.total_for_cpp*.tgz
+# Aspose SDK extracted contents, if operator extracts locally (pre-2026-05-12 layout)
+aspose-sdk/
+opt/aspose-sdk/
+# Vendored 4-libs Aspose trees (post-2026-05-12 Path B layout). Hundreds of
+# MB of vendored binaries; never commit. Operator extracts from on-disk
+# parent zips via `make vendor` (or equivalent) to populate.
+vendor/aspose/
+vendor/aspose/**
+# Aspose-named files in general (defense in depth)
+Aspose.*.lic*
+**/Aspose.*.lic*
+
+# =============================================================================
+# General secrets hygiene — don't commit credentials of any kind
+# =============================================================================
+# Private keys, certificates
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.keystore
+# AWS / cloud credentials (in case anyone drops them in the repo)
+.aws/
+.azure/
+.gcp/
+credentials
+credentials.json
+# Env files with secrets
+.env
+.env.*
+!.env.example
+# SSH keys
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
+
+# =============================================================================
+# Python build / cache / test artifacts
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# uv lockfile is committed; the resolved venv dir is not
+.uv/
+
+# =============================================================================
+# C++ build artifacts
+# =============================================================================
+worker_cpp/build/
+worker_cpp/CMakeCache.txt
+worker_cpp/CMakeFiles/
+worker_cpp/cmake_install.cmake
+worker_cpp/Makefile
+worker_cpp/*.o
+worker_cpp/*.obj
+worker_cpp/compile_commands.json
+
+# =============================================================================
+# Runtime state — local scratch + cache (the service's bind-mount targets)
+# =============================================================================
+/scratch/
+/cache/
+office-convert-cache/
+
+# =============================================================================
+# IDE / editor artifacts
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

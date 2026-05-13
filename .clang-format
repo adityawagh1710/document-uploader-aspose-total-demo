@@ -1,0 +1,49 @@
+# clang-format config for office-convert C++ code (worker_cpp/ + smoke_test/).
+# Derived from Google preset with project-specific tweaks to match the
+# pattern already in worker_cpp/main.cpp (4-space indent, snake_case files).
+#
+# Apply with:
+#   clang-format -i worker_cpp/**/*.{cpp,h} smoke_test/*.cpp
+# Check (CI) with:
+#   clang-format --dry-run --Werror worker_cpp/**/*.{cpp,h}
+
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++17
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Match worker_cpp/main.cpp's existing brace placement (K&R-ish).
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Group includes: stdlib (C system), stdlib (C++ system), third-party, local.
+# Matches the worker_cpp/main.cpp ordering convention.
+IncludeBlocks: Regroup
+SortIncludes: CaseSensitive
+IncludeCategories:
+  - Regex:    '^<[a-z_]+>$'           # C++ stdlib (e.g., <iostream>)
+    Priority: 1
+  - Regex:    '^<[a-z_/]+\.h>$'       # C stdlib / system .h (e.g., <unistd.h>)
+    Priority: 2
+  - Regex:    '^<Aspose\.'             # Aspose third-party (e.g., <Aspose.Words.Cpp/Document.h>)
+    Priority: 3
+  - Regex:    '^<system/'              # Aspose System namespace (CodePorting)
+    Priority: 4
+  - Regex:    '^".*"$'                 # Local project headers
+    Priority: 5
+
+# Pointer/reference alignment matching existing code.
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+# Misc.
+NamespaceIndentation: None
+FixNamespaceComments: true
+AlwaysBreakTemplateDeclarations: Yes
+SpacesBeforeTrailingComments: 2

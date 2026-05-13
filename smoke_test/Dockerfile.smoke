@@ -1,0 +1,49 @@
+# Single-stage smoke-test image for Aspose.Words for C++ 26.3 on Debian 12.
+#
+# Goal: validate the Total-for-C++ umbrella license unlocks Words and that
+# libAspose.Words.Cpp.so loads on glibc 2.36 BEFORE refactoring the
+# production Dockerfile and CMakeLists.txt. Single-stage is intentional —
+# this image is ephemeral; nothing here is reused by production.
+#
+# Build context: project root.
+# Build:
+#     docker build -f smoke_test/Dockerfile.smoke -t office-convert-smoke-words:dev .
+# Run (license bind-mounted, PDF written to host /tmp/oc-smoke):
+#     docker run --rm \
+#         -v $(pwd)/Aspose.TotalforC++.lic:/license/license.lic:ro \
+#         -v /tmp/oc-smoke:/out \
+#         office-convert-smoke-words:dev \
+#         /license/license.lic /out/words_smoke.pdf
+#
+# Or, simpler: `make smoke-words` from the project root wraps both steps.
+
+FROM debian:bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc-12 g++-12 \
+        cmake \
+        make \
+        build-essential \
+        libfontconfig1 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CC=gcc-12 CXX=g++-12
+
+WORKDIR /build
+
+# Only Words is needed for this smoke test. Cells/Slides/PDF aren't touched.
+COPY vendor/aspose/Words /build/vendor/aspose/Words
+
+COPY smoke_test /build/smoke_test
+
+RUN cmake -S smoke_test -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DWORDS_VENDOR_ROOT=/build/vendor/aspose/Words \
+    && cmake --build build --target words_smoke -- -j"$(nproc)"
+
+# Output binary at /build/build/words_smoke. RPATH inside it points at the
+# vendored .so files via $ORIGIN/../vendor/... — runtime should resolve
+# without LD_LIBRARY_PATH gymnastics.
+
+ENTRYPOINT ["/build/build/words_smoke"]

@@ -1,0 +1,35 @@
+# editorconfig — cross-editor whitespace consistency.
+# https://editorconfig.org
+#
+# Most editors (VS Code, JetBrains, vim with plugin, Sublime, etc.) auto-detect
+# this file. CI tooling (ruff, clang-format) has its own config but is consistent
+# with these settings.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 100
+
+# Tabs are mandatory in Makefile recipes.
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+# YAML / TOML / JSON / Markdown — 2-space indent is the dominant convention.
+[*.{yaml,yml,json,toml,md}]
+indent_size = 2
+
+# Markdown lines can run long for tables/code; relax max length.
+[*.md]
+max_line_length = off
+trim_trailing_whitespace = false   # trailing two-space = hard line break
+
+# Dockerfile + .dockerignore + .gitignore: leave whitespace strict.
+[{Dockerfile,Dockerfile.*,.dockerignore,.gitignore}]
+indent_size = 4
