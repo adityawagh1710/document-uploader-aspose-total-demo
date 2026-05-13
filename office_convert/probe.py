@@ -115,14 +115,39 @@ def detect_format(
 
 def _classify_ole2(source_path: Path | None, filename: str | None) -> FormatName:
     """Identify a CFB/OLE2 file as docx/xlsx/pptx by scanning for stream-name
-    signatures, with the uploaded filename's extension as a fallback hint."""
+    signatures, with the uploaded filename's extension as a fallback hint.
+
+    Scans up to 512KB of the file (OLE2 directory entries can be scattered
+    throughout the file, especially in large documents). Collects ALL matching
+    signatures and uses priority order: Word > PowerPoint > Excel, because
+    Word documents often contain embedded Excel objects whose stream names
+    would otherwise cause misrouting.
+    """
     if source_path is not None:
         try:
             with open(source_path, "rb") as f:
-                head = f.read(65536)
+                # Scan up to 512KB for stream signatures (65KB was too small
+                # for large OLE2 files where directory entries are scattered)
+                head = f.read(524288)
+
+            # Collect all matching formats (a Word doc might also contain
+            # Workbook streams from embedded Excel objects)
+            found_formats: list[FormatName] = []
             for sig, fmt in OLE2_STREAM_SIGNATURES:
                 if sig in head:
-                    return fmt
+                    found_formats.append(fmt)
+
+            if found_formats:
+                # Priority: docx > pptx > xlsx
+                # Word docs often embed Excel objects, so if WordDocument is
+                # present alongside Workbook, it's a Word doc.
+                if "docx" in found_formats:
+                    return "docx"
+                if "pptx" in found_formats:
+                    return "pptx"
+                if "xlsx" in found_formats:
+                    return "xlsx"
+                return found_formats[0]
         except OSError as e:
             log.debug("OLE2 head read failed for %s: %s", source_path, e)
 
@@ -199,6 +224,11 @@ async def probe(
     reads page counts from OOXML `docProps/app.xml` / `xl/workbook.xml` or
     qpdf's PDF xref — memory cost bounded independent of input size. Only
     falls through to the Aspose worker for malformed/exotic inputs.
+
+    Format mismatch retry: if the Aspose worker rejects the file with
+    input_unprocessable and the error hints at a different format (e.g.,
+    "This is a word doc file" from the XLSX worker), we retry with the
+    hinted format. This handles mislabeled files gracefully.
     """
     from office_convert.aspose_worker import _run_worker
     from office_convert.probe_lite import probe_lite
@@ -207,14 +237,54 @@ async def probe(
     if lite is not None:
         return lite
 
-    stdout, _stderr = await _run_worker(
-        mode="probe",
-        input_path=input_path,
-        format=format,
-        output_path=None,
-        page_range=None,
-        request_id=request_id,
-        settings=settings,
-        capture_stdout=True,
-    )
-    return parse_probe_json(stdout)
+    try:
+        stdout, _stderr = await _run_worker(
+            mode="probe",
+            input_path=input_path,
+            format=format,
+            output_path=None,
+            page_range=None,
+            request_id=request_id,
+            settings=settings,
+            capture_stdout=True,
+        )
+        return parse_probe_json(stdout)
+    except InputUnprocessableError as e:
+        # Check if the error hints at a different format — retry once
+        error_msg = str(e).lower()
+        retry_format: FormatName | None = None
+        if "word doc" in error_msg and format != "docx":
+            retry_format = "docx"
+        elif "excel" in error_msg or "workbook" in error_msg and format != "xlsx":
+            retry_format = "xlsx"
+        elif "powerpoint" in error_msg or "presentation" in error_msg and format != "pptx":
+            retry_format = "pptx"
+
+        if retry_format is not None:
+            log.warning(
+                "probe format mismatch: %s worker rejected file, retrying as %s",
+                format, retry_format,
+            )
+            # Update the ProbeResult format to the correct one
+            try:
+                stdout, _stderr = await _run_worker(
+                    mode="probe",
+                    input_path=input_path,
+                    format=retry_format,
+                    output_path=None,
+                    page_range=None,
+                    request_id=request_id,
+                    settings=settings,
+                    capture_stdout=True,
+                )
+                result = parse_probe_json(stdout)
+                # Return with corrected format
+                return ProbeResult(
+                    page_count=result.page_count,
+                    format=retry_format,
+                    natural_seams=result.natural_seams,
+                    size_bytes=result.size_bytes,
+                )
+            except Exception:
+                pass  # Retry failed too — raise original error
+        raise

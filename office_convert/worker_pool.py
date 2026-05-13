@@ -102,7 +102,7 @@ class PooledWorker:
         await self._proc.stdin.drain()
 
         response = await asyncio.wait_for(
-            self._proc.stdout.readline(), timeout=120
+            self._proc.stdout.readline(), timeout=600
         )
         result = json.loads(response)
         if result["status"] != "ok":
@@ -197,6 +197,7 @@ class WorkerPool:
         self._settings = settings
         self._pool_size = pool_size
         self._workers: list[PooledWorker] = []
+        self.actual_page_count: int | None = None  # Set after first worker loads
 
     async def __aenter__(self) -> "WorkerPool":
         await self._spawn_workers()
@@ -241,6 +242,9 @@ class WorkerPool:
                     self._input_path,
                     self._settings.license_path,
                 )
+                # Store the actual page count from the first worker
+                if self.actual_page_count is None:
+                    self.actual_page_count = page_count
                 emit_event(
                     "pool_worker_loaded",
                     level="info",

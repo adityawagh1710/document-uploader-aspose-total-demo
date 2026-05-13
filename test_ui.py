@@ -1,8 +1,10 @@
 """
 Office Convert Test UI — Real-time monitoring dashboard.
 
-Only the stats section refreshes every 2 seconds (using st.fragment).
-The rest of the page stays stable — no flickering during upload/conversion.
+- Stats refresh every 2s (never freeze, even during conversion)
+- Conversion runs in background thread
+- Errors displayed properly
+- Download history with time taken
 
 Run:
     docker compose --profile ui up -d test-ui
@@ -12,6 +14,7 @@ Run:
 import os
 import subprocess
 import time
+import threading
 from pathlib import Path
 
 import streamlit as st
@@ -67,45 +70,37 @@ def get_worker_processes():
     return []
 
 
-def convert_file(uploaded_file, progress_placeholder, status_placeholder):
+def do_conversion(file_name, file_bytes):
+    """Run conversion. Returns (output_bytes, elapsed, error_msg)."""
     start_time = time.time()
-    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/octet-stream")}
-    status_placeholder.info("⏳ Uploading and converting... (no timeout)")
-
+    files = {"file": (file_name, file_bytes, "application/octet-stream")}
     try:
-        response = requests.post(CONVERT_URL, files=files, stream=True, timeout=None)
-
+        response = requests.post(CONVERT_URL, files=files, stream=True, timeout=1800)
+        elapsed = time.time() - start_time
         if response.status_code != 200:
-            elapsed = time.time() - start_time
             try:
                 error_body = response.json()
+                error_msg = f"Server error ({response.status_code}): {error_body.get('failure_class', 'unknown')} — {error_body.get('detail', {})}"
             except Exception:
-                error_body = response.text[:500]
-            status_placeholder.error(
-                f"❌ Failed ({response.status_code}) after {elapsed:.1f}s\n\n```json\n{error_body}\n```"
-            )
-            return None, elapsed
-
+                error_msg = f"Server error ({response.status_code}): {response.text[:200]}"
+            return None, elapsed, error_msg
         chunks = []
-        total_bytes = 0
         for chunk in response.iter_content(chunk_size=65536):
             chunks.append(chunk)
-            total_bytes += len(chunk)
-            progress_placeholder.text(f"📥 Receiving: {total_bytes / 1024 / 1024:.1f} MB")
-
-        elapsed = time.time() - start_time
         output_data = b"".join(chunks)
-        status_placeholder.success(
-            f"✅ Done! **{elapsed:.1f}s** | "
-            f"Output: {len(output_data) / 1024 / 1024:.2f} MB | "
-            f"Input: {len(uploaded_file.getvalue()) / 1024 / 1024:.2f} MB"
-        )
-        return output_data, elapsed
-
+        elapsed = time.time() - start_time
+        if not output_data or not output_data.startswith(b"%PDF"):
+            try:
+                error_body = output_data.decode("utf-8", errors="replace")
+                if "failure_class" in error_body:
+                    return None, elapsed, f"Conversion failed: {error_body[:300]}"
+            except Exception:
+                pass
+            return None, elapsed, "Conversion produced invalid output (not a PDF)"
+        return output_data, elapsed, None
     except Exception as e:
         elapsed = time.time() - start_time
-        status_placeholder.error(f"❌ Error after {elapsed:.1f}s: {e}")
-        return None, elapsed
+        return None, elapsed, f"Error: {e}"
 
 
 # ============================================================
@@ -115,7 +110,7 @@ st.title("📄 Office Convert — Live Dashboard")
 
 
 # ============================================================
-# LIVE STATS — only this section refreshes every 2 seconds
+# LIVE STATS — refreshes every 2s independently
 # ============================================================
 @st.fragment(run_every=2)
 def live_stats():
@@ -123,7 +118,6 @@ def live_stats():
     stats = get_docker_stats()
     workers = get_worker_processes()
 
-    # Metrics row
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Server", "✅ Ready" if health.get("ready") else "❌ Down")
     col2.metric("CPU", stats["cpu"])
@@ -131,10 +125,8 @@ def live_stats():
     col4.metric("Workers", str(len(workers)))
     col5.metric("Jobs", f"{health.get('active_jobs', '?')}/{health.get('max_jobs', '?')}")
 
-    # Details
     st.text(f"Mem: {stats['mem_usage']} | PIDs: {stats['pids']} | License: {health.get('license_days_remaining', '?')} days")
 
-    # Worker processes
     if workers:
         st.markdown(f"**⚙️ {len(workers)} Active Workers:**")
         for w in workers:
@@ -146,73 +138,113 @@ def live_stats():
                 mode = "pool" if "pool" in w else "render" if "render" in w else "probe"
                 st.text(f"  ├─ PID {pid} | CPU {cpu}% | {fmt} | {mode}")
 
+    # Show conversion in progress
+    if st.session_state.get("converting"):
+        elapsed = time.time() - st.session_state.get("convert_start", time.time())
+        st.warning(f"⏳ Converting **{st.session_state.get('convert_filename', '')}**... ({elapsed:.0f}s)")
+
 
 live_stats()
 
 st.divider()
 
 # ============================================================
-# FILE UPLOAD & CONVERSION (does NOT refresh)
+# FILE UPLOAD & CONVERSION
 # ============================================================
-st.header("🚀 Convert a File")
+@st.fragment
+def conversion_section():
+    st.header("🚀 Convert a File")
 
-# Initialize conversion history
-if "history" not in st.session_state:
-    st.session_state.history = []
+    if "history" not in st.session_state:
+        st.session_state.history = []
+    if "converting" not in st.session_state:
+        st.session_state.converting = False
+    if "last_error" not in st.session_state:
+        st.session_state.last_error = None
 
-uploaded_file = st.file_uploader(
-    "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT) — no size limit",
-    type=["docx", "pptx", "xlsx", "pdf", "doc", "xls", "ppt"],
-)
+    # Show last error
+    if st.session_state.last_error:
+        st.error(f"❌ {st.session_state.last_error}")
+        if st.button("Dismiss"):
+            st.session_state.last_error = None
+            st.rerun()
 
-if uploaded_file:
-    file_size_mb = len(uploaded_file.getvalue()) / 1024 / 1024
-    st.info(f"📁 **{uploaded_file.name}** — {file_size_mb:.2f} MB")
-
-    if st.button("▶️ Start Conversion", type="primary"):
-        progress_placeholder = st.empty()
-        status_placeholder = st.empty()
-
-        output_data, elapsed = convert_file(
-            uploaded_file, progress_placeholder, status_placeholder
-        )
-
-        if output_data:
-            output_name = Path(uploaded_file.name).stem + ".pdf"
-            st.session_state.history.insert(0, {
-                "name": output_name,
-                "input_name": uploaded_file.name,
-                "data": output_data,
-                "size_mb": len(output_data) / 1024 / 1024,
-                "input_size_mb": file_size_mb,
-                "elapsed": elapsed,
-                "timestamp": time.strftime("%H:%M:%S"),
-            })
-
-# Conversion history with download buttons
-if st.session_state.history:
-    st.divider()
-    st.header("📦 Conversion History")
-    latest = st.session_state.history[0]
-    st.success(
-        f"🎉 **Ready!** {latest['input_name']} → {latest['name']} "
-        f"({latest['elapsed']:.1f}s, {latest['size_mb']:.1f} MB)"
+    uploaded_file = st.file_uploader(
+        "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT) — no size limit",
+        type=["docx", "pptx", "xlsx", "pdf", "doc", "xls", "ppt"],
     )
-    for i, item in enumerate(st.session_state.history[:10]):
-        col_info, col_dl = st.columns([3, 1])
-        with col_info:
-            st.text(
-                f"[{item['timestamp']}] {item['input_name']} → {item['name']} | "
-                f"{item['elapsed']:.1f}s | {item['input_size_mb']:.1f} MB → {item['size_mb']:.1f} MB"
-            )
-        with col_dl:
-            st.download_button(
-                label=f"⬇️ {item['name']}",
-                data=item["data"],
-                file_name=item["name"],
-                mime="application/pdf",
-                key=f"dl_{i}_{item['timestamp']}",
-            )
+
+    if uploaded_file:
+        file_size_mb = len(uploaded_file.getvalue()) / 1024 / 1024
+        st.info(f"📁 **{uploaded_file.name}** — {file_size_mb:.2f} MB")
+
+        if st.button("▶️ Start Conversion", type="primary", disabled=st.session_state.converting):
+            st.session_state.last_error = None
+            st.session_state.converting = True
+            st.session_state.convert_filename = uploaded_file.name
+            st.session_state.convert_start = time.time()
+
+            # Run in background thread so stats keep updating
+            file_name = uploaded_file.name
+            file_bytes = uploaded_file.getvalue()
+            file_size = file_size_mb
+
+            def _bg_convert():
+                data, elapsed, err = do_conversion(file_name, file_bytes)
+                st.session_state.converting = False
+                if err:
+                    st.session_state.last_error = f"{err} (after {elapsed:.1f}s)"
+                elif data:
+                    output_name = Path(file_name).stem + ".pdf"
+                    st.session_state.history.insert(0, {
+                        "name": output_name,
+                        "input_name": file_name,
+                        "data": data,
+                        "size_mb": len(data) / 1024 / 1024,
+                        "input_size_mb": file_size,
+                        "elapsed": elapsed,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    })
+
+            thread = threading.Thread(target=_bg_convert, daemon=True)
+            thread.start()
+            st.rerun()
+
+    if st.session_state.converting:
+        elapsed = time.time() - st.session_state.get("convert_start", time.time())
+        st.warning(f"⏳ Converting **{st.session_state.get('convert_filename', '')}**... ({elapsed:.0f}s elapsed)")
+        if st.button("🔄 Check if done"):
+            st.rerun()
+
+    # Conversion history
+    if st.session_state.history:
+        st.divider()
+        st.subheader("📦 Conversion History")
+        latest = st.session_state.history[0]
+        st.success(
+            f"🎉 **Ready!** {latest['input_name']} → {latest['name']} | "
+            f"⏱️ **{latest['elapsed']:.1f}s** | "
+            f"{latest['input_size_mb']:.1f} MB → {latest['size_mb']:.1f} MB"
+        )
+        for i, item in enumerate(st.session_state.history[:10]):
+            col_info, col_dl = st.columns([3, 1])
+            with col_info:
+                st.text(
+                    f"[{item['timestamp']}] {item['input_name']} → {item['name']} | "
+                    f"⏱️ {item['elapsed']:.1f}s | "
+                    f"{item['input_size_mb']:.1f} MB → {item['size_mb']:.1f} MB"
+                )
+            with col_dl:
+                st.download_button(
+                    label=f"⬇️ {item['name']}",
+                    data=item["data"],
+                    file_name=item["name"],
+                    mime="application/pdf",
+                    key=f"dl_{i}_{item['timestamp']}",
+                )
+
+
+conversion_section()
 
 st.divider()
-st.caption("Only stats refresh (every 2s). Upload area stays stable. No timeout. No size limit.")
+st.caption("Stats refresh every 2s (even during conversion). Click 'Check if done' to see results.")

@@ -27,6 +27,7 @@ from office_convert.types import (
     ConversionOptions,
     ConversionResult,
     FormatName,
+    ProbeResult,
 )
 
 if TYPE_CHECKING:
@@ -87,6 +88,10 @@ async def convert_job(
     emit_event("probe_start", level="info", format=format)
     probe_started = time.monotonic()
     probe_result = await do_probe(input_path, format, settings, request_id)
+    # The probe may correct the format (e.g., file detected as xlsx but is
+    # actually a docx — the probe retries and returns the correct format).
+    # Use the probe's format for all subsequent dispatch.
+    format = probe_result.format
     emit_event(
         "probe_complete",
         level="info",
@@ -154,6 +159,27 @@ async def convert_job(
         emit_event("dispatch_mode", level="info", mode="pool", workers=settings.parallel)
         pool_size = min(settings.parallel, len(plan.chunks))
         async with WorkerPool(format, input_path, settings, pool_size=pool_size) as pool:
+            # Re-plan if the actual page count differs from the estimate
+            # (pool workers report the real count after loading the document)
+            if pool.actual_page_count is not None and pool.actual_page_count != plan.total_pages:
+                emit_event(
+                    "replan_from_pool",
+                    level="info",
+                    estimated_pages=plan.total_pages,
+                    actual_pages=pool.actual_page_count,
+                )
+                actual_probe = ProbeResult(
+                    page_count=pool.actual_page_count,
+                    format=probe_result.format,
+                    natural_seams=(),
+                    size_bytes=probe_result.size_bytes,
+                )
+                plan = plan_chunks(
+                    actual_probe,
+                    max_pages_per_chunk=effective_max_pages,
+                    max_mb_per_chunk=settings.max_mb_per_chunk,
+                )
+
             async def _render_one_pooled(chunk: Chunk) -> tuple[Chunk, Path]:
                 async with job_sem:
                     chunk_key = chunk_sha256(chunk, source_sha, format)

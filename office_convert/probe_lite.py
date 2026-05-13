@@ -55,13 +55,15 @@ async def probe_lite(input_path: Path, format: FormatName) -> ProbeResult | None
     try:
         if format == "docx":
             n = await asyncio.to_thread(_ooxml_count, input_path, "Pages")
-            # If app.xml doesn't have a page count, use a size-based estimate
-            # rather than falling through to the expensive Aspose probe (which
-            # loads the entire document for a full layout pass — 10+ minutes
-            # for large files). The estimate is conservative (assumes ~20 KB
-            # per page for DOCX) so the planner over-chunks slightly; the
-            # OOM subdivision path handles any miscalculation.
+            # If app.xml doesn't have a page count, OR reports an implausibly
+            # low count for the file size (stale metadata from editing), use a
+            # size-based estimate. A 5 MB DOCX with "1 page" in metadata is
+            # clearly stale — real 1-page docs are <100 KB.
             if n is None or n <= 0:
+                n = _estimate_pages_from_size(size, format)
+            elif n == 1 and size > 200_000:
+                # Metadata says 1 page but file is >200 KB — likely stale
+                log.info("probe_lite: app.xml says 1 page but file is %d bytes — using size estimate", size)
                 n = _estimate_pages_from_size(size, format)
         elif format == "pptx":
             # Try app.xml first, then count actual slide XML files in the ZIP

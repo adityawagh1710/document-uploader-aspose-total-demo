@@ -155,4 +155,5 @@ WORKDIR /app
 CMD ["uvicorn", "office_convert.server:app", \
      "--host", "0.0.0.0", "--port", "8080", \
      "--timeout-keep-alive", "60", \
-     "--timeout-graceful-shutdown", "900"]
+     "--timeout-graceful-shutdown", "900", \
+     "--no-access-log"]
