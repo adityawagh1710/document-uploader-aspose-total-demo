@@ -58,10 +58,15 @@ async def convert_job(
     subdivision_retries = 0
     cache_hits = 0
 
-    source_sha = _file_sha256(input_path)
+    # SHA-256 of the input is only needed for cache keys. Reading 100s of MB
+    # off disk to hash for a no-op cache is pure waste; skip when the cache
+    # manager isn't actually backed by storage (cache_dir is None) or the
+    # request opted out via options.cache=False.
+    cache_active = options.cache and cache.enabled()
+    source_sha = _file_sha256(input_path) if cache_active else ""
 
     # Final-cache lookup
-    if options.cache:
+    if cache_active:
         final_cached = cache.get_final(source_sha)
         if final_cached is not None:
             emit_event(
@@ -182,15 +187,18 @@ async def convert_job(
 
             async def _render_one_pooled(chunk: Chunk) -> tuple[Chunk, Path]:
                 async with job_sem:
-                    chunk_key = chunk_sha256(chunk, source_sha, format)
-                    cached = cache.get_chunk(chunk_key) if options.cache else None
-                    if cached is not None:
-                        counters.cache_hits += 1
-                        return chunk, cached
+                    if cache_active:
+                        chunk_key = chunk_sha256(chunk, source_sha, format)
+                        cached = cache.get_chunk(chunk_key)
+                        if cached is not None:
+                            counters.cache_hits += 1
+                            return chunk, cached
+                        path = await pool.render_chunk(chunk, scratch_dir)
+                        counters.rendered += 1
+                        cache.put_chunk(chunk_key, path)
+                        return chunk, path
                     path = await pool.render_chunk(chunk, scratch_dir)
                     counters.rendered += 1
-                    if options.cache:
-                        cache.put_chunk(chunk_key, path)
                     return chunk, path
 
             rendered = await asyncio.gather(
@@ -209,7 +217,7 @@ async def convert_job(
                     request_id=request_id,
                     settings=settings,
                     source_sha=source_sha,
-                    cache=cache if options.cache else CacheManager(None, settings.aspose_version),
+                    cache=cache if cache_active else CacheManager(None, settings.aspose_version),
                     counters=counters,
                 )
 
@@ -225,7 +233,7 @@ async def convert_job(
     chunk_paths = [p for _, p in rendered]
 
     # Tee-to-cache: stream qpdf concat into the response AND optionally to cache.
-    cache_temp = cache.final_temp_path(source_sha) if options.cache else None
+    cache_temp = cache.final_temp_path(source_sha) if cache_active else None
 
     emit_event("merge_start", level="info", chunk_count=len(chunk_paths))
     merge_started = time.monotonic()

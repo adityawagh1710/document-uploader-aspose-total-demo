@@ -58,32 +58,75 @@ def get_health():
         return {"error": str(e)}
 
 
-def get_docker_stats():
-    try:
-        result = subprocess.run(
-            ["docker", "stats", "office-convert", "--no-stream", "--format",
-             "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            parts = result.stdout.strip().split("\t")
-            return {"cpu": parts[0], "mem_usage": parts[1], "mem_pct": parts[2], "pids": parts[3]}
-    except Exception:
-        pass
-    return {"cpu": "N/A", "mem_usage": "N/A", "mem_pct": "N/A", "pids": "N/A"}
+_DEFAULT_DOCKER_STATS = {"cpu": "N/A", "mem_usage": "N/A", "mem_pct": "N/A", "pids": "N/A"}
 
 
-def get_worker_processes():
-    try:
-        result = subprocess.run(
-            ["docker", "top", "office-convert", "-o", "pid,pcpu,pmem,time,args"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            return [l for l in result.stdout.strip().split("\n") if "office-convert-worker" in l]
-    except Exception:
-        pass
-    return []
+@st.cache_resource
+def _docker_monitor() -> dict:
+    """Background-thread cache of `docker stats` + `docker top`.
+
+    `docker stats --no-stream` takes ~1–2s per call. If we ran it inside the
+    fragment, every tick would block for that long and updates would arrive in
+    big bunches, amplifying visible flicker. Instead a daemon thread refreshes
+    the cache on its own cadence; the fragment just reads the dict — O(µs).
+    """
+    state: dict = {
+        "lock": threading.Lock(),
+        "stats": dict(_DEFAULT_DOCKER_STATS),
+        "workers": [],
+    }
+
+    def _refresh_loop() -> None:
+        while True:
+            new_stats = dict(_DEFAULT_DOCKER_STATS)
+            try:
+                result = subprocess.run(
+                    ["docker", "stats", "office-convert", "--no-stream", "--format",
+                     "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    parts = result.stdout.strip().split("\t")
+                    new_stats = {"cpu": parts[0], "mem_usage": parts[1],
+                                 "mem_pct": parts[2], "pids": parts[3]}
+            except Exception:
+                pass
+
+            new_workers: list[str] = []
+            try:
+                result = subprocess.run(
+                    ["docker", "top", "office-convert", "-o", "pid,pcpu,pmem,time,args"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    new_workers = [
+                        line for line in result.stdout.strip().split("\n")
+                        if "office-convert-worker" in line
+                    ]
+            except Exception:
+                pass
+
+            with state["lock"]:
+                state["stats"] = new_stats
+                state["workers"] = new_workers
+
+            time.sleep(1.5)  # docker stats itself takes ~1.5s, so this is "as fast as possible"
+
+    thread = threading.Thread(target=_refresh_loop, daemon=True)
+    thread.start()
+    return state
+
+
+def get_docker_stats() -> dict:
+    m = _docker_monitor()
+    with m["lock"]:
+        return dict(m["stats"])
+
+
+def get_worker_processes() -> list[str]:
+    m = _docker_monitor()
+    with m["lock"]:
+        return list(m["workers"])
 
 
 def do_conversion(file_name, file_bytes):
@@ -211,48 +254,89 @@ for r in reversed(_snap_results):
 
 # ============================================================
 # LIVE STATS (auto-refresh every 2s — now actually live during conversion)
+#
+# Layout is built ONCE at script-top so the column structure, labels, and
+# placeholder slots stay in the DOM across reruns. Each 2s tick only writes
+# fresh values into st.empty() slots — Streamlit's DOM diff updates only the
+# changed text nodes instead of tearing down and rebuilding the whole stats
+# block, which was causing visible blinking.
 # ============================================================
 st.title("📄 Office Convert — Dashboard")
 
+# Built once at script-top so the column structure and metric widgets stay
+# mounted across fragment reruns. Each tick rewrites only the value strings
+# via placeholder.metric() — React's reconciliation preserves the surrounding
+# layout, so only the changing digits are touched.
+_c1, _c2, _c3, _c4, _c5 = st.columns(5)
+_slot_server = _c1.empty()
+_slot_cpu = _c2.empty()
+_slot_mem = _c3.empty()
+_slot_workers = _c4.empty()
+_slot_jobs = _c5.empty()
+_slot_detail = st.empty()
+_slot_processes = st.empty()
 
-@st.fragment(run_every=2)
+
+# 4s instead of 2s: the docker fetch is non-blocking now (background thread),
+# but every fragment tick still costs Streamlit a delta+DOM patch. Slower
+# cadence makes the unavoidable patch much less visible.
+@st.fragment(run_every=4)
 def live_stats():
     health = get_health()
     stats = get_docker_stats()
     workers = get_worker_processes()
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Server", "✅ Ready" if health.get("ready") else "❌ Down")
-    c2.metric("CPU", stats["cpu"])
-    c3.metric("Memory", stats["mem_pct"])
-    c4.metric("Workers", str(len(workers)))
-    c5.metric("Jobs", f"{health.get('active_jobs', '?')}/{health.get('max_jobs', '?')}")
-
-    st.text(f"Mem: {stats['mem_usage']} | PIDs: {stats['pids']} | License: {health.get('license_days_remaining', '?')} days")
+    _slot_server.metric("Server", "✅ Ready" if health.get("ready") else "❌ Down")
+    _slot_cpu.metric("CPU", stats["cpu"])
+    _slot_mem.metric("Memory", stats["mem_pct"])
+    _slot_workers.metric("Workers", str(len(workers)))
+    _slot_jobs.metric(
+        "Jobs",
+        f"{health.get('active_jobs', '?')}/{health.get('max_jobs', '?')}",
+    )
+    _slot_detail.caption(
+        f"Mem: {stats['mem_usage']} • PIDs: {stats['pids']} • "
+        f"License: {health.get('license_days_remaining', '?')} days"
+    )
 
     if workers:
+        lines = []
         for w in workers:
             parts = w.split()
             if len(parts) >= 2:
                 fmt = "docx" if "docx" in w else "pptx" if "pptx" in w else "xlsx" if "xlsx" in w else "pdf" if "pdf" in w else "?"
                 mode = "pool" if "pool" in w else "render" if "render" in w else "probe"
-                st.text(f"  ⚙️ PID {parts[0]} | CPU {parts[1]}% | {fmt} | {mode}")
+                lines.append(f"⚙️ PID {parts[0]} • CPU {parts[1]}% • {fmt} • {mode}")
+        _slot_processes.caption("  \n".join(lines))
+    else:
+        _slot_processes.empty()
 
 
 @st.fragment(run_every=1)
 def conversion_status():
     active, _results, _err = _snapshot()
     if active is None:
+        _slot_conv_status.empty()
         return
     if active["holder"].get("done"):
         _collect_if_finished()
         st.rerun(scope="app")
     else:
-        elapsed = time.time() - active["start_time"]
-        st.info(
-            f"⏳ Converting **{active['input_name']}** ({active['input_size_mb']:.2f} MB)... "
-            f"({elapsed:.1f}s) — stats refresh live above ⬆️"
+        # Integer seconds (not 0.1s) so the value changes only once per second,
+        # reducing visible repaints. Tabular nums keeps digit widths constant.
+        elapsed = int(time.time() - active["start_time"])
+        html = (
+            '<div style="background:rgba(0,120,255,0.08);'
+            'border-left:4px solid rgba(0,120,255,0.6);'
+            'padding:0.6rem 1rem;border-radius:0.4rem;'
+            'font-size:0.95rem;">'
+            f'⏳ Converting <b>{active["input_name"]}</b> '
+            f'({active["input_size_mb"]:.2f} MB) — '
+            f'<span style="font-variant-numeric:tabular-nums;">'
+            f'{elapsed}s</span> elapsed. Stats refresh live above ⬆️'
+            "</div>"
         )
+        _slot_conv_status.markdown(html, unsafe_allow_html=True)
 
 
 live_stats()
@@ -274,6 +358,11 @@ uploaded_file = st.file_uploader(
     "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT)",
     type=["docx", "pptx", "xlsx", "pdf", "doc", "xls", "ppt"],
 )
+
+# Persistent placeholder for the "⏳ Converting..." callout. Created at a
+# stable DOM position so the 1s fragment updates only the inner text/icon
+# instead of re-creating the surrounding alert each tick.
+_slot_conv_status = st.empty()
 
 if _snap_active is not None:
     conversion_status()

@@ -197,6 +197,7 @@ class WorkerPool:
         self._settings = settings
         self._pool_size = pool_size
         self._workers: list[PooledWorker] = []
+        self._available: asyncio.Queue[PooledWorker] | None = None
         self.actual_page_count: int | None = None  # Set after first worker loads
 
     async def __aenter__(self) -> "WorkerPool":
@@ -207,56 +208,83 @@ class WorkerPool:
         await self._shutdown()
 
     async def _spawn_workers(self) -> None:
-        """Spawn pool_size workers and load the document in each."""
+        """Spawn pool_size workers and load the document in each (in parallel).
+
+        Each worker's subprocess spawn AND document load are launched concurrently
+        via asyncio.gather. For a pool_size of 4 with a 5s per-worker load, total
+        startup latency drops from ~20s (sequential) to ~5s (parallel).
+        """
         worker_binary = f"{self._settings.worker_binary_prefix}-{self._format}"
+        self._available = asyncio.Queue()
+        argv_base = [
+            "prlimit",
+            f"--as={self._settings.worker_ram_bytes}",
+            "--",
+            worker_binary,
+            "--mode", "pool",
+            "--format", self._format,
+            "--license-path", str(self._settings.license_path),
+        ]
 
-        for i in range(self._pool_size):
-            argv = [
-                "prlimit",
-                f"--as={self._settings.worker_ram_bytes}",
-                "--",
-                worker_binary,
-                "--mode", "pool",
-                "--format", self._format,
-                "--license-path", str(self._settings.license_path),
-            ]
-
+        async def _spawn_one(pool_index: int) -> tuple[PooledWorker, int]:
             proc = await asyncio.create_subprocess_exec(
-                *argv,
+                *argv_base,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-
             worker = PooledWorker(proc, self._format, proc.pid or 0)
             emit_event(
                 "pool_worker_spawn",
                 level="info",
                 worker=self._format,
-                pool_index=i,
+                pool_index=pool_index,
                 pid=proc.pid,
             )
-
             try:
                 page_count = await worker.load_document(
                     self._input_path,
                     self._settings.license_path,
                 )
-                # Store the actual page count from the first worker
-                if self.actual_page_count is None:
-                    self.actual_page_count = page_count
                 emit_event(
                     "pool_worker_loaded",
                     level="info",
                     worker=self._format,
-                    pool_index=i,
+                    pool_index=pool_index,
                     page_count=page_count,
                 )
-                self._workers.append(worker)
-            except Exception as e:
-                log.warning("pool worker %d failed to load: %s", i, e)
+                return worker, page_count
+            except Exception:
                 await worker.kill()
                 raise
+
+        results = await asyncio.gather(
+            *(_spawn_one(i) for i in range(self._pool_size)),
+            return_exceptions=True,
+        )
+
+        # Collect failures vs successes; clean up live workers if anything failed.
+        failures: list[BaseException] = []
+        successes: list[tuple[PooledWorker, int]] = []
+        for r in results:
+            if isinstance(r, BaseException):
+                failures.append(r)
+            else:
+                successes.append(r)
+
+        if failures:
+            for worker, _ in successes:
+                with suppress(Exception):
+                    await worker.kill()
+            for exc in failures:
+                log.warning("pool worker failed to load: %s", exc)
+            raise failures[0]
+
+        for worker, page_count in successes:
+            if self.actual_page_count is None:
+                self.actual_page_count = page_count
+            self._workers.append(worker)
+            self._available.put_nowait(worker)
 
     async def _shutdown(self) -> None:
         """Gracefully shut down all workers."""
@@ -265,14 +293,23 @@ class WorkerPool:
         self._workers.clear()
 
     async def render_chunk(self, chunk: Chunk, scratch_dir: Path) -> Path:
-        """Render a single chunk using the next available worker."""
-        # Simple round-robin; the semaphore in the orchestrator already
-        # limits concurrency to pool_size.
-        worker = self._workers[int(chunk.index) % len(self._workers)]
-        output_path = scratch_dir / f"chunk-{chunk.index}.pdf"
-        return await worker.render_chunk(
-            chunk, output_path, timeout=self._settings.chunk_timeout_seconds
-        )
+        """Render a single chunk using the next available worker.
+
+        Workers are checked out from an asyncio.Queue so that each worker
+        handles at most one chunk at a time — required because each worker's
+        stdin/stdout pair cannot be read concurrently by multiple coroutines
+        (asyncio raises `RuntimeError: readuntil() called while another
+        coroutine is already waiting for incoming data`).
+        """
+        assert self._available is not None, "pool not initialized; use as async context manager"
+        worker = await self._available.get()
+        try:
+            output_path = scratch_dir / f"chunk-{chunk.index}.pdf"
+            return await worker.render_chunk(
+                chunk, output_path, timeout=self._settings.chunk_timeout_seconds
+            )
+        finally:
+            self._available.put_nowait(worker)
 
 
 def pool_mode_available(settings: Settings, format: FormatName) -> bool:

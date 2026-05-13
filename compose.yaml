@@ -38,6 +38,10 @@ services:
       # file MUST exist before `compose up`; compose will surface a clear
       # error if it doesn't.
       - ./Aspose.TotalforC++.lic:/aspose/license.lic:ro
+      # Persistent cache directory. Survives container recreates (named
+      # volume managed by Docker). Cache layout: <aspose_version>/{final,chunks}/
+      # so version bumps invalidate automatically.
+      - office-convert-cache:/cache
     environment:
       OFFICE_CONVERT_MAX_JOBS: "2"
       OFFICE_CONVERT_PARALLEL: "4"
@@ -61,9 +65,11 @@ services:
       # malloc()s fail before the kernel ever pages out — defeating the
       # point of the swap cushion.
       OFFICE_CONVERT_WORKER_RAM_BYTES: "6442450944"
-      # Content-addressable cache disabled for now — enable once conversions
-      # are verified working end-to-end.
-      # OFFICE_CONVERT_CACHE_DIR: "/cache"
+      # Content-addressable cache. Layered: final-PDF cache for identical
+      # source files; per-chunk cache for repeated identical page ranges.
+      # Both keyed under <aspose_version>/ so version upgrades invalidate
+      # automatically.
+      OFFICE_CONVERT_CACHE_DIR: "/cache"
       # Fontconfig needs a writable cache dir for font resolution. With
       # read_only: true, we point HOME to /tmp (which is a tmpfs) so
       # ~/.cache/fontconfig resolves to a writable location.
@@ -155,8 +161,8 @@ services:
       - office-convert
 
 # ============================================================
-# Named volumes (reserved for future cache enablement)
+# Named volumes
 # ============================================================
-# volumes:
-#   office-convert-cache:
-#     driver: local
+volumes:
+  office-convert-cache:
+    driver: local
