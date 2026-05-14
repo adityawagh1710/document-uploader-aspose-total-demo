@@ -23,6 +23,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _force_one_shot_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests mock `aspose_worker.render_chunk` to inject fake PDFs.
+    The orchestrator's default pool-mode dispatch bypasses that mock by
+    spawning real worker subprocesses, so disable pool mode for the
+    duration of this module to keep the mock on the hot path."""
+    monkeypatch.setenv("OFFICE_CONVERT_POOL_MODE", "0")
+
+
 def _make_pdf(path: Path, pages: int = 2) -> None:
     try:
         from reportlab.pdfgen import canvas

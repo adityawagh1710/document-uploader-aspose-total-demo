@@ -69,33 +69,20 @@ def test_plan_chunks_page_range_split_no_seams() -> None:
     assert all(not c.natural_seam for c in plan.chunks)
 
 
-def test_plan_chunks_pptx_always_single_chunk() -> None:
-    """PPTX bypasses chunking — the C++ worker ignores --page-range, so any
-    multi-chunk plan would emit duplicate full-deck PDFs. See chunk_planner
-    docstring §1."""
+def test_plan_chunks_pptx_splits_like_docx() -> None:
+    """PPTX is no longer carved out: pptx.cpp honors --page-range via
+    slide-index array export, so the planner subdivides the same way it
+    does for DOCX. The per-format chunk-size floor is applied at the
+    orchestrator call site, not here."""
     plan = plan_chunks(
-        _probe(200, format="pptx", size_bytes=500_000_000),
+        _probe(40, format="pptx", size_bytes=10_000_000),
         max_pages_per_chunk=10,
         max_mb_per_chunk=50,
     )
-    assert len(plan.chunks) == 1
-    assert plan.chunks[0].page_range == (1, 200)
-    assert plan.chunks[0].natural_seam is False
-    assert plan.total_pages == 200
-
-
-def test_plan_chunks_pptx_seams_ignored() -> None:
-    """Even with seams provided, PPTX still single-chunks (the worker can't
-    use seam boundaries either)."""
-    seams: tuple[tuple[int, int], ...] = ((1, 5), (6, 10), (11, 50))
-    plan = plan_chunks(
-        _probe(50, format="pptx", size_bytes=10_000_000, natural_seams=seams),
-        max_pages_per_chunk=10,
-        max_mb_per_chunk=50,
-    )
-    assert len(plan.chunks) == 1
-    assert plan.chunks[0].page_range == (1, 50)
-    assert plan.chunks[0].natural_seam is False
+    assert len(plan.chunks) == 4
+    assert plan.chunks[0].page_range == (1, 10)
+    assert plan.chunks[-1].page_range == (31, 40)
+    assert all(not c.natural_seam for c in plan.chunks)
 
 
 def test_plan_chunks_pptx_single_page() -> None:
@@ -116,32 +103,19 @@ def test_plan_chunks_docx_still_splits() -> None:
     assert len(plan.chunks) == 3
 
 
-def test_plan_chunks_pdf_always_single_chunk() -> None:
-    """PDF bypasses chunking — pdf.cpp ignores --page-range, so any
-    multi-chunk plan would emit duplicate full-PDF copies. Mirrors the
-    PPTX carve-out; lift when pdf.cpp gains page-range support."""
+def test_plan_chunks_pdf_splits_like_docx() -> None:
+    """PDF is no longer carved out: pdf.cpp honors --page-range via page
+    extraction into a new Document, so the planner subdivides normally.
+    Full-document ranges still take the fast-path inside the worker."""
     plan = plan_chunks(
-        _probe(500, format="pdf", size_bytes=200_000_000),
+        _probe(50, format="pdf", size_bytes=5_000_000),
         max_pages_per_chunk=10,
         max_mb_per_chunk=50,
     )
-    assert len(plan.chunks) == 1
-    assert plan.chunks[0].page_range == (1, 500)
-    assert plan.chunks[0].natural_seam is False
-    assert plan.total_pages == 500
-
-
-def test_plan_chunks_pdf_seams_ignored() -> None:
-    """Defense-in-depth: even if a probe sets seams for PDF (it shouldn't),
-    the carve-out still wins."""
-    seams: tuple[tuple[int, int], ...] = ((1, 25), (26, 50))
-    plan = plan_chunks(
-        _probe(50, format="pdf", size_bytes=5_000_000, natural_seams=seams),
-        max_pages_per_chunk=10,
-        max_mb_per_chunk=50,
-    )
-    assert len(plan.chunks) == 1
-    assert plan.chunks[0].page_range == (1, 50)
+    assert len(plan.chunks) == 5
+    assert plan.chunks[0].page_range == (1, 10)
+    assert plan.chunks[-1].page_range == (41, 50)
+    assert all(not c.natural_seam for c in plan.chunks)
 
 
 def test_plan_chunks_xlsx_splits_like_docx() -> None:

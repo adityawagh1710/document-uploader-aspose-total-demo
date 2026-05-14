@@ -11,7 +11,7 @@ from office_convert.config import Settings
 def test_defaults() -> None:
     s = Settings()
     assert s.max_jobs == 1
-    assert s.parallel == 2
+    assert s.parallel == 4
     assert s.cache_dir is None
     assert s.chunk_timeout_seconds == 300
     assert s.max_input_bytes == 1024 * 1024 * 1024
