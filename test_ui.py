@@ -19,13 +19,15 @@ import time
 import uuid
 from pathlib import Path
 
-import streamlit as st
 import requests
+import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 API_URL = os.environ.get("API_URL", "http://localhost:8080")
 CONVERT_URL = f"{API_URL}/convert"
 HEALTH_URL = f"{API_URL}/health"
+HEARTBEATS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/heartbeats
+PROGRESS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/progress
 
 MAX_RECENT_RESULTS = 20
 ERROR_DISPLAY_WINDOW_SEC = 60
@@ -45,9 +47,9 @@ st.set_page_config(page_title="Office Convert Dashboard", layout="wide")
 def _state() -> dict:
     return {
         "lock": threading.Lock(),
-        "active": None,        # {id, holder, thread, start_time, input_name, input_size_mb}
-        "results": [],         # successful results, newest first
-        "last_error": None,    # {"msg": str, "ts": float}
+        "active": None,  # {id, holder, thread, start_time, input_name, input_size_mb}
+        "results": [],  # successful results, newest first
+        "last_error": None,  # {"msg": str, "ts": float}
     }
 
 
@@ -81,14 +83,27 @@ def _docker_monitor() -> dict:
             new_stats = dict(_DEFAULT_DOCKER_STATS)
             try:
                 result = subprocess.run(
-                    ["docker", "stats", "office-convert", "--no-stream", "--format",
-                     "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}"],
-                    capture_output=True, text=True, timeout=5,
+                    [
+                        "docker",
+                        "stats",
+                        "office-convert",
+                        "--no-stream",
+                        "--format",
+                        "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     parts = result.stdout.strip().split("\t")
-                    new_stats = {"cpu": parts[0], "mem_usage": parts[1],
-                                 "mem_pct": parts[2], "pids": parts[3]}
+                    new_stats = {
+                        "cpu": parts[0],
+                        "mem_usage": parts[1],
+                        "mem_pct": parts[2],
+                        "pids": parts[3],
+                    }
             except Exception:
                 pass
 
@@ -96,11 +111,15 @@ def _docker_monitor() -> dict:
             try:
                 result = subprocess.run(
                     ["docker", "top", "office-convert", "-o", "pid,pcpu,pmem,time,args"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
                 )
                 if result.returncode == 0:
                     new_workers = [
-                        line for line in result.stdout.strip().split("\n")
+                        line
+                        for line in result.stdout.strip().split("\n")
                         if "office-convert-worker" in line
                     ]
             except Exception:
@@ -129,15 +148,47 @@ def get_worker_processes() -> list[str]:
         return list(m["workers"])
 
 
-def do_conversion(file_name, file_bytes):
+def get_heartbeats(request_id: str) -> list[dict]:
+    """Fetch the heartbeat trail for an in-flight (or recently-completed) request."""
+    try:
+        resp = requests.get(f"{HEARTBEATS_URL}/{request_id}/heartbeats", timeout=2)
+        if resp.status_code != 200:
+            return []
+        return resp.json().get("heartbeats", []) or []
+    except Exception:
+        return []
+
+
+def get_progress(request_id: str) -> dict:
+    """Fetch weighted progress for an in-flight request."""
+    try:
+        resp = requests.get(f"{PROGRESS_URL}/{request_id}/progress", timeout=2)
+        if resp.status_code != 200:
+            return {}
+        return resp.json() or {}
+    except Exception:
+        return {}
+
+
+def do_conversion(file_name, file_bytes, request_id):
     """Blocking conversion. Returns (data, elapsed, error)."""
     start = time.time()
     try:
-        resp = requests.post(CONVERT_URL, files={"file": (file_name, file_bytes)}, stream=True, timeout=1800)
+        resp = requests.post(
+            CONVERT_URL,
+            files={"file": (file_name, file_bytes)},
+            headers={"X-Request-ID": request_id},
+            stream=True,
+            timeout=1800,
+        )
         if resp.status_code != 200:
             try:
                 body = resp.json()
-                return None, time.time() - start, f"Error {resp.status_code}: {body.get('failure_class', 'unknown')}"
+                return (
+                    None,
+                    time.time() - start,
+                    f"Error {resp.status_code}: {body.get('failure_class', 'unknown')}",
+                )
             except Exception:
                 return None, time.time() - start, f"Error {resp.status_code}"
         chunks = []
@@ -152,9 +203,9 @@ def do_conversion(file_name, file_bytes):
         return None, time.time() - start, str(e)
 
 
-def _conversion_worker(file_name, file_bytes, holder):
+def _conversion_worker(file_name, file_bytes, request_id, holder):
     """Runs in a background thread. Writes result into shared holder dict."""
-    data, elapsed, error = do_conversion(file_name, file_bytes)
+    data, elapsed, error = do_conversion(file_name, file_bytes, request_id)
     holder["data"] = data
     holder["elapsed"] = elapsed
     holder["error"] = error
@@ -167,15 +218,20 @@ def _start_conversion(file_name: str, file_bytes: bytes) -> bool:
     with s["lock"]:
         if s["active"] is not None:
             return False
+        # The same UUID is the conversion record ID, the backend's X-Request-ID,
+        # and the key for polling /jobs/{id}/heartbeats — keeping all three in
+        # sync means the UI's heartbeat panel correlates 1:1 with the in-flight
+        # request on the server.
+        request_id = uuid.uuid4().hex
         holder = {"done": False}
         thread = threading.Thread(
             target=_conversion_worker,
-            args=(file_name, file_bytes, holder),
+            args=(file_name, file_bytes, request_id, holder),
             daemon=True,
         )
         add_script_run_ctx(thread)
         s["active"] = {
-            "id": str(uuid.uuid4()),
+            "id": request_id,
             "holder": holder,
             "thread": thread,
             "start_time": time.time(),
@@ -209,16 +265,19 @@ def _collect_if_finished() -> bool:
         else:
             data = holder.get("data")
             out_name = Path(input_name).stem + ".pdf"
-            s["results"].insert(0, {
-                "id": result_id,
-                "name": out_name,
-                "input": input_name,
-                "data": data,
-                "out_mb": len(data) / 1024 / 1024,
-                "in_mb": input_size_mb,
-                "time": elapsed,
-                "ts": time.strftime("%H:%M:%S"),
-            })
+            s["results"].insert(
+                0,
+                {
+                    "id": result_id,
+                    "name": out_name,
+                    "input": input_name,
+                    "data": data,
+                    "out_mb": len(data) / 1024 / 1024,
+                    "in_mb": input_size_mb,
+                    "time": elapsed,
+                    "ts": time.strftime("%H:%M:%S"),
+                },
+            )
             del s["results"][MAX_RECENT_RESULTS:]
         s["active"] = None
         return True
@@ -304,12 +363,151 @@ def live_stats():
         for w in workers:
             parts = w.split()
             if len(parts) >= 2:
-                fmt = "docx" if "docx" in w else "pptx" if "pptx" in w else "xlsx" if "xlsx" in w else "pdf" if "pdf" in w else "?"
+                fmt = (
+                    "docx"
+                    if "docx" in w
+                    else "pptx"
+                    if "pptx" in w
+                    else "xlsx"
+                    if "xlsx" in w
+                    else "pdf"
+                    if "pdf" in w
+                    else "?"
+                )
                 mode = "pool" if "pool" in w else "render" if "render" in w else "probe"
                 lines.append(f"⚙️ PID {parts[0]} • CPU {parts[1]}% • {fmt} • {mode}")
         _slot_processes.caption("  \n".join(lines))
     else:
         _slot_processes.empty()
+
+
+def _render_heartbeats(request_id: str, wall_now: float) -> str:
+    """Group heartbeats by pool_index, pick the latest per worker, render HTML."""
+    beats = get_heartbeats(request_id)
+    if not beats:
+        return (
+            '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.5rem;">'
+            "Pool workers: waiting for first heartbeat…"
+            "</div>"
+        )
+    by_index: dict[int, dict] = {}
+    for b in beats:
+        idx = b.get("pool_index")
+        if idx is None:
+            continue
+        prev = by_index.get(idx)
+        if prev is None or (b.get("wall_ts") or 0) > (prev.get("wall_ts") or 0):
+            by_index[idx] = b
+
+    rows = []
+    for idx in sorted(by_index.keys()):
+        b = by_index[idx]
+        wall_ts = b.get("wall_ts") or 0
+        staleness = wall_now - wall_ts if wall_ts else 0
+        rss_bytes = b.get("rss_bytes") or 0
+        rss_mb = rss_bytes / 1024 / 1024 if rss_bytes >= 0 else 0
+        swap_bytes = b.get("swap_bytes") or 0
+        swap_mb = swap_bytes / 1024 / 1024 if swap_bytes >= 0 else 0
+        phase = b.get("phase") or "?"
+        elapsed_in_phase = b.get("elapsed_s")
+        jiffies = b.get("cpu_jiffies")
+        worker = b.get("worker") or "?"
+        # Stale = no heartbeat in >3 × cadence. C++ default is 2s, so >6s is suspicious.
+        color = "rgba(0,180,0,0.85)" if staleness < 6 else "rgba(220,90,0,0.9)"
+        # Any non-zero swap is worth visual highlight — under memswap_limit
+        # the worker pages out when RAM is exhausted, and chronic swap use
+        # is the signal that the chunk planner is mis-sized for this input.
+        swap_cell_style = (
+            "padding:1px 8px;text-align:right;color:rgba(220,90,0,0.95);font-weight:600;"
+            if swap_mb > 0
+            else "padding:1px 8px;text-align:right;opacity:0.5;"
+        )
+        rows.append(
+            f'<tr style="font-variant-numeric:tabular-nums;">'
+            f'<td style="padding:1px 8px;color:{color};">●</td>'
+            f'<td style="padding:1px 8px;">[{idx}]</td>'
+            f'<td style="padding:1px 8px;">{worker}</td>'
+            f'<td style="padding:1px 8px;">{phase}</td>'
+            f'<td style="padding:1px 8px;text-align:right;">{elapsed_in_phase}s</td>'
+            f'<td style="padding:1px 8px;text-align:right;">{rss_mb:,.0f} MB</td>'
+            f'<td style="{swap_cell_style}">{swap_mb:,.0f} MB</td>'
+            f'<td style="padding:1px 8px;text-align:right;">{jiffies}</td>'
+            f'<td style="padding:1px 8px;text-align:right;opacity:0.6;">{staleness:.1f}s ago</td>'
+            f"</tr>"
+        )
+    table = (
+        '<table style="font-size:0.82rem;margin-top:0.5rem;border-collapse:collapse;">'
+        '<thead><tr style="opacity:0.55;">'
+        '<th></th><th style="padding:1px 8px;text-align:left;">#</th>'
+        '<th style="padding:1px 8px;text-align:left;">worker</th>'
+        '<th style="padding:1px 8px;text-align:left;">phase</th>'
+        '<th style="padding:1px 8px;text-align:right;">elapsed</th>'
+        '<th style="padding:1px 8px;text-align:right;">RSS</th>'
+        '<th style="padding:1px 8px;text-align:right;">Swap</th>'
+        '<th style="padding:1px 8px;text-align:right;">CPU jiffies</th>'
+        '<th style="padding:1px 8px;text-align:right;">last hb</th>'
+        '</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        '</table>'
+    )
+    return f'<div style="margin-top:0.4rem;">Pool workers ({len(by_index)}, {len(beats)} hbs total):{table}</div>'
+
+
+def _render_progress_html(p: dict) -> str:
+    """HTML progress bar + phase-label row using the /jobs/{id}/progress payload."""
+    pct = float(p.get("weighted_percent") or 0.0)
+    pct_label = f"{int(pct * 100)}%"
+    phase = p.get("phase", "init")
+    total = int(p.get("total_chunks") or 0)
+    done = int(p.get("chunks_rendered") or 0)
+    load_pct = int(float(p.get("load_progress") or 0.0) * 100)
+    merge_pct = int(float(p.get("merge_done") or 0.0) * 100)
+
+    # Per-phase highlighting: bold the current phase, dim the others.
+    def fmt(label: str, current: bool, dim: bool = False) -> str:
+        if current:
+            return f"<b>{label}</b>"
+        if dim:
+            return f'<span style="opacity:0.45;">{label}</span>'
+        return label
+
+    is_load = phase in ("init", "probing", "planning", "loading")
+    is_render = phase == "rendering"
+    is_merge = phase == "merging"
+    is_done = phase == "complete"
+
+    load_label = f"Load {load_pct}%"
+    render_label = f"Render {done}/{total}" if total else "Render"
+    merge_label = "Merge ✓" if merge_pct >= 100 else "Merge"
+
+    phase_row = (
+        f"{fmt(load_label, is_load, dim=(is_render or is_merge or is_done))} "
+        f'<span style="opacity:0.55;">→</span> '
+        f"{fmt(render_label, is_render, dim=(is_merge or is_done))} "
+        f'<span style="opacity:0.55;">→</span> '
+        f"{fmt(merge_label, is_merge or is_done, dim=False)}"
+    )
+
+    # Inline CSS progress bar — Streamlit's st.progress() lives outside markdown
+    # blocks, so we render our own to keep everything in a single callout.
+    bar_width = max(1, min(100, int(pct * 100)))
+    bar = (
+        '<div style="height:8px;background:rgba(0,120,255,0.12);'
+        'border-radius:4px;overflow:hidden;margin:0.4rem 0 0.3rem 0;">'
+        f'<div style="height:100%;width:{bar_width}%;'
+        "background:linear-gradient(90deg, rgba(0,120,255,0.65), rgba(0,180,140,0.85));"
+        'transition:width 0.5s ease-out;"></div></div>'
+    )
+
+    return (
+        f'<div style="margin-top:0.4rem;font-size:0.88rem;">'
+        f"{bar}"
+        f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+        f"<span>{phase_row}</span>"
+        f'<span style="font-variant-numeric:tabular-nums;font-weight:600;'
+        f'opacity:0.85;">{pct_label}</span></div>'
+        f"</div>"
+    )
 
 
 @st.fragment(run_every=1)
@@ -325,6 +523,8 @@ def conversion_status():
         # Integer seconds (not 0.1s) so the value changes only once per second,
         # reducing visible repaints. Tabular nums keeps digit widths constant.
         elapsed = int(time.time() - active["start_time"])
+        progress_html = _render_progress_html(get_progress(active["id"]))
+        heartbeats_html = _render_heartbeats(active["id"], time.time())
         html = (
             '<div style="background:rgba(0,120,255,0.08);'
             'border-left:4px solid rgba(0,120,255,0.6);'
@@ -334,6 +534,8 @@ def conversion_status():
             f'({active["input_size_mb"]:.2f} MB) — '
             f'<span style="font-variant-numeric:tabular-nums;">'
             f'{elapsed}s</span> elapsed. Stats refresh live above ⬆️'
+            f'{progress_html}'
+            f'{heartbeats_html}'
             "</div>"
         )
         _slot_conv_status.markdown(html, unsafe_allow_html=True)
@@ -386,7 +588,9 @@ if st.session_state.history:
     st.header("📦 Conversion History")
 
     latest = st.session_state.history[0]
-    st.success(f"🎉 **{latest['input']}** → {latest['name']} | ⏱️ **{latest['time']:.1f}s** | {latest['out_mb']:.1f} MB")
+    st.success(
+        f"🎉 **{latest['input']}** → {latest['name']} | ⏱️ **{latest['time']:.1f}s** | {latest['out_mb']:.1f} MB"
+    )
 
     for i, item in enumerate(st.session_state.history[:10]):
         col1, col2, col3 = st.columns([4, 1, 1])
@@ -397,7 +601,7 @@ if st.session_state.history:
             )
         with col2:
             st.download_button(
-                f"⬇️ Download",
+                "⬇️ Download",
                 data=item["data"],
                 file_name=item["name"],
                 mime="application/pdf",
@@ -407,4 +611,6 @@ if st.session_state.history:
             st.text(f"{item['time']:.1f}s")
 
 st.divider()
-st.caption("Stats auto-refresh every 2s — including during conversion. In-progress conversions and recent results survive page refresh.")
+st.caption(
+    "Stats auto-refresh every 2s — including during conversion. In-progress conversions and recent results survive page refresh."
+)

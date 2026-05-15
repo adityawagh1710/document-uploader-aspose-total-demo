@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -129,7 +130,7 @@ def _utf16le(s: str) -> bytes:
     return s.encode("utf-16-le")
 
 
-def _build_ole2(stream_name: str | None, tmp_path, name: str = "input.bin") -> "Path":  # type: ignore[name-defined]
+def _build_ole2(stream_name: str | None, tmp_path: Path, name: str = "input.bin") -> Path:
     """Build a minimal OLE2-looking blob: magic header + pad + optional
     UTF-16LE stream name embedded in the first 64 KB. The real CFB layout
     is irrelevant — detect_format only scans for the signature substring."""

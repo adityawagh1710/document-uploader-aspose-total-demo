@@ -91,6 +91,25 @@ int main(int argc, char** argv) {
         if (mode == "pool") {
             // Pool mode: persistent worker that reads JSON commands from stdin.
             // License is applied inside pool_loop. No --input needed at startup.
+            //
+            // Optional --pool-size N enables fork-after-load: the leader loads
+            // the document once, forks N-1 children that share the loaded
+            // Document via copy-on-write, and routes seq-tagged render commands
+            // across all N processes via socketpairs. Default N=1 = original
+            // single-process behaviour.
+            // Presence of --pool-size selects the seq-tagged fork-after-load
+            // protocol (even with pool_size=1, where no fork happens but the
+            // leader still talks the seq-tagged protocol the Python
+            // ForkedPoolLeader expects). Absence keeps the legacy pool_loop
+            // protocol used by WorkerPool's N-independent-subprocesses model.
+            auto ps_it = args.find("pool-size");
+            if (ps_it != args.end() && !ps_it->second.empty()) {
+                int pool_size = 1;
+                try { pool_size = std::stoi(ps_it->second); } catch (...) {}
+                if (pool_size < 1) pool_size = 1;
+                if (pool_size > 32) pool_size = 32;
+                return office_convert::pool_loop_forked(format, license_path, pool_size);
+            }
             return office_convert::pool_loop(format, license_path);
         }
 

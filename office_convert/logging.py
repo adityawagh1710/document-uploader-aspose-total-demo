@@ -90,11 +90,11 @@ def _render_value(value: Any) -> str:
     is grep-able. NOT round-trippable to JSON — that's the JsonFormatter's
     job.
     """
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return "[" + ",".join(_render_value(v) for v in value) + "]"
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return str(value)
     s = str(value)
     if any(c.isspace() for c in s):

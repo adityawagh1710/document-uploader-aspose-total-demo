@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     #
     # The 2 GiB historic floor is preserved as the lower bound for
     # nfr-design-patterns §1 (subprocess memory ceiling) so the
-    # max_jobs × parallel × worker_ram_bytes peak-RAM budgeting still works.
+    # max_jobs * parallel * worker_ram_bytes peak-RAM budgeting still works.
     worker_ram_bytes: int = Field(
         default=6 * 1024 * 1024 * 1024,
         ge=2 * 1024 * 1024 * 1024,
@@ -86,6 +86,33 @@ class Settings(BaseSettings):
     # amortize that overhead. Less extreme than XLSX because Slides' load
     # is faster, but still worth a floor above the default.
     pptx_min_pages_per_chunk: int = Field(default=25, ge=1, le=500)
+
+    # Pool mode is enabled when chunk count meets this threshold. Default 2
+    # mirrors the historical orchestrator hard-coded `> 1` gate (pool's
+    # load-once amortization pays off across multiple chunks). Set to 1 to
+    # force pool mode for every conversion — useful for exercising the
+    # heartbeat dashboard on small single-chunk files.
+    pool_min_chunks: int = Field(default=2, ge=1, le=64)
+
+    # When fork-after-load is disabled (e.g., XLSX is in _FORK_UNSAFE_FORMATS),
+    # the legacy N-independent-workers pool is used and each worker
+    # independently loads the document. For XLSX on a 98 MB / 23k-page
+    # workbook, 4 parallel Cells loads * ~1 GB amplification = ~4 GB peak,
+    # right at mem_limit. req_e11ad522 (2026-05-15) hit OOM on one worker
+    # during the parallel load phase. Cap at the historical sweet spot of 2
+    # — matches the "~36 min at parallel=2" data point in the state file.
+    # Set higher only if you've also raised mem_limit to match.
+    xlsx_max_pool_size: int = Field(default=2, ge=1, le=16)
+
+    # Fork-after-load: one leader process loads the document and forks N-1
+    # children that share the loaded Document via copy-on-write. Eliminates
+    # the N-times duplicate parse cost that times out large-DOCX loads in the
+    # legacy N-independent-workers pool model. Default ON since 2026-05-15
+    # after the 100 MB DOCX stress file went from 600s timeout to 23-29s
+    # success and Aspose's CodePorting framework threads survived fork()
+    # without deadlock. Set OFFICE_CONVERT_FORK_AFTER_LOAD=0 to fall back
+    # to the legacy pool if a future workload class misbehaves under fork.
+    fork_after_load: bool = Field(default=True)
 
 
 @lru_cache(maxsize=1)

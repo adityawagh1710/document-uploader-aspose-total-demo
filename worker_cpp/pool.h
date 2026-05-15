@@ -26,4 +26,17 @@ void pool_render(int page_start, int page_end, const std::string& output_path);
 // Returns the exit code for the process.
 int pool_loop(const std::string& format, const std::string& license_path);
 
+// Current process's pool index — 0 for the leader, 1..N-1 for forked children.
+// Used by per-format load-progress callbacks to tag their output so the shared
+// stderr pipe stays correlatable with the dashboard's per-worker view.
+int current_pool_index();
+
+// Run the fork-after-load variant: leader loads the document, forks pool_size-1
+// child renderers that share the loaded Document via copy-on-write, and routes
+// seq-tagged render commands across N processes via socketpairs. Same JSON
+// protocol on the orchestrator-facing stdin/stdout, but every command and
+// response now carries a "seq" integer so the leader can demux multiple
+// in-flight renders across children.
+int pool_loop_forked(const std::string& format, const std::string& license_path, int pool_size);
+
 }  // namespace office_convert

@@ -19,15 +19,21 @@ from office_convert import aspose_worker, qpdf
 from office_convert.cache import CacheManager
 from office_convert.chunk_planner import adaptive_max_pages, chunk_sha256, plan_chunks, subdivide
 from office_convert.errors import OOMError, SubdivisionFloorError
+from office_convert.job_progress import job_progress_store
 from office_convert.logging import emit_event
 from office_convert.probe import probe as do_probe
-from office_convert.worker_pool import WorkerPool, pool_mode_available
 from office_convert.types import (
     Chunk,
     ConversionOptions,
     ConversionResult,
     FormatName,
     ProbeResult,
+)
+from office_convert.worker_pool import (
+    ForkedWorkerPool,
+    WorkerPool,
+    fork_after_load_enabled,
+    pool_mode_available,
 )
 
 if TYPE_CHECKING:
@@ -36,7 +42,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-async def convert_job(
+async def convert_job(  # noqa: PLR0912, PLR0915 — probe→plan→dispatch→merge stages must stay in one function for the request-scoped state to flow naturally
     request_id: str,
     input_path: Path,
     format: FormatName,
@@ -76,6 +82,13 @@ async def convert_job(
                 source_sha256=source_sha[:16],
             )
             cache_hits += 1
+            job_progress_store().update(
+                request_id,
+                total_chunks=1,
+                load_progress=1.0,
+                merge_done=1.0,
+                phase="complete",
+            )
             async for block in _stream_file(final_cached):
                 yield block
             _attach_result(
@@ -151,6 +164,11 @@ async def convert_job(
         strategy=strategy,
         parallel=settings.parallel,
     )
+    job_progress_store().update(
+        request_id,
+        total_chunks=len(plan.chunks),
+        phase="loading",
+    )
 
     # Dispatch chunk renders under per-job concurrency budget.
     # Two modes: pool (persistent workers, document loaded once) or one-shot
@@ -158,12 +176,44 @@ async def convert_job(
     # overhead but requires C++ worker support for --mode=pool.
     job_sem = asyncio.Semaphore(settings.parallel)
     counters = _Counters()
-    use_pool = pool_mode_available(settings, format) and len(plan.chunks) > 1
+    use_pool = (
+        pool_mode_available(settings, format) and len(plan.chunks) >= settings.pool_min_chunks
+    )
 
     if use_pool:
-        emit_event("dispatch_mode", level="info", mode="pool", workers=settings.parallel)
         pool_size = min(settings.parallel, len(plan.chunks))
-        async with WorkerPool(format, input_path, settings, pool_size=pool_size) as pool:
+        # XLSX in the legacy (non-fork) pool: each worker loads the full
+        # workbook independently. At settings.parallel=4 on a multi-GB
+        # workbook, the 4 parallel Cells loads hit the memory ceiling and
+        # one worker tends to OOM (req_e11ad522 2026-05-15). Cap to a
+        # safer concurrency. No-op when fork mode is active because COW
+        # sharing makes parallelism cheap.
+        if format == "xlsx" and not fork_after_load_enabled(settings, format):
+            pool_size = min(pool_size, settings.xlsx_max_pool_size)
+        pool_cls: type[WorkerPool] | type[ForkedWorkerPool]
+        if fork_after_load_enabled(settings, format):
+            pool_cls = ForkedWorkerPool
+            emit_event(
+                "dispatch_mode",
+                level="info",
+                mode="pool_fork",
+                workers=settings.parallel,
+                pool_size=pool_size,
+            )
+        else:
+            pool_cls = WorkerPool
+            emit_event("dispatch_mode", level="info", mode="pool", workers=settings.parallel)
+        async with pool_cls(format, input_path, settings, pool_size=pool_size) as pool:
+            # Pool's __aenter__ has loaded the document — flip phase + force
+            # load_progress to 1.0 even on formats whose SDK doesn't emit a
+            # load-progress callback (XLSX, PPTX, PDF). For DOCX the
+            # IDocumentLoadingCallback already drove load_progress smoothly
+            # to 1.0; this is a no-op-monotonic assignment in that case.
+            job_progress_store().update(
+                request_id,
+                load_progress=1.0,
+                phase="rendering",
+            )
             # Re-plan if the actual page count differs from the estimate
             # (pool workers report the real count after loading the document)
             if pool.actual_page_count is not None and pool.actual_page_count != plan.total_pages:
@@ -184,6 +234,10 @@ async def convert_job(
                     max_pages_per_chunk=effective_max_pages,
                     max_mb_per_chunk=settings.max_mb_per_chunk,
                 )
+                job_progress_store().update(
+                    request_id,
+                    total_chunks=len(plan.chunks),
+                )
 
             async def _render_one_pooled(chunk: Chunk) -> tuple[Chunk, Path]:
                 async with job_sem:
@@ -192,20 +246,29 @@ async def convert_job(
                         cached = cache.get_chunk(chunk_key)
                         if cached is not None:
                             counters.cache_hits += 1
+                            job_progress_store().update(request_id, increment_chunks=1)
                             return chunk, cached
                         path = await pool.render_chunk(chunk, scratch_dir)
                         counters.rendered += 1
                         cache.put_chunk(chunk_key, path)
+                        job_progress_store().update(request_id, increment_chunks=1)
                         return chunk, path
                     path = await pool.render_chunk(chunk, scratch_dir)
                     counters.rendered += 1
+                    job_progress_store().update(request_id, increment_chunks=1)
                     return chunk, path
 
-            rendered = await asyncio.gather(
-                *(_render_one_pooled(c) for c in plan.chunks)
-            )
+            rendered = await asyncio.gather(*(_render_one_pooled(c) for c in plan.chunks))
     else:
         emit_event("dispatch_mode", level="info", mode="one_shot", workers=settings.parallel)
+        # One-shot mode has no separate load phase visible to the orchestrator
+        # (each render subprocess loads+renders+exits). Treat load_progress as
+        # done once dispatch starts so the bar climbs only on chunks + merge.
+        job_progress_store().update(
+            request_id,
+            load_progress=1.0,
+            phase="rendering",
+        )
 
         async def _render_one(chunk: Chunk) -> tuple[Chunk, Path]:
             async with job_sem:
@@ -221,9 +284,7 @@ async def convert_job(
                     counters=counters,
                 )
 
-        rendered = await asyncio.gather(
-            *(_render_one(c) for c in plan.chunks)
-        )
+        rendered = await asyncio.gather(*(_render_one(c) for c in plan.chunks))
     chunks_rendered = counters.rendered
     subdivision_retries = counters.subdivisions
     cache_hits += counters.cache_hits
@@ -236,6 +297,7 @@ async def convert_job(
     cache_temp = cache.final_temp_path(source_sha) if cache_active else None
 
     emit_event("merge_start", level="info", chunk_count=len(chunk_paths))
+    job_progress_store().update(request_id, phase="merging")
     merge_started = time.monotonic()
     output_bytes = 0
     try:
@@ -258,6 +320,7 @@ async def convert_job(
         output_bytes=output_bytes,
         duration_s=round(time.monotonic() - merge_started, 3),
     )
+    job_progress_store().update(request_id, merge_done=1.0, phase="complete")
 
     if cache_temp is not None:
         cache.finalize_final(source_sha, cache_temp)
@@ -344,6 +407,7 @@ async def _render_with_retry(
         )
         chunk_duration = round(time.monotonic() - chunk_started, 3)
         counters.rendered += 1
+        job_progress_store().update(request_id, increment_chunks=1)
         try:
             output_bytes = path.stat().st_size
         except OSError:

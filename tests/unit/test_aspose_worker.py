@@ -58,6 +58,7 @@ def _make_settings(tmp_path: Path, worker: Path, timeout: int = 30) -> Settings:
     per-format suffix so aspose_worker.py's `{prefix}-{format}` lookup hits it.
     """
     import shutil as _sh
+
     prefix = tmp_path / "fake-worker"
     for fmt in ("docx", "pptx", "xlsx", "pdf"):
         per_fmt = prefix.with_name(f"{prefix.name}-{fmt}")
