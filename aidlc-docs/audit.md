@@ -1516,3 +1516,49 @@ Single-process load took 14s where 4-way contention took 600s+ — confirms cont
 **Outstanding follow-ups noted in state file**: cache write directory robustness, pre-probe before pool sizing, broader fork-after-load validation across formats and file shapes.
 
 ---
+
+## Workspace Detection / State Verification (resumption)
+**Timestamp**: 2026-05-15T09:00:00Z
+**User Input**: "Using AI-DLC can you verify which state of this project and understand code base in detail"
+**AI Response**: Resumed from existing `aidlc-state.md` (workflow status: COMPLETE as of 2026-05-11, with continuous post-AI-DLC production refactor entries through 2026-05-15). Cross-checked state-file claims against current source tree:
+- `_FORK_UNSAFE_FORMATS = frozenset({"xlsx"})` confirmed in `office_convert/worker_pool.py:752`.
+- `fork_after_load_enabled()` per-format gate at `worker_pool.py:755`.
+- `pool_loop_forked()` + `::fork()` call sites confirmed in `worker_cpp/pool.cpp:361,413`.
+- `Aspose::Cells::Startup()` confirmed in `worker_cpp/formats/xlsx.cpp:168`.
+- `compose.yaml`: `mem_limit: 4g` + `memswap_limit: 6g` + `OFFICE_CONVERT_WORKER_RAM_BYTES=6442450944` + `OFFICE_CONVERT_FORK_AFTER_LOAD=1` — matches the 2026-05-15 revert recorded in state file.
+- Four per-format C++ format files present: `docx.cpp`, `pptx.cpp`, `xlsx.cpp`, `pdf.cpp` — matches per-product-worker-binary split (2026-05-12).
+- Vendor tree present: `vendor/aspose/{Cells,PDF,Slides,Words}` — matches 4-libs vendor pivot.
+- Latest commit `22cba18` (2026-05-15) "feat: office-conversion aspose upgrades" is consistent with state file's 2026-05-15 entries.
+**Context**: Read-only verification; no files modified beyond this audit entry. No new workflow stage initiated.
+
+---
+
+## XLSX high-aesthetics performance optimization
+**Timestamp**: 2026-05-15T19:17:00Z
+**User Input**: "I have issue high aesthetics xls or xlsx files takes too much time"
+**AI Response**: Diagnosed the bottleneck: XLSX is fork-unsafe (can't use COW fork-after-load), so each chunk worker independently reloads + re-paginates the entire workbook. High-aesthetics files (charts, conditional formatting, decorative shapes, formulas) were paying maximum load + render cost with no optimizations applied.
+
+Applied two layers of optimization to `worker_cpp/formats/xlsx.cpp`:
+
+**Load-side** (`LoadOptions` on all 4 Workbook constructor sites — render_xlsx, probe_xlsx_page_count, pool_load, pool_render):
+- `SetMemorySetting(MemorySetting::MemoryPreference)` — compact in-memory representation
+- `SetParsingFormulaOnOpen(false)` — skip formula string parsing (render-only, never recalculate)
+- `SetIgnoreUselessShapes(true)` — skip overlapping decorative shapes
+- `SetKeepUnparsedData(false)` — drop XML data never written back
+
+**Render-side** (`PdfSaveOptions` in render_xlsx and pool_render):
+- `SetOptimizationType(PdfOptimizationType::MinimumSize)` — skip full font embedding, optimize borders
+- `SetImageResample(150, 80)` — resample charts/images to 150 PPI / 80% JPEG (was full DPI)
+- `SetCheckFontCompatibility(false)` — skip font compat checks
+- `SetEmbedStandardWindowsFonts(false)` — skip standard font embedding
+
+**Tuning** (`compose.yaml`):
+- `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE`: 4 → 2 (reduce CPU/memory contention on 4GB container)
+
+**Verification**: `sample_large.xls` (3.6 MB, 730 pages) — workbook load dropped to 280–524ms per worker (previously seconds). Render phase completed successfully where it previously ran 10+ minutes without finishing. User confirmed "working NICE THANKS".
+
+**Trade-off**: PDF output uses 150 PPI images instead of full resolution. Acceptable for screen/email quality; operators needing print quality can override via a future env var.
+
+**Files**: `worker_cpp/formats/xlsx.cpp`, `compose.yaml`.
+
+---

@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://get.docker.com | sh \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir streamlit requests
+RUN pip install --no-cache-dir streamlit requests plotly pandas
 
 COPY test_ui.py /app/test_ui.py
 WORKDIR /app

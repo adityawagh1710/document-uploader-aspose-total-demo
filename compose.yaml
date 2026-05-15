@@ -63,7 +63,14 @@ services:
       # exercising. Defaults match production. Set in the shell before
       # `docker compose up` to force-trigger pool mode on small files or
       # to speed up the UI heartbeat cadence for visual smoke tests.
-      OFFICE_CONVERT_MAX_PAGES_PER_CHUNK: "${OFFICE_CONVERT_MAX_PAGES_PER_CHUNK:-200}"
+      #
+      # MAX_PAGES_PER_CHUNK is an emergency operator override on top of the
+      # adaptive algorithm; the PRIMARY per-format ceilings live in
+      # chunk_planner.MAX_PAGES_CEILING (DOCX/PPTX=5000, XLSX/PDF=2000).
+      # Default 10000 is well above every per-format ceiling so this knob
+      # never engages in production. Set lower (e.g., 200) to force
+      # smaller chunks for OOM-subdivision testing.
+      OFFICE_CONVERT_MAX_PAGES_PER_CHUNK: "${OFFICE_CONVERT_MAX_PAGES_PER_CHUNK:-10000}"
       OFFICE_CONVERT_HEARTBEAT_MS: "${OFFICE_CONVERT_HEARTBEAT_MS:-2000}"
       OFFICE_CONVERT_POOL_MIN_CHUNKS: "${OFFICE_CONVERT_POOL_MIN_CHUNKS:-2}"
       OFFICE_CONVERT_FORK_AFTER_LOAD: "${OFFICE_CONVERT_FORK_AFTER_LOAD:-1}"

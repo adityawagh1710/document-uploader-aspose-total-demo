@@ -37,6 +37,28 @@ SUBPROCESS_OVERHEAD_MB: Final[dict[FormatName, int]] = {
 # files that fit entirely in RAM).
 MIN_CHUNKS: Final[int] = 2
 
+# Per-format ceiling on adaptive chunk size. Tuned to each format's cost
+# model so the planner can pick the parallelism-optimal chunk size for
+# thin-page files (e.g., 7,500-slide PPTX at ~1 KB/slide) without being
+# clamped down to a one-size-fits-all 200-page bucket.
+#
+# DOCX/PPTX: fork-after-load is active. Per-chunk `Save(pageSet/slideArray)`
+#   walks the entire loaded Document/Presentation, so the per-chunk cost is
+#   O(total_pages) regardless of chunk size. Larger chunks → fewer walks.
+#   5000 lets a 20k-page file split into 4 parallel chunks.
+# PDF: similar fork-mode cost model, smaller ceiling because PDF
+#   page-range extraction is cheaper per call.
+# XLSX: in `_FORK_UNSAFE_FORMATS` — each chunk runs in an independent
+#   subprocess that re-loads + re-paginates the workbook. Ceiling tuned
+#   so a ~24k-page workbook splits into ~12 chunks at xlsx_max_pool_size=2
+#   (matches the historical sweet spot from the 2026-05-13 wall-time data).
+MAX_PAGES_CEILING: Final[dict[FormatName, int]] = {
+    "docx": 5000,
+    "pptx": 5000,
+    "pdf": 2000,
+    "xlsx": 2000,
+}
+
 BALANCE_FACTOR: Final[float] = 1.5
 SUBDIVISION_FLOOR_PAGES: Final[int] = 1
 
@@ -58,7 +80,7 @@ def adaptive_max_pages(
     probe: ProbeResult,
     worker_ram_bytes: int,
     parallel: int,
-    max_pages_ceiling: int = 200,
+    max_pages_ceiling: int | None = None,
     min_pages_floor: int = 10,
 ) -> int:
     """Compute the largest chunk size (in pages) that fits in the RAM budget.
@@ -71,14 +93,16 @@ def adaptive_max_pages(
       4. Ensure we produce at least MIN_CHUNKS chunks (so parallelism is
          utilized), unless the file is tiny.
 
-    This replaces the static `max_pages_per_chunk=10` default with a value
-    that adapts to the actual file: small files get one or two big chunks
-    (fewer spawns), large files get chunks sized to the RAM budget.
+    When `max_pages_ceiling` is None, looks up the per-format ceiling from
+    `MAX_PAGES_CEILING`. Pass an explicit value to override (e.g., tests).
     """
+    format = probe.format
+    if max_pages_ceiling is None:
+        max_pages_ceiling = MAX_PAGES_CEILING.get(format, 5000)
+
     if probe.page_count <= 0 or probe.size_bytes <= 0:
         return min_pages_floor
 
-    format = probe.format
     amp = AMPLIFICATION[format]
     overhead_mb = SUBPROCESS_OVERHEAD_MB[format]
 

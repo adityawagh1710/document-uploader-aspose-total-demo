@@ -283,6 +283,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         beats = heartbeat_store().get(request_id)
         return JSONResponse(content={"request_id": request_id, "heartbeats": beats})
 
+    @app.get("/jobs/{request_id}/timings")
+    async def get_timings(request_id: str) -> JSONResponse:
+        from office_convert.timings import timing_store
+
+        events = timing_store().get(request_id)
+        return JSONResponse(content={"request_id": request_id, "timings": events})
+
     @app.get("/jobs/{request_id}/progress")
     async def get_progress(request_id: str) -> JSONResponse:
         from office_convert.job_progress import job_progress_store

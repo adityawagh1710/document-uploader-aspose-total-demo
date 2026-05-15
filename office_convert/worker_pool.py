@@ -44,6 +44,7 @@ from office_convert.errors import (
     RenderError,
 )
 from office_convert.heartbeats import heartbeat_store
+from office_convert.timings import timing_store
 from office_convert.job_progress import job_progress_store
 from office_convert.logging import current_request_id, emit_event
 from office_convert.types import Chunk, FormatName
@@ -160,6 +161,38 @@ class PooledWorker:
                 rid = current_request_id.get()
                 if rid and rid != "-":
                     heartbeat_store().record(rid, hb_record)
+                return
+        if text.startswith('{"type":"timing"'):
+            try:
+                ev = json.loads(text)
+            except ValueError:
+                ev = None
+            if isinstance(ev, dict):
+                # Forward every field except the dispatcher discriminator —
+                # this way different stages can carry different fields
+                # (e.g. `pool_render.summary` carries pages/per_page_ms in
+                # addition to the base duration_ms) without changing this
+                # parser.
+                payload = {k: v for k, v in ev.items() if k != "type"}
+                emit_event(
+                    "pool_worker_timing",
+                    level="info",
+                    worker=self._format,
+                    pool_index=self._pool_index,
+                    pid=self._pid,
+                    **payload,
+                )
+                # Also store under the live request_id so the Streamlit
+                # dashboard's stage-breakdown chart can plot it.
+                rid = current_request_id.get()
+                if rid and rid != "-":
+                    timing_store().record(rid, {
+                        "worker": self._format,
+                        "pool_index": self._pool_index,
+                        "pid": self._pid,
+                        "wall_ts": time.time(),
+                        **payload,
+                    })
                 return
         log.warning(
             "pool worker stderr (worker=%s pool_index=%s pid=%s): %s",
