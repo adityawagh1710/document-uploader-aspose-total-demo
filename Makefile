@@ -259,7 +259,19 @@ format: build-test ## QA ruff format (writes changes; mount workspace)
 typecheck: build-test ## QA mypy --strict on office_convert/
 	docker run --rm $(IMAGE_TEST) mypy office_convert
 
-qa: lint format-check typecheck test ## QA run lint + format-check + typecheck + tests
+qa: lint format-check typecheck test update-test-badge ## QA run lint + format-check + typecheck + tests (auto-updates README badge)
+
+update-test-badge: build-test ## QA refresh the tests-N badge in README from collected pytest count
+	@count=$$(docker run --rm $(IMAGE_TEST) pytest --collect-only -q \
+	    tests/unit tests/property tests/integration 2>/dev/null \
+	    | tail -1 | grep -oE '^[0-9]+'); \
+	if [ -n "$$count" ]; then \
+	    sed -i.bak -E 's|tests-[0-9]+-brightgreen|tests-'"$$count"'-brightgreen|' README.md \
+	    && rm -f README.md.bak; \
+	    printf "$(GREEN)README test badge: $$count tests$(RESET)\n"; \
+	else \
+	    printf "$(YELLOW)Could not count tests; README badge left unchanged$(RESET)\n"; \
+	fi
 
 # =============================================================================
 # CLEAN targets

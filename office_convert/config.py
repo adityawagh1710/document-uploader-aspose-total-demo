@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     #
     # The 2 GiB historic floor is preserved as the lower bound for
     # nfr-design-patterns §1 (subprocess memory ceiling) so the
-    # max_jobs × parallel × worker_ram_bytes peak-RAM budgeting still works.
+    # max_jobs * parallel * worker_ram_bytes peak-RAM budgeting still works.
     worker_ram_bytes: int = Field(
         default=6 * 1024 * 1024 * 1024,
         ge=2 * 1024 * 1024 * 1024,
@@ -67,12 +67,15 @@ class Settings(BaseSettings):
     aspose_version: str = Field(default="unknown")
 
     # Chunk-planner constants (overridable for testing; adaptive sizing in production)
-    # max_pages_per_chunk now acts as a CEILING for the adaptive algorithm.
-    # The adaptive planner computes the optimal chunk size per-request based on
-    # file size, page count, format, and RAM budget. Set this lower to force
-    # smaller chunks (e.g., for testing OOM subdivision). The old default of 10
-    # was overly conservative and caused excessive subprocess spawns.
-    max_pages_per_chunk: int = Field(default=200, ge=1, le=1000)
+    # max_pages_per_chunk is a HARD operator override on top of the adaptive
+    # algorithm. The PRIMARY ceiling is per-format and lives in
+    # chunk_planner.MAX_PAGES_CEILING (DOCX/PPTX=5000, XLSX/PDF=2000), tuned
+    # to each format's cost model. This field exists only to force a lower
+    # cap for testing (e.g., OOM-subdivision tests use OFFICE_CONVERT_MAX_PAGES_PER_CHUNK=2).
+    # Default 10000 is intentionally well above every per-format ceiling so
+    # it never engages in production. The historical default of 200 caused
+    # ~38x over-chunking on thin-page files (e.g., 7,500-slide PPTX at ~1 KB/slide).
+    max_pages_per_chunk: int = Field(default=10000, ge=1, le=50000)
     max_mb_per_chunk: int = Field(default=50, ge=1, le=1000)
     # XLSX rendered "pages" are much smaller than DOCX pages, and each chunk
     # subprocess pays a fixed Workbook.Load + full-workbook pagination cost
@@ -80,12 +83,51 @@ class Settings(BaseSettings):
     # without this floor a 30k-page workbook would explode into thousands of
     # subprocess spawns. The orchestrator applies this as a per-format floor
     # over max_pages_per_chunk; callers can still raise it above this.
-    xlsx_min_pages_per_chunk: int = Field(default=500, ge=1, le=20000)
+    #
+    # Lowered from 500 → 200 on 2026-05-15 alongside raising xlsx_max_pool_size
+    # to 4: the original 500-page floor was tuned when xlsx_max_pool_size=2, so
+    # 4 chunks meant 2 chunks per worker (= 2 loads/worker). With pool_size=4,
+    # 4 chunks means 1 chunk per worker, so smaller chunks no longer multiply
+    # setup overhead. Verified on sample_large.xlsx (800 pages): adaptive
+    # planner picks 200 → 4 chunks → 1 chunk per worker → max parallelism.
+    xlsx_min_pages_per_chunk: int = Field(default=200, ge=1, le=20000)
     # PPTX: Slides loads the full presentation for every chunk render, so
     # each subprocess pays a fixed Presentation.Load cost. Coarser chunks
     # amortize that overhead. Less extreme than XLSX because Slides' load
     # is faster, but still worth a floor above the default.
     pptx_min_pages_per_chunk: int = Field(default=25, ge=1, le=500)
+
+    # Pool mode is enabled when chunk count meets this threshold. Default 2
+    # mirrors the historical orchestrator hard-coded `> 1` gate (pool's
+    # load-once amortization pays off across multiple chunks). Set to 1 to
+    # force pool mode for every conversion — useful for exercising the
+    # heartbeat dashboard on small single-chunk files.
+    pool_min_chunks: int = Field(default=2, ge=1, le=64)
+
+    # When fork-after-load is disabled (e.g., XLSX is in _FORK_UNSAFE_FORMATS),
+    # the legacy N-independent-workers pool is used and each worker
+    # independently loads the document. Cap is per-file-size-class:
+    #
+    # - For workbooks ≲ 30 MB: 4 parallel Cells loads x ~150 MB amplified
+    #   footprint = ~600 MB peak, comfortably inside the 4 GB cgroup cap.
+    #   Default raised 2 → 4 on 2026-05-15: sample_large.xlsx (2.65 MB,
+    #   800 pages) was render-bound (~2 s/page), so 2x more parallelism
+    #   roughly halves wall-time of the render phase.
+    # - For workbooks > 100 MB: the original 4-worker pattern OOM'd
+    #   (req_e11ad522 2026-05-15 on a 98 MB / 23 k-page file). For that
+    #   class, override OFFICE_CONVERT_XLSX_MAX_POOL_SIZE=2 via env, OR
+    #   add a size-aware cap in the orchestrator (TODO).
+    xlsx_max_pool_size: int = Field(default=4, ge=1, le=16)
+
+    # Fork-after-load: one leader process loads the document and forks N-1
+    # children that share the loaded Document via copy-on-write. Eliminates
+    # the N-times duplicate parse cost that times out large-DOCX loads in the
+    # legacy N-independent-workers pool model. Default ON since 2026-05-15
+    # after the 100 MB DOCX stress file went from 600s timeout to 23-29s
+    # success and Aspose's CodePorting framework threads survived fork()
+    # without deadlock. Set OFFICE_CONVERT_FORK_AFTER_LOAD=0 to fall back
+    # to the legacy pool if a future workload class misbehaves under fork.
+    fork_after_load: bool = Field(default=True)
 
 
 @lru_cache(maxsize=1)

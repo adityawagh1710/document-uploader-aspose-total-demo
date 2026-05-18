@@ -59,11 +59,32 @@ services:
       # worker to share pagination state across chunks of the same job.
       OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS: "1800"
       OFFICE_CONVERT_MAX_INPUT_BYTES: "1073741824"
+      # Shell-overridable knobs for the heartbeat dashboard / pool-mode
+      # exercising. Defaults match production. Set in the shell before
+      # `docker compose up` to force-trigger pool mode on small files or
+      # to speed up the UI heartbeat cadence for visual smoke tests.
+      #
+      # MAX_PAGES_PER_CHUNK is an emergency operator override on top of the
+      # adaptive algorithm; the PRIMARY per-format ceilings live in
+      # chunk_planner.MAX_PAGES_CEILING (DOCX/PPTX=5000, XLSX/PDF=2000).
+      # Default 10000 is well above every per-format ceiling so this knob
+      # never engages in production. Set lower (e.g., 200) to force
+      # smaller chunks for OOM-subdivision testing.
+      OFFICE_CONVERT_MAX_PAGES_PER_CHUNK: "${OFFICE_CONVERT_MAX_PAGES_PER_CHUNK:-10000}"
+      OFFICE_CONVERT_HEARTBEAT_MS: "${OFFICE_CONVERT_HEARTBEAT_MS:-2000}"
+      OFFICE_CONVERT_POOL_MIN_CHUNKS: "${OFFICE_CONVERT_POOL_MIN_CHUNKS:-2}"
+      OFFICE_CONVERT_FORK_AFTER_LOAD: "${OFFICE_CONVERT_FORK_AFTER_LOAD:-1}"
+      OFFICE_CONVERT_XLSX_MAX_POOL_SIZE: "${OFFICE_CONVERT_XLSX_MAX_POOL_SIZE:-2}"
       # Worker per-process RLIMIT_AS ceiling. Sized to match the container's
       # memswap_limit (6g = 6442450944 bytes) so the virtual-address cap
       # does NOT block swap usage. If RLIMIT_AS < memswap_limit, the worker
       # malloc()s fail before the kernel ever pages out — defeating the
       # point of the swap cushion.
+      # History: bumped to 12 GiB on 2026-05-14 when the old N-independent-
+      # workers pool model loaded the same 100 MB DOCX 4× in parallel,
+      # pushing peak RAM to 6-8 GiB. Reverted to 6 GiB on 2026-05-15 once
+      # fork-after-load (default ON below) reduced the memory profile back
+      # to ~1× via copy-on-write — peak now stays comfortably under 4 GiB.
       OFFICE_CONVERT_WORKER_RAM_BYTES: "6442450944"
       # Content-addressable cache. Layered: final-PDF cache for identical
       # source files; per-chunk cache for repeated identical page ranges.
@@ -108,6 +129,13 @@ services:
     #
     # NOTE: requires host swap configured and kernel swap accounting
     # enabled (default on cgroupv2 kernels ≥ 5.x).
+    # Reverted to 4g + 2g swap on 2026-05-15 (was 8g + 4g swap from 2026-05-14)
+    # after fork-after-load became the default pool model. Fork uses ~1× the
+    # memory of the old N-independent-workers pool because children inherit
+    # the loaded Document via copy-on-write — verified peak ≤ 3 GB on the
+    # 100 MB DOCX stress files. If a future workload class pushes us back
+    # over 4 GB, raise both lines together (memswap_limit must stay ≥
+    # mem_limit, and OFFICE_CONVERT_WORKER_RAM_BYTES above must match).
     mem_limit: 4g
     memswap_limit: 6g
     mem_swappiness: 60

@@ -48,6 +48,11 @@ log = logging.getLogger(__name__)
 
 _OOXML_APP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
 
+# DOCX files with stale `app.xml` Pages=1 metadata are common when the doc
+# was authored without ever being paginated by Word. Files larger than this
+# threshold get a size-based estimate instead of trusting the "1 page" claim.
+_STALE_METADATA_SIZE_THRESHOLD = 200_000
+
 
 async def probe_lite(input_path: Path, format: FormatName) -> ProbeResult | None:
     """Best-effort metadata-only probe. Returns None on any failure."""
@@ -61,9 +66,12 @@ async def probe_lite(input_path: Path, format: FormatName) -> ProbeResult | None
             # clearly stale — real 1-page docs are <100 KB.
             if n is None or n <= 0:
                 n = _estimate_pages_from_size(size, format)
-            elif n == 1 and size > 200_000:
+            elif n == 1 and size > _STALE_METADATA_SIZE_THRESHOLD:
                 # Metadata says 1 page but file is >200 KB — likely stale
-                log.info("probe_lite: app.xml says 1 page but file is %d bytes — using size estimate", size)
+                log.info(
+                    "probe_lite: app.xml says 1 page but file is %d bytes — using size estimate",
+                    size,
+                )
                 n = _estimate_pages_from_size(size, format)
         elif format == "pptx":
             # Try app.xml first, then count actual slide XML files in the ZIP
@@ -128,7 +136,8 @@ def _pptx_slide_count_from_zip(path: Path) -> int | None:
     try:
         with zipfile.ZipFile(path) as z:
             count = sum(
-                1 for name in z.namelist()
+                1
+                for name in z.namelist()
                 if name.startswith("ppt/slides/slide") and name.endswith(".xml")
             )
             return count if count > 0 else None
@@ -145,10 +154,10 @@ _QPDF_NPAGES_RE = re.compile(rb"^\s*(\d+)\s*$")
 # is safe (just slightly more subprocess spawns); under-chunking risks OOM.
 # Derived from empirical observation across typical Office documents.
 _BYTES_PER_PAGE_ESTIMATE: dict[FormatName, int] = {
-    "docx": 20_000,   # ~20 KB/page (text-heavy docs are ~5-10 KB, image-heavy ~50-100 KB)
+    "docx": 20_000,  # ~20 KB/page (text-heavy docs are ~5-10 KB, image-heavy ~50-100 KB)
     "pptx": 100_000,  # ~100 KB/slide (slides have images/shapes)
-    "xlsx": 50_000,   # ~50 KB/page (not used — XLSX always goes to C++ probe)
-    "pdf": 30_000,    # ~30 KB/page (not used — qpdf handles PDF)
+    "xlsx": 50_000,  # ~50 KB/page (not used — XLSX always goes to C++ probe)
+    "pdf": 30_000,  # ~30 KB/page (not used — qpdf handles PDF)
 }
 
 
@@ -168,7 +177,10 @@ def _estimate_pages_from_size(size_bytes: int, format: FormatName) -> int:
     estimated = max(1, size_bytes // bytes_per_page)
     log.info(
         "probe_lite size-based estimate: format=%s size=%d bytes_per_page=%d estimated_pages=%d",
-        format, size_bytes, bytes_per_page, estimated,
+        format,
+        size_bytes,
+        bytes_per_page,
+        estimated,
     )
     return estimated
 

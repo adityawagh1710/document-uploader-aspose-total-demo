@@ -275,3 +275,131 @@ Six-strategy performance optimization pass addressing slow conversion of large f
 - **Access log silenced**: `--no-access-log` in uvicorn CMD.
 - **Streamlit Test UI**: `test_ui.py` + `Dockerfile.ui` with live stats, background conversion, download history with time taken.
 - **Architecture diagram**: `aidlc-docs/construction/office-converter/architecture-diagram.md` with Mermaid flowcharts.
+
+### Container memory ceiling: bumped then reverted (2026-05-14 → 2026-05-15)
+
+Mid-session bump: `mem_limit: 4g → 8g`, `memswap_limit: 6g → 12g`, `OFFICE_CONVERT_WORKER_RAM_BYTES: 6 GiB → 12 GiB`, after `sample_stress_test_100mb.docx` triggered OOM under the legacy N-independent-workers pool model — 4 parallel Aspose.Words loads of the same 100 MB DOCX hit 6-8 GB peak, overflowing the 4 GB ceiling.
+
+**Reverted on 2026-05-15** back to `mem_limit: 4g` + `memswap_limit: 6g` + `OFFICE_CONVERT_WORKER_RAM_BYTES=6 GiB`. The revert is safe because **fork-after-load is now the default pool model** — fork's copy-on-write sharing keeps peak RAM at ~1× the loaded Document instead of N×. Verified peak ≤ 3 GB on the 100 MB DOCX stress files (`sample_100mb.docx` 64 pages, `sample_large_100mb.docx` 505 pages — both converted successfully under the restored 4 GB ceiling).
+
+This means the Hard Constraint at the top of this file (`4 GB physical + 2 GB swap = 6 GB total`) is now accurate again. Don't raise these without also raising `OFFICE_CONVERT_WORKER_RAM_BYTES` to match `memswap_limit`.
+
+### Observability: worker heartbeat dashboard (2026-05-14)
+
+Pool-mode load and render were previously opaque from outside the process: the orchestrator's only signal was "stdout JSON response" or "600s timeout." For a 100 MB DOCX whose load took >10 min, the 600s window was indistinguishable from a deadlock.
+
+**What was added:**
+
+- **C++ heartbeat thread** (`worker_cpp/pool.cpp`): every load and render command wraps a `Heartbeat` RAII guard that spawns a background thread emitting one JSON line/2s (configurable) to stderr — `{"type":"heartbeat","pool_index":N,"phase":"load|render","elapsed_s":N,"rss_bytes":N,"swap_bytes":N,"cpu_jiffies":N}`. Reads `/proc/self/status` for `VmRSS` + `VmSwap` (swap is load-bearing under `memswap_limit`) and `/proc/self/stat` for utime+stime jiffies.
+
+- **Python stderr tailer** (`office_convert/worker_pool.py`): per-worker `asyncio.Task` drains stderr concurrently with the stdout protocol, parses heartbeat JSON, forwards to the structured logger at DEBUG and to the heartbeat store. Non-heartbeat stderr (Aspose warnings) passes through as a warning.
+
+- **Per-request heartbeat store** (`office_convert/heartbeats.py`): new module. Thread-safe bounded deque per request_id (5000 entries, 30 min TTL). Keyed on the orchestrator's full 32-char `X-Request-ID`.
+
+- **GET /jobs/{request_id}/heartbeats endpoint** (`office_convert/server.py`): returns the recorded trail. UI polls every 1s during active conversion.
+
+- **UI heartbeat panel** (`test_ui.py`): live per-pool-index table under the "⏳ Converting" callout — phase, elapsed-in-phase, RSS in MB, **Swap in MB (highlighted orange when non-zero)**, CPU jiffies, time since last heartbeat. Green dot if heartbeat ≤6s old, orange if stale. UI uses its own UUID as `X-Request-ID` so the panel correlates 1:1 with the in-flight conversion.
+
+- **Pool-min-chunks knob** (`Settings.pool_min_chunks`, default 2): replaces the historical hard-coded `len(plan.chunks) > 1` gate in `orchestrator.py`. Set to 1 via `OFFICE_CONVERT_POOL_MIN_CHUNKS=1` to force pool mode (and thus the heartbeat panel) on every conversion — useful for exercising the dashboard on small files.
+
+- **Heartbeat cadence knob**: `OFFICE_CONVERT_HEARTBEAT_MS` (default 2000). `0` disables heartbeats entirely.
+
+- **Log level**: heartbeat events emit at DEBUG, not INFO, so production logs stay quiet. The dashboard remains the canonical surface; bump `OFFICE_CONVERT_LOG_LEVEL=debug` for greppable post-mortem trails.
+
+**Files**: `worker_cpp/pool.cpp`, `office_convert/{heartbeats.py,worker_pool.py,server.py,config.py,orchestrator.py}`, `test_ui.py`, `compose.yaml`.
+
+### Fork-after-load: load-once-render-many (2026-05-14)
+
+**Motivating failure:** `sample_stress_test_100mb.docx` (107 MB DOCX, real page count 64) reproducibly hit the 600s `pool_load_timeout`. Heartbeats confirmed the workers were alive and grinding the entire 600s — not deadlocked, just contending. Root cause: `WorkerPool._spawn_workers` fires 4 worker processes in parallel via `asyncio.gather`, each independently loading the same 107 MB DOCX into its own Aspose.Words `Document`. Linear contention: 4 × disk reads of the same file, 4 × Aspose parse work fighting for CPU cores, 4 × memory growth competing for the 8 GB RAM ceiling. Per-worker load time scaled near-linearly with pool size — for this file, 4-way contention pushed each load over 600s.
+
+**Design:** one **leader** process loads the document. After load completes (and `get_PageCount` triggers full pagination), the leader `fork()`s `pool_size-1` child renderers. On Linux, `fork()` copies the page table and marks pages copy-on-write; as long as children only read from the loaded `Document` (which rendering does), physical RAM stays at ~1× the loaded size instead of N×. Total processes: 1 leader + N-1 children, all sharing the same parsed Document via COW.
+
+**C++ implementation** (`worker_cpp/pool.cpp::pool_loop_forked`):
+- License + load happen in the leader as today.
+- After load, leader creates N-1 `socketpair`s, `fork()`s once per pair.
+- Each child: closes leader's end of all socketpairs except its own, closes stdin/stdout (children never talk to the orchestrator directly), sets `g_pool_index = i`, enters `child_render_loop` reading line-delimited JSON commands from its socketpair.
+- Leader runs a `poll()` loop multiplexing stdin + N socketpair fds. Render commands carry a `seq` integer; leader picks a free child (or itself if all children busy), writes the command to that child's socketpair, reads the response, forwards verbatim to stdout.
+- On `quit` or stdin EOF: send quit to each child, `waitpid` cleanup.
+- Each child's own heartbeats tag themselves with `pool_index` so the shared stderr pipe is demultiplexable.
+
+**Python implementation** (`office_convert/worker_pool.py::ForkedPoolLeader` + `ForkedWorkerPool`):
+- Spawns a single subprocess with `--pool-size N` instead of N independent subprocesses.
+- `ForkedPoolLeader` holds a seq counter and a `dict[int, Future]` of pending responses. A persistent `asyncio.Task` reads stdout line-by-line, parses each JSON response, looks up the seq, and resolves the matching future.
+- Multiple concurrent `render_chunk` calls run as before via `asyncio.gather`; each allocates a unique seq, sends its command on the shared stdin, awaits its future.
+- Same external interface as `WorkerPool` (async context manager + `render_chunk`) so the orchestrator can pick between models with a one-line dispatch.
+
+**Orchestrator gate** (`office_convert/orchestrator.py`): `Settings.fork_after_load` (default `False`, shell-overridable via `OFFICE_CONVERT_FORK_AFTER_LOAD=1`) selects `ForkedWorkerPool` over `WorkerPool`. Emits `dispatch_mode mode=pool_fork` for visibility.
+
+**Verified results** (`req_bfd7edbb`, 2026-05-14):
+
+| | Before (req_42776db1) | After (req_bfd7edbb) |
+|---|---|---|
+| File | `sample_100mb.docx` (107 MB) | same |
+| Plan | 27 chunks (size-based estimate) | 27 chunks → replanned to 11 after load |
+| Load phase | **timeout at 600s — failed** | **14 s** |
+| Total wall time | failed | **28.8 s** |
+| Memory | 4 × ~117 MB = 468 MB (small.docx baseline) | 152 MB leader + 28-30 MB × 3 children ≈ 238 MB (small.docx baseline) |
+| Aspose internal thread state after fork() | n/a | survived — full conversion completed without deadlock |
+
+**Risk partially materialized:** `fork()` inside a process holding heavily-multithreaded native code (Aspose's `CodePorting.Translator.Cs2Cpp.Framework` spawns its own threads during library init and document load) is canonically fragile — only the calling thread survives in the child, and any locks held by orphaned threads in the parent are still "held" from the kernel's perspective. On DOCX (Aspose.Words) and PPTX (Aspose.Slides) the threads survived cleanly. **On XLSX (Aspose.Cells) it crashed** — see the next section "XLSX crash" for the per-format allowlist that resolved it. **Default flipped to ON on 2026-05-15** (`Settings.fork_after_load = True`, compose default `OFFICE_CONVERT_FORK_AFTER_LOAD=1`) — this is what made the 4g/6g RAM revert safe. Set `OFFICE_CONVERT_FORK_AFTER_LOAD=0` for a global kill switch; XLSX is automatically opted out at the format-aware gate regardless of this flag.
+
+**Files**: `worker_cpp/{main.cpp,pool.h,pool.cpp}`, `office_convert/{worker_pool.py,orchestrator.py,config.py}`, `compose.yaml`.
+
+### Fork-after-load: per-format allowlist after XLSX crash (2026-05-15)
+
+Broader testing on the first XLSX run under fork mode surfaced the risk the previous section flagged. **Aspose.Cells does not survive `fork()`.**
+
+**Crash trace** (`req_2c92692a`, 2026-05-15):
+
+```
+18:51:35  request_received          format=xlsx  source=sample_sales_data.xlsx (98 MB)
+18:51:35  probe_start
+18:52:13  probe_complete            duration_s=37.26  page_count=23637
+18:52:13  plan_complete             chunks=48  pool_size=4
+18:52:13  dispatch_mode             mode=pool_fork  worker=xlsx
+18:52:13  fork_pool_spawn           pid=952  pool_size=4  worker=xlsx
+18:52:45  fork_pool_loaded          page_count=23637            ← load OK in leader
+            ↓ (no further log lines from this process)
+            RenderError: render failed (exit=1): worker stdout EOF
+```
+
+The leader successfully completed `pool_load` (Cells's `Workbook` parsed + paginated) and returned the page count. Then on the first `{"cmd":"render","seq":1}` after fork, the leader **closed stdout without writing a response and without flushing any stderr** — the signature of a SIGSEGV / SIGABRT in the parent process touching post-fork-broken native state.
+
+**Why Cells specifically:**
+- Cells requires an explicit `Aspose::Cells::Startup()` call before `License::SetLicense()` (documented contract, load-bearing fix from the 2026-05-12 license issue above). Startup() initializes OpenSSL state for the RSA license validator and spawns internal Cells worker threads.
+- After `fork()`, the child inherits the parent's memory pages but **only the calling thread**. The internal Cells worker threads cease to exist in the child; any mutex they were holding is now permanently "held" from the kernel's perspective.
+- In the leader, the post-fork state itself is broken because Cells's internals weren't designed to live across the call. The first render attempt triggers an internal touch that hits an invalid state and dies.
+- Words and Slides have no `Startup()` contract and survived fork() on every file tested. PDF is currently in the allowed set but unverified.
+
+**Resolution** (`office_convert/worker_pool.py`):
+
+```python
+_FORK_UNSAFE_FORMATS: frozenset[FormatName] = frozenset({"xlsx"})
+
+def fork_after_load_enabled(settings: Settings, format: FormatName) -> bool:
+    if format in _FORK_UNSAFE_FORMATS:
+        return False
+    return bool(getattr(settings, "fork_after_load", False))
+```
+
+XLSX automatically falls back to the legacy `WorkerPool` (N independent subprocesses, each loading the workbook independently — slower but stable). DOCX, PPTX, and PDF continue to use fork-after-load.
+
+**Per-format fork verification status:**
+
+| Format | SDK | Fork-safe? | Verified on |
+|---|---|---|---|
+| DOCX | Aspose.Words | ✅ verified | 64-page + 505-page 100 MB stress files; 100-page 17 MB enterprise file |
+| PPTX | Aspose.Slides | ✅ verified | 31-slide enterprise_suite.pptx |
+| XLSX | Aspose.Cells | ❌ **fork-unsafe** | crashed on 98 MB / 23,637-page sample_sales_data.xlsx (req_2c92692a) — added to `_FORK_UNSAFE_FORMATS` |
+| PDF | Aspose.PDF | ⚠️ allowed but unverified | needs a stress PDF; add to deny-list if it crashes the same way |
+
+**Future investigation** (deferred): a clean fix for XLSX under fork would require re-initializing Cells in each child after fork — call `Aspose::Cells::Startup()` post-fork plus possibly re-creating the `Workbook` object from a serialized state. Whether that's even possible with Cells's current API is unclear. For now, XLSX uses the legacy pool and pays the N× load cost that fork was designed to eliminate. Acceptable because: (a) XLSX render-per-chunk is the dominant cost, not load (each chunk renders the full workbook anyway under the current Cells page-range API); (b) XLSX-heavy workloads are less common than DOCX in the operator's workload mix.
+
+**Files**: `office_convert/worker_pool.py` (`_FORK_UNSAFE_FORMATS` + format-aware `fork_after_load_enabled`), `office_convert/orchestrator.py` (call-site passes `format`).
+
+### Known follow-ups (introduced 2026-05-14, not yet done)
+
+- **Cache write directory robustness**: the cache module writes to `/cache/<tenant>/{final,chunks}/` and crashes with `FileNotFoundError` if those subdirs are missing. The write path should `mkdir -p` on demand. Surfaced during a routine `find /cache -delete` cleanup.
+- **Pre-probe**: size-based probe estimate was off by 83× on `sample_100mb.docx` (estimated 5345 pages, real 64). Re-plan after load corrects the chunk count, but pool size is already sized for the bad estimate. A pre-probe in a single worker before sizing the pool would let small-page-count documents take the single-worker path.
+- **PDF fork verification**: PDF still in the fork-allowed set but never tested under fork. First PDF crash with `worker stdout EOF` should trigger adding `"pdf"` to `_FORK_UNSAFE_FORMATS`.
+- **XLSX-under-fork investigation**: see above — would require post-fork Cells re-init. Currently deferred; XLSX uses legacy pool.

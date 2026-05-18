@@ -142,3 +142,20 @@ The header-metadata gap is the most user-visible v1 limitation; it does
 not affect correctness but pipelines that programmatically read these
 headers (per US-PD-01's acceptance criteria) need to grep server logs
 for now.
+
+## XLSX performance trade-offs (2026-05-15)
+
+High-aesthetics XLSX files (charts, conditional formatting, decorative
+shapes, formulas) use render-side optimizations that trade output
+fidelity for speed:
+
+| Optimization | Trade-off |
+| ------------ | --------- |
+| `SetImageResample(150, 80)` | Charts/images at 150 PPI / 80% JPEG instead of full resolution. Screen-quality, not print-quality. |
+| `SetOptimizationType(MinimumSize)` | Skips full font embedding for ASCII 32-127; optimizes border rendering. |
+| `SetEmbedStandardWindowsFonts(false)` | Standard fonts not embedded — PDF viewer must have them installed. |
+| `SetParsingFormulaOnOpen(false)` | Formula results use cached values from the file, not recalculated. If the file was saved without cached results, formula cells may render blank. |
+
+These are applied unconditionally to all XLSX conversions. A future
+`options.xlsx_quality: "high" | "fast"` parameter could let callers
+opt into full-fidelity rendering at the cost of longer conversion time.

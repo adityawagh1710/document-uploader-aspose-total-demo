@@ -32,15 +32,20 @@ ACCEPTED_FORMATS: tuple[FormatName, ...] = ("docx", "pptx", "xlsx", "pdf")
 # Document/Workbook/Presentation constructors detect OLE2 vs OOXML from
 # content. Exposed to the user only via the UnsupportedFormatError detail.
 ACCEPTED_UPLOAD_FORMATS: tuple[str, ...] = (
-    "docx", "pptx", "xlsx", "pdf",
-    "doc", "xls", "ppt",
+    "docx",
+    "pptx",
+    "xlsx",
+    "pdf",
+    "doc",
+    "xls",
+    "ppt",
 )
 
 PDF_MAGIC = b"%PDF-"
 ZIP_MAGIC = b"PK\x03\x04"
 # Microsoft Compound File Binary (CFB / OLE2). Used by every pre-2007
 # Office binary format: .doc/.dot, .xls/.xlt/.xlm, .ppt/.pot/.pps.
-OLE2_MAGIC = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
+OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 OOXML_CONTENT_TYPE_TO_FORMAT: dict[str, FormatName] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml": "docx",
@@ -54,7 +59,10 @@ OOXML_CONTENT_TYPE_TO_FORMAT: dict[str, FormatName] = {
 # the "Workbook" prefix accidentally matching a "WorkbookView" stream in
 # some hand-crafted CFB blob.
 OLE2_STREAM_SIGNATURES: tuple[tuple[bytes, FormatName], ...] = (
-    (b"P\x00o\x00w\x00e\x00r\x00P\x00o\x00i\x00n\x00t\x00 \x00D\x00o\x00c\x00u\x00m\x00e\x00n\x00t", "pptx"),
+    (
+        b"P\x00o\x00w\x00e\x00r\x00P\x00o\x00i\x00n\x00t\x00 \x00D\x00o\x00c\x00u\x00m\x00e\x00n\x00t",  # noqa: E501
+        "pptx",
+    ),
     (b"W\x00o\x00r\x00d\x00D\x00o\x00c\x00u\x00m\x00e\x00n\x00t", "docx"),
     (b"W\x00o\x00r\x00k\x00b\x00o\x00o\x00k", "xlsx"),
     (b"B\x00o\x00o\x00k", "xlsx"),  # Excel 5.0 / Excel 95 wrote "Book" instead of "Workbook"
@@ -63,9 +71,14 @@ OLE2_STREAM_SIGNATURES: tuple[tuple[bytes, FormatName], ...] = (
 # Filename-extension fallback when OLE2 stream-name detection comes up empty
 # (rare; usually means a malformed or non-Office CFB file).
 OLE2_EXT_TO_FORMAT: dict[str, FormatName] = {
-    "doc": "docx", "dot": "docx",
-    "xls": "xlsx", "xlt": "xlsx", "xlm": "xlsx",
-    "ppt": "pptx", "pot": "pptx", "pps": "pptx",
+    "doc": "docx",
+    "dot": "docx",
+    "xls": "xlsx",
+    "xlt": "xlsx",
+    "xlm": "xlsx",
+    "ppt": "pptx",
+    "pot": "pptx",
+    "pps": "pptx",
 }
 
 
@@ -108,9 +121,7 @@ def detect_format(
         return _classify_ole2(source_path, filename)
 
     head_hex = magic_bytes[:8].hex()
-    raise UnsupportedFormatError(
-        detected_magic=head_hex, accepted=list(ACCEPTED_UPLOAD_FORMATS)
-    )
+    raise UnsupportedFormatError(detected_magic=head_hex, accepted=list(ACCEPTED_UPLOAD_FORMATS))
 
 
 def _classify_ole2(source_path: Path | None, filename: str | None) -> FormatName:
@@ -263,7 +274,8 @@ async def probe(
         if retry_format is not None:
             log.warning(
                 "probe format mismatch: %s worker rejected file, retrying as %s",
-                format, retry_format,
+                format,
+                retry_format,
             )
             # Update the ProbeResult format to the correct one
             try:

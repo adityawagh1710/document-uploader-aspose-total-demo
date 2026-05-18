@@ -1,5 +1,19 @@
 # office-convert
 
+[![python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
+[![fastapi](https://img.shields.io/badge/fastapi-0.115-009688.svg)](https://fastapi.tiangolo.com/)
+[![aspose.total](https://img.shields.io/badge/aspose.total-c%2B%2B%2026.4-ff4081.svg)](https://products.aspose.com/total/cpp/)
+[![qpdf](https://img.shields.io/badge/qpdf-streaming%20merge-orange.svg)](https://qpdf.sourceforge.io/)
+[![docker](https://img.shields.io/badge/docker-required-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/)
+[![tests](https://img.shields.io/badge/tests-120-brightgreen.svg)](#tldr--quickstart)
+[![type checked](https://img.shields.io/badge/type%20checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
+[![lint](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://github.com/astral-sh/ruff)
+[![status](https://img.shields.io/badge/status-v1%20local%20PoC-yellow.svg)](#)
+[![last commit](https://img.shields.io/badge/last%20commit-may%202026-blue.svg)](#)
+[![contributors](https://img.shields.io/badge/contributors-1-orange.svg)](#)
+[![repo](https://img.shields.io/badge/repo-internal-lightgrey.svg)](#)
+[![AI-DLC](https://img.shields.io/badge/AI--DLC-powered-9C27B0.svg)](https://github.com/aws-samples/aws-aidlc-rule-details)
+
 **v1.0 — local PoC** · Chunked Office document → PDF conversion service.
 
 Converts DOCX, PPTX, XLSX, PDF, and legacy DOC/XLS/PPT inputs to PDF
@@ -370,6 +384,38 @@ All runtime config via `OFFICE_CONVERT_*` environment variables:
 | `OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS` | `300` | Per-chunk render timeout. Hung renders killed and treated as render failures. |
 | `OFFICE_CONVERT_MAX_INPUT_BYTES` | `1073741824` | 1 GB. Inputs above this are rejected at ingest. |
 
+### Pool mode & observability knobs
+
+These control the pool-mode workers and the live heartbeat dashboard.
+All shell-overridable (`OFFICE_CONVERT_VAR=value docker compose up -d`).
+
+| Variable | Default | Notes |
+| -------- | ------- | ----- |
+| `OFFICE_CONVERT_POOL_MODE` | `1` | Pool mode (persistent workers, load-once-render-many). Set to `0` to force per-chunk one-shot subprocesses. |
+| `OFFICE_CONVERT_POOL_MIN_CHUNKS` | `2` | Pool mode activates when the chunk plan has at least this many chunks. Single-chunk plans use one-shot. Set to `1` to force pool mode on every conversion (useful for exercising the heartbeat dashboard on small files). |
+| `OFFICE_CONVERT_HEARTBEAT_MS` | `2000` | Per-process heartbeat cadence in ms while a load or render is in flight. `0` disables. Heartbeats are emitted at DEBUG; flip `OFFICE_CONVERT_LOG_LEVEL=debug` to see them in stdout logs. |
+| `OFFICE_CONVERT_FORK_AFTER_LOAD` | `0` | Fork-after-load mode: one leader process loads the document then `fork()`s N children that share the loaded `Document` via copy-on-write. Eliminates the N× parallel-parse contention that times out large-DOCX loads in default pool mode. Off by default until broader format/file-shape testing; flip per-workload when you have large files. |
+
+### Live heartbeat dashboard
+
+The Streamlit test UI at **http://localhost:8501** (`test-ui` service in
+`compose.yaml`) shows a per-worker heartbeat table during pool-mode
+conversions:
+
+- Phase (load / render), elapsed-in-phase, **RSS in MB, Swap in MB** (orange
+  when non-zero — indicates the worker is paging out under `memswap_limit`),
+  CPU jiffies, time since last heartbeat.
+- Green dot if heartbeat is ≤ 6 s old; orange if stale (worker likely hung).
+- Each conversion generates a UUID sent as `X-Request-ID`; the panel polls
+  `GET /jobs/{request_id}/heartbeats` every 1 s and correlates 1:1 with the
+  in-flight upload.
+
+Heartbeats are also retrievable programmatically:
+```bash
+curl http://localhost:8080/jobs/<request_id>/heartbeats
+```
+Returns the last 5000 heartbeats per request (30-min TTL).
+
 Caller-side timeouts: configure your HTTP client to **at least 15 minutes**
 for safety. Default client timeouts (30 s) will abort large conversions.
 
@@ -578,7 +624,6 @@ Makefile               Docker-first workflow orchestrator (delegates to
                        compose; run `make help`)
 pyproject.toml         Python deps + tool config (PEP 621, PEP 561)
 ruff.toml              Linter + formatter rules
-LICENSE                MIT (for this project's source code, NOT Aspose)
 README.md              You are here
 .gitignore             Defensive secrets + build artifact exclusions
 .dockerignore          Same, for the Docker build context

@@ -1403,3 +1403,162 @@ Python orchestrator
 **Context**: Session continuity — no active stage; user requesting verification, not stage execution.
 
 ---
+
+## Heartbeat dashboard + fork-after-load session
+**Timestamp**: 2026-05-14T15:00:00Z onward
+**User Input** (entry trigger): "Load previous session" → "keep monitoring logz if in case something goes wrong"
+**AI Response**: Loaded prior state; armed a persistent background monitor on `docker compose logs` filtering for error/exception/oom/timeout keywords across `office-convert` and `test-ui`. Within minutes the monitor surfaced four parallel `pool worker failed to load: Expecting value: line 1 column 1 (char 0)` warnings on `req_42776db1` — the exact symptom of pool workers timing out at the 600s `pool_load_timeout` while loading the same 107 MB `sample_stress_test_100mb.docx` that motivated the earlier compose `mem_limit: 4g → 8g` bump.
+**Context**: Set up live observation; initial failure caught. Diagnosis below.
+
+---
+
+## Diagnosis: 100 MB DOCX 600s timeout was load contention, not OOM
+**Timestamp**: 2026-05-14T15:10:00Z
+**User Input**: "investigate whether the load is actually progressing"
+**AI Response**: Read `worker_pool.py:104` (single 600s `asyncio.wait_for` on stdout readline), `worker_cpp/pool.cpp` pool event loop, `worker_cpp/formats/docx.cpp::pool_load`. Confirmed: between `{"cmd":"load"}` arrival and `{"status":"ok",...}` response, the C++ worker emits **zero** progress to either stdout or stderr — a 600s black box. Verified Aspose.Words ships `IDocumentLoadingCallback` (with `EstimatedProgress 0.0–1.0`) and `IPageLayoutCallback` in vendor headers (`Loading/IDocumentLoadingCallback.h:53`, `Layout/IPageLayoutCallback.h:59`) but the codebase ignores both.
+**Context**: Identified the observability gap.
+
+---
+
+## Tier 1 observability — heartbeat thread
+**Timestamp**: 2026-05-14T15:30:00Z
+**User Input**: "Okay do it for Tier 1"
+**AI Response**: Implemented a generic per-process heartbeat that works for all four worker binaries without any Aspose SDK help.
+
+- **C++** (`worker_cpp/pool.cpp`): RAII `Heartbeat` class spawns a `std::thread` on construction, joined on destruction. Wraps both `load` and `render` command bodies. Background thread emits `{"type":"heartbeat","phase":"...","elapsed_s":N,"rss_bytes":N,"cpu_jiffies":N}` to stderr every `OFFICE_CONVERT_HEARTBEAT_MS` (default 2000). Reads `/proc/self/status` for VmRSS and `/proc/self/stat` for utime+stime jiffies.
+- **Python** (`office_convert/worker_pool.py`): per-worker background `asyncio.Task` drains stderr line-by-line, parses heartbeat JSON, forwards to the structured logger (originally INFO, dropped to DEBUG later this session to keep logs quiet). Non-heartbeat stderr passes through as `log.warning`.
+
+Verified by direct invocation inside the container: load and render both emit the expected immediate pulse plus timed pulses for longer operations. CPU jiffies counter moves monotonically (4 → 13 across load+render of small.docx), confirming the `/proc` parse works.
+
+**Files**: `worker_cpp/pool.cpp`, `office_convert/worker_pool.py`.
+
+---
+
+## Heartbeat → /jobs/{id}/heartbeats endpoint → live UI panel
+**Timestamp**: 2026-05-14T15:45:00Z
+**User Input**: "Can i see heartbeats in UI somehow ?" → "Yes" (option 2: backend store + UI polls)
+**AI Response**: Added a per-request bounded ring buffer and a polling endpoint:
+
+- **New module** `office_convert/heartbeats.py`: thread-safe `HeartbeatStore` keyed on `request_id`, 5000-entry deque per request, 30-min TTL.
+- **`worker_pool.py`**: heartbeat handler now also calls `heartbeat_store().record(rid, hb_record)` using the `current_request_id` ContextVar (inherited by the stderr-reader Task at creation time).
+- **`server.py`**: new `GET /jobs/{request_id}/heartbeats` endpoint returns `{"request_id": ..., "heartbeats": [...]}`.
+- **`test_ui.py`**: each conversion now generates a UUID, sends it as `X-Request-ID` (the server already supports this header via existing middleware). The 1s `conversion_status` fragment polls the endpoint and renders a per-pool-index HTML table — phase, elapsed-in-phase, RSS in MB, CPU jiffies, last-heartbeat staleness. Green dot if hb ≤6s old, orange if stale.
+
+Required adding a `Settings.pool_min_chunks` knob (default 2, env-overridable) to replace the hard-coded `len(plan.chunks) > 1` gate in `orchestrator.py` — needed for exercising the dashboard on small single-chunk files.
+
+**Files**: `office_convert/{heartbeats.py,worker_pool.py,server.py,config.py,orchestrator.py}`, `test_ui.py`, `compose.yaml`.
+
+---
+
+## Tightening: heartbeats → DEBUG; swap reporting added
+**Timestamp**: 2026-05-14T16:20:00Z
+**User Input**: "You should have stopped those unwanted logs of pool_worker_heartbeat or not ?" → "yes drop to debug"; later "Along side actual mem you should show swap mem consuption as well right ?"
+**AI Response**:
+- Heartbeat structured-log emission flipped `level="info"` → `level="debug"`. Production `OFFICE_CONVERT_LOG_LEVEL=info` keeps stdout quiet (no ~4800 routine heartbeats per stress conversion); the dashboard + endpoint remain the canonical surface. Operators can flip log level to `debug` for post-mortem trails.
+- Swap reporting: `read_vm_rss_bytes()` rewritten as `read_vm_mem(rss, swap)` reading both `VmRSS` and `VmSwap` from `/proc/self/status` in a single open. Heartbeat JSON now includes `swap_bytes`. UI table gains a Swap column highlighted bold orange when non-zero — under `memswap_limit=12g`, any non-zero swap is the "chunk planner mis-sized for this input" signal.
+
+**Files**: `worker_cpp/pool.cpp`, `office_convert/worker_pool.py`, `test_ui.py`.
+
+---
+
+## Diagnosis: why XLSX 10 MB worked but DOCX 100 MB didn't
+**Timestamp**: 2026-05-14T16:45:00Z
+**User Input**: "Can you tell me why sample_sales_data_10mb.xlsx got converted easily and stress_test_100mb.docx failed sothing must be wrong in code ?"
+**AI Response**: Read `worker_pool.py:261` (`WorkerPool._spawn_workers` uses `asyncio.gather` to spawn all N workers in parallel — each independently loads the same file). Identified the root cause: 4 workers each parsing 107 MB through Aspose.Words = 4× concurrent disk reads + 4× CPU contention + up to 4× memory growth (Aspose 2–20× amplification × 4 workers can exceed the 8 GB RAM ceiling and force swap thrash). Per-worker load time scales linearly with concurrent worker count under this contention; for 100 MB DOCX it crosses 600s. XLSX 10 MB worked because the file is 10× smaller — 4× contention on 10 MB stays inside budget. Same code path, different load size = different fate.
+
+Outlined three fixes: sequential staggered spawn (low risk, ~15% improvement), file-size-aware pool size, and fork-after-load. User asked for "dramatic without increasing memory" → recommended fork-after-load.
+
+---
+
+## Fork-after-load implementation
+**Timestamp**: 2026-05-14T17:00:00Z
+**User Input**: "lets do Fork-after-load"
+**AI Response**: Implemented load-once-render-many via Linux `fork()` + copy-on-write.
+
+**C++** (`worker_cpp/pool.cpp::pool_loop_forked`, new):
+- New `--pool-size N` CLI arg parsed in `main.cpp`. Presence selects the seq-tagged forked-pool protocol; absence keeps the legacy `pool_loop` for compat.
+- Leader applies license, waits for the first `{"cmd":"load","seq":0,"input":"..."}`, loads the document with `Heartbeat hb("load")`, then creates N-1 `socketpair`s and `fork()`s once per pair. Each child closes leader's end of all socketpairs except its own, closes stdin/stdout, sets `g_pool_index = i`, and runs a render-only loop on its socketpair.
+- Leader's main `poll()` loop multiplexes stdin + N socketpair fds. Each render command carries a `seq`; leader dispatches to a free child or renders inline if all children are busy. Responses from children are forwarded verbatim to stdout (each one already includes its seq from the child).
+- Heartbeats: each forked process tags its output with `g_pool_index`; the shared stderr pipe stays parseable because each line write is atomic up to PIPE_BUF.
+
+**Python** (`office_convert/worker_pool.py::ForkedPoolLeader` + `ForkedWorkerPool`, new):
+- Spawns ONE leader subprocess with `--pool-size N`. Single stdin/stdout pipe with seq-tagged protocol.
+- `ForkedPoolLeader` holds a seq counter + `dict[int, asyncio.Future]` of pending responses. A persistent stdout-reader Task parses each response, looks up the seq, resolves the matching future. Multiple concurrent `render_chunk` calls run as before via `asyncio.gather`.
+- Same external context-manager interface as `WorkerPool` so the orchestrator dispatch is a one-line choice.
+
+**Orchestrator** (`office_convert/orchestrator.py`): `Settings.fork_after_load` (default False, env `OFFICE_CONVERT_FORK_AFTER_LOAD=1`) selects `ForkedWorkerPool`. `dispatch_mode` event emits `mode=pool_fork` for visibility.
+
+**Bug fixed mid-implementation**: initial `main.cpp` only called `pool_loop_forked` when `pool_size > 1`, falling back to legacy `pool_loop` for `pool_size=1` — but the legacy path doesn't emit seq in responses, so Python's demuxer logged `unknown seq=0`. Fixed to call the forked path whenever `--pool-size` is present. Also added explicit `seq:0` to the load response.
+
+**Direct smoke** (small.docx, `--pool-size 4`): 4 distinct pool_indexes appeared in heartbeats (leader + 3 forked children); all 4 concurrent renders succeeded. Memory profile: leader RSS=152MB, children RSS=28-30MB each — the children's small RSS proves COW sharing of the loaded Document. Aspose's internal threads survived `fork()` on this file.
+
+**Files**: `worker_cpp/{main.cpp,pool.h,pool.cpp}`, `office_convert/{worker_pool.py,orchestrator.py,config.py}`, `compose.yaml`.
+
+---
+
+## Stress test verified
+**Timestamp**: 2026-05-14T18:01:00Z
+**User Input**: (re-uploaded `sample_100mb.docx` via UI after temporary cache-write failure caused by a `find /cache -delete` cleanup I had run minutes earlier — fixed by recreating the missing `/cache/<tenant>/{final,chunks}/` subdirs and restarting the container)
+**AI Response**: Conversion `req_bfd7edbb` completed end-to-end:
+
+| | Previously (req_42776db1) | This run (req_bfd7edbb) |
+|---|---|---|
+| File | sample_100mb.docx (107 MB) | same |
+| dispatch_mode | pool | **pool_fork** (pool_size=4) |
+| Load duration | timed out at 600s | **14 s** |
+| Total wall time | failed | **28.8 s** |
+| Real page count | unknown (never loaded) | 64 (size estimate was 5345 — off 83×) |
+| Re-plan | n/a | chunks 27 → 11 after `fork_pool_loaded` |
+| Output | n/a | 17.4 MB PDF |
+
+Single-process load took 14s where 4-way contention took 600s+ — confirms contention, not Aspose performance, was the dominant cost. Aspose CodePorting threads survived `fork()` on this 100 MB file class.
+
+**Outstanding follow-ups noted in state file**: cache write directory robustness, pre-probe before pool sizing, broader fork-after-load validation across formats and file shapes.
+
+---
+
+## Workspace Detection / State Verification (resumption)
+**Timestamp**: 2026-05-15T09:00:00Z
+**User Input**: "Using AI-DLC can you verify which state of this project and understand code base in detail"
+**AI Response**: Resumed from existing `aidlc-state.md` (workflow status: COMPLETE as of 2026-05-11, with continuous post-AI-DLC production refactor entries through 2026-05-15). Cross-checked state-file claims against current source tree:
+- `_FORK_UNSAFE_FORMATS = frozenset({"xlsx"})` confirmed in `office_convert/worker_pool.py:752`.
+- `fork_after_load_enabled()` per-format gate at `worker_pool.py:755`.
+- `pool_loop_forked()` + `::fork()` call sites confirmed in `worker_cpp/pool.cpp:361,413`.
+- `Aspose::Cells::Startup()` confirmed in `worker_cpp/formats/xlsx.cpp:168`.
+- `compose.yaml`: `mem_limit: 4g` + `memswap_limit: 6g` + `OFFICE_CONVERT_WORKER_RAM_BYTES=6442450944` + `OFFICE_CONVERT_FORK_AFTER_LOAD=1` — matches the 2026-05-15 revert recorded in state file.
+- Four per-format C++ format files present: `docx.cpp`, `pptx.cpp`, `xlsx.cpp`, `pdf.cpp` — matches per-product-worker-binary split (2026-05-12).
+- Vendor tree present: `vendor/aspose/{Cells,PDF,Slides,Words}` — matches 4-libs vendor pivot.
+- Latest commit `22cba18` (2026-05-15) "feat: office-conversion aspose upgrades" is consistent with state file's 2026-05-15 entries.
+**Context**: Read-only verification; no files modified beyond this audit entry. No new workflow stage initiated.
+
+---
+
+## XLSX high-aesthetics performance optimization
+**Timestamp**: 2026-05-15T19:17:00Z
+**User Input**: "I have issue high aesthetics xls or xlsx files takes too much time"
+**AI Response**: Diagnosed the bottleneck: XLSX is fork-unsafe (can't use COW fork-after-load), so each chunk worker independently reloads + re-paginates the entire workbook. High-aesthetics files (charts, conditional formatting, decorative shapes, formulas) were paying maximum load + render cost with no optimizations applied.
+
+Applied two layers of optimization to `worker_cpp/formats/xlsx.cpp`:
+
+**Load-side** (`LoadOptions` on all 4 Workbook constructor sites — render_xlsx, probe_xlsx_page_count, pool_load, pool_render):
+- `SetMemorySetting(MemorySetting::MemoryPreference)` — compact in-memory representation
+- `SetParsingFormulaOnOpen(false)` — skip formula string parsing (render-only, never recalculate)
+- `SetIgnoreUselessShapes(true)` — skip overlapping decorative shapes
+- `SetKeepUnparsedData(false)` — drop XML data never written back
+
+**Render-side** (`PdfSaveOptions` in render_xlsx and pool_render):
+- `SetOptimizationType(PdfOptimizationType::MinimumSize)` — skip full font embedding, optimize borders
+- `SetImageResample(150, 80)` — resample charts/images to 150 PPI / 80% JPEG (was full DPI)
+- `SetCheckFontCompatibility(false)` — skip font compat checks
+- `SetEmbedStandardWindowsFonts(false)` — skip standard font embedding
+
+**Tuning** (`compose.yaml`):
+- `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE`: 4 → 2 (reduce CPU/memory contention on 4GB container)
+
+**Verification**: `sample_large.xls` (3.6 MB, 730 pages) — workbook load dropped to 280–524ms per worker (previously seconds). Render phase completed successfully where it previously ran 10+ minutes without finishing. User confirmed "working NICE THANKS".
+
+**Trade-off**: PDF output uses 150 PPI images instead of full resolution. Acceptable for screen/email quality; operators needing print quality can override via a future env var.
+
+**Files**: `worker_cpp/formats/xlsx.cpp`, `compose.yaml`.
+
+---

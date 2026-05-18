@@ -55,8 +55,9 @@ class HealthChecker:
         # is served by its own binary to keep Aspose's CodePorting framework
         # versions from colliding in one process.
         prefix = settings.worker_binary_prefix
-        missing = [fmt for fmt in ACCEPTED_FORMATS
-                   if not prefix.with_name(f"{prefix.name}-{fmt}").exists()]
+        missing = [
+            fmt for fmt in ACCEPTED_FORMATS if not prefix.with_name(f"{prefix.name}-{fmt}").exists()
+        ]
         if missing:
             self.static_problems.append("worker_binary_missing")
         if not shutil.which("qpdf"):
@@ -274,6 +275,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         snap = health_checker.snapshot(state["active_jobs"])
         status_code = 200 if snap["ready"] else 503
         return JSONResponse(status_code=status_code, content=snap)
+
+    @app.get("/jobs/{request_id}/heartbeats")
+    async def get_heartbeats(request_id: str) -> JSONResponse:
+        from office_convert.heartbeats import heartbeat_store
+
+        beats = heartbeat_store().get(request_id)
+        return JSONResponse(content={"request_id": request_id, "heartbeats": beats})
+
+    @app.get("/jobs/{request_id}/timings")
+    async def get_timings(request_id: str) -> JSONResponse:
+        from office_convert.timings import timing_store
+
+        events = timing_store().get(request_id)
+        return JSONResponse(content={"request_id": request_id, "timings": events})
+
+    @app.get("/jobs/{request_id}/progress")
+    async def get_progress(request_id: str) -> JSONResponse:
+        from office_convert.job_progress import job_progress_store
+
+        jp = job_progress_store().get(request_id)
+        if jp is None:
+            return JSONResponse(
+                content={
+                    "request_id": request_id,
+                    "phase": "unknown",
+                    "total_chunks": 0,
+                    "chunks_rendered": 0,
+                    "load_progress": 0.0,
+                    "merge_done": 0.0,
+                    "weighted_percent": 0.0,
+                    "elapsed_s": 0.0,
+                }
+            )
+        return JSONResponse(content={"request_id": request_id, **jp.to_dict()})
 
     return app
 

@@ -104,8 +104,13 @@ def test_human_formatter_renders_extra_fields_sorted_kv() -> None:
 def test_human_formatter_quotes_whitespace_values() -> None:
     formatter = HumanFormatter()
     record = logging.LogRecord(
-        name="test", level=logging.INFO, pathname="", lineno=0,
-        msg="ignored", args=(), exc_info=None,
+        name="test",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="ignored",
+        args=(),
+        exc_info=None,
     )
     record.event = "format_detected"
     record.request_id = "xyz"

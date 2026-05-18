@@ -6,6 +6,9 @@
 
 #include <Aspose.Words.Cpp/Document.h>
 #include <Aspose.Words.Cpp/Licensing/License.h>
+#include <Aspose.Words.Cpp/Loading/DocumentLoadingArgs.h>
+#include <Aspose.Words.Cpp/Loading/IDocumentLoadingCallback.h>
+#include <Aspose.Words.Cpp/Loading/LoadOptions.h>
 #include <Aspose.Words.Cpp/Saving/PageSet.h>
 #include <Aspose.Words.Cpp/Saving/PdfSaveOptions.h>
 #include <system/array.h>
@@ -13,6 +16,8 @@
 #include <system/string.h>
 
 #include <cstdio>
+#include <iostream>
+#include <sstream>
 #include <string>
 
 #include "../error.h"
@@ -115,9 +120,36 @@ void dispatch_probe(const ProbeArgs& args) {
 
 // --- Pool mode ---
 
+namespace {
+
+// Aspose.Words load-progress callback. Fires throughout the Document
+// constructor as the SDK parses the OOXML zip + WordML tree. EstimatedProgress
+// returns 0.0..1.0. We throttle to integer-percent boundaries so a 100 MB
+// load doesn't emit thousands of near-identical lines.
+class LoadProgressCallback : public Aspose::Words::Loading::IDocumentLoadingCallback {
+public:
+    void Notify(System::SharedPtr<Aspose::Words::Loading::DocumentLoadingArgs> args) override {
+        const double p = args->get_EstimatedProgress();
+        const int pct = static_cast<int>(p * 100.0);
+        if (pct == last_emitted_pct_) return;
+        last_emitted_pct_ = pct;
+        std::ostringstream oss;
+        oss << "{\"type\":\"load_progress\",\"pool_index\":" << current_pool_index()
+            << ",\"value\":" << (pct / 100.0) << "}\n";
+        std::cerr << oss.str() << std::flush;
+    }
+private:
+    int last_emitted_pct_ = -1;
+};
+
+}  // namespace
+
 int pool_load(const std::string& input_path) {
+    auto load_opts = System::MakeObject<Aspose::Words::Loading::LoadOptions>();
+    auto cb = System::MakeObject<LoadProgressCallback>();
+    load_opts->set_ProgressCallback(cb);
     g_document = System::MakeObject<Aspose::Words::Document>(
-        System::String(input_path.c_str()));
+        System::String(input_path.c_str()), load_opts);
     return g_document->get_PageCount();
 }
 
