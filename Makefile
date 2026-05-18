@@ -21,6 +21,7 @@
 SHELL                 := /bin/bash
 PROJECT_DIR           ?= $(shell pwd)
 IMAGE_PROD            ?= office-convert:dev
+IMAGE_UI              ?= office-convert-ui:dev
 IMAGE_TEST            ?= office-convert:test
 IMAGE_SMOKE_WORDS     ?= office-convert-smoke-words:dev
 CONTAINER_NAME        ?= office-convert-dev
@@ -58,6 +59,8 @@ help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-z][a-z0-9_-]*:.*## .*RUN/ {printf "  $(YELLOW)%-22s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST) | sort
 	@printf "\n$(BLUE)Quality:$(RESET)\n"
 	@awk 'BEGIN{FS=":.*## "} /^[a-z][a-z0-9_-]*:.*## .*QA/ {printf "  $(YELLOW)%-22s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST) | sort
+	@printf "\n$(BLUE)Deploy (EKS):$(RESET)\n"
+	@awk 'BEGIN{FS=":.*## "} /^[a-z][a-z0-9_-]*:.*## .*DEPLOY/ {printf "  $(YELLOW)%-22s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST) | sort
 	@printf "\n$(BLUE)Cleanup:$(RESET)\n"
 	@awk 'BEGIN{FS=":.*## "} /^[a-z][a-z0-9_-]*:.*## .*CLEAN/ {printf "  $(YELLOW)%-22s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST) | sort
 	@printf "\n$(BLUE)Quick start:$(RESET)\n"
@@ -272,6 +275,215 @@ update-test-badge: build-test ## QA refresh the tests-N badge in README from col
 	else \
 	    printf "$(YELLOW)Could not count tests; README badge left unchanged$(RESET)\n"; \
 	fi
+
+# =============================================================================
+# DEPLOY targets — EKS dev cluster install / uninstall via Helm
+# =============================================================================
+# Required env vars before running `make deploy-dev`:
+#   AWS_ACCOUNT_ID   e.g. 123456789012
+#   AWS_REGION       e.g. us-east-1
+#   IMAGE_TAG        e.g. $(git rev-parse --short HEAD)
+# Optional:
+#   NAMESPACE        default: office-convert-dev
+#   HELM_RELEASE     default: office-convert
+.PHONY: deploy-dev _deploy-dev-impl undeploy-dev _undeploy-dev-impl deploy-status deploy-logs _print-aws-urls
+
+NAMESPACE       ?= office-convert-dev
+HELM_RELEASE    ?= office-convert
+ECR_REPO         = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/office-convert
+ECR_REPO_UI      = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/office-convert-ui
+DEPLOY_LOG_DIR  ?= $(PROJECT_DIR)/deploy/logs
+
+deploy-dev: ## DEPLOY install office-convert to EKS dev cluster (logs to deploy/logs/; needs AWS_ACCOUNT_ID, AWS_REGION, IMAGE_TAG)
+	@if [ -z "$(AWS_ACCOUNT_ID)" ] || [ -z "$(AWS_REGION)" ] || [ -z "$(IMAGE_TAG)" ]; then \
+	    printf "$(YELLOW)ERROR: set AWS_ACCOUNT_ID, AWS_REGION, IMAGE_TAG env vars.$(RESET)\n"; \
+	    printf "  Example: AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 IMAGE_TAG=\$$(git rev-parse --short HEAD) make deploy-dev\n"; \
+	    exit 1; \
+	fi
+	@command -v helm >/dev/null 2>&1 || { \
+	    printf "$(YELLOW)ERROR: helm not found on PATH.$(RESET)\n"; \
+	    printf "  Install via:  sudo snap install helm --classic\n"; \
+	    printf "  Or:           curl -fsSL https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz | sudo tar -xzC /usr/local/bin --strip-components=1 linux-amd64/helm\n"; \
+	    exit 1; \
+	}
+	@command -v kubectl >/dev/null 2>&1 || { printf "$(YELLOW)ERROR: kubectl not found on PATH.$(RESET)\n"; exit 1; }
+	@command -v aws >/dev/null 2>&1 || { printf "$(YELLOW)ERROR: aws CLI not found on PATH.$(RESET)\n"; exit 1; }
+	@mkdir -p $(DEPLOY_LOG_DIR)
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	LOG=$(DEPLOY_LOG_DIR)/deploy-$$TS.log; \
+	MANIFEST=$(DEPLOY_LOG_DIR)/manifest-$$TS.yaml; \
+	printf "$(GREEN)Logging full deploy to: $$LOG$(RESET)\n"; \
+	printf "$(GREEN)Rendered manifest:      $$MANIFEST$(RESET)\n\n"; \
+	set -eo pipefail; \
+	{ \
+	    echo "============================================================"; \
+	    echo "deploy-dev started at $$(date -Iseconds)"; \
+	    echo "Git SHA:        $$(git rev-parse HEAD)"; \
+	    echo "Git branch:     $$(git rev-parse --abbrev-ref HEAD)"; \
+	    echo "Working tree:   $$(git status --short | wc -l) modified files"; \
+	    echo "kubectl ctx:    $$(kubectl config current-context)"; \
+	    echo "AWS account:    $(AWS_ACCOUNT_ID)"; \
+	    echo "AWS region:     $(AWS_REGION)"; \
+	    echo "AWS profile:    $${AWS_PROFILE:-default}"; \
+	    echo "AWS identity:   $$(aws sts get-caller-identity --profile $${AWS_PROFILE:-default} --output text 2>&1 | tr '\n' ' ')"; \
+	    echo "Image tag:      $(IMAGE_TAG)"; \
+	    echo "ECR repo (API): $(ECR_REPO)"; \
+	    echo "ECR repo (UI):  $(ECR_REPO_UI)"; \
+	    echo "Namespace:      $(NAMESPACE)"; \
+	    echo "Helm release:   $(HELM_RELEASE)"; \
+	    echo "============================================================"; \
+	    echo ""; \
+	    # tee instead of `>`: snap-installed helm sandboxes stdout, so a plain \
+	    # file redirect lands an empty file. tee captures the stream correctly. \
+	    helm template $(HELM_RELEASE) deploy/helm/office-convert \
+	        --namespace $(NAMESPACE) \
+	        --set image.repository=$(ECR_REPO) \
+	        --set image.tag=$(IMAGE_TAG) 2>&1 | tee $$MANIFEST > /dev/null; \
+	    echo "Wrote rendered manifest: $$MANIFEST"; \
+	    echo ""; \
+	    $(MAKE) _deploy-dev-impl; \
+	    echo ""; \
+	    echo "============================================================"; \
+	    echo "deploy-dev finished at $$(date -Iseconds)"; \
+	    echo "Final state:"; \
+	    kubectl get pods,svc,configmap,secret -n $(NAMESPACE); \
+	    echo "============================================================"; \
+	} 2>&1 | tee $$LOG
+
+_deploy-dev-impl:
+	@printf "$(GREEN)[1/7] ECR repos (create if missing)...$(RESET)\n"
+	aws ecr describe-repositories --repository-names office-convert --region $(AWS_REGION) >/dev/null 2>&1 \
+	    || aws ecr create-repository --repository-name office-convert --region $(AWS_REGION) --image-scanning-configuration scanOnPush=true
+	aws ecr describe-repositories --repository-names office-convert-ui --region $(AWS_REGION) >/dev/null 2>&1 \
+	    || aws ecr create-repository --repository-name office-convert-ui --region $(AWS_REGION) --image-scanning-configuration scanOnPush=true
+	@printf "$(GREEN)[2/7] ECR login...$(RESET)\n"
+	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
+	@printf "$(GREEN)[3/7] Build + tag + push API image $(ECR_REPO):$(IMAGE_TAG)...$(RESET)\n"
+	$(MAKE) build
+	docker tag $(IMAGE_PROD) $(ECR_REPO):$(IMAGE_TAG)
+	docker push $(ECR_REPO):$(IMAGE_TAG)
+	@printf "$(GREEN)[4/7] Build + tag + push UI image $(ECR_REPO_UI):$(IMAGE_TAG)...$(RESET)\n"
+	docker build -t $(IMAGE_UI) -f Dockerfile.ui .
+	docker tag $(IMAGE_UI) $(ECR_REPO_UI):$(IMAGE_TAG)
+	docker push $(ECR_REPO_UI):$(IMAGE_TAG)
+	@printf "$(GREEN)[5/7] Namespace + license Secret...$(RESET)\n"
+	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	kubectl create secret generic aspose-license --from-file=license.lic=$(LICENSE_FILE) --namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	@printf "$(GREEN)[6/7] helm install/upgrade...$(RESET)\n"
+	helm upgrade --install $(HELM_RELEASE) deploy/helm/office-convert \
+	    --namespace $(NAMESPACE) \
+	    --set image.repository=$(ECR_REPO) \
+	    --set image.tag=$(IMAGE_TAG) \
+	    --set ui.image.repository=$(ECR_REPO_UI) \
+	    --set ui.image.tag=$(IMAGE_TAG) \
+	    --wait --timeout 5m
+	@printf "$(GREEN)[7/7] Deploy complete. Pod status:$(RESET)\n"
+	@kubectl get pods,svc -n $(NAMESPACE)
+	@printf "\n$(BLUE)API NLB hostname (may take ~60s to populate):$(RESET)\n"
+	@NLB=$$(kubectl get svc office-convert -n $(NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null); \
+	if [ -n "$$NLB" ]; then printf "  $$NLB\n"; else printf "  (still provisioning — re-run \`make deploy-status\` in 60s)\n"; fi
+	@printf "\n$(BLUE)Image digests (in ECR):$(RESET)\n"
+	@DIGEST=$$(aws ecr describe-images --repository-name office-convert --image-ids imageTag=$(IMAGE_TAG) --region $(AWS_REGION) --query 'imageDetails[0].imageDigest' --output text 2>/dev/null); \
+	if [ -n "$$DIGEST" ] && [ "$$DIGEST" != "None" ]; then printf "  API: $$DIGEST\n"; else printf "  API: (could not resolve)\n"; fi
+	@DIGEST_UI=$$(aws ecr describe-images --repository-name office-convert-ui --image-ids imageTag=$(IMAGE_TAG) --region $(AWS_REGION) --query 'imageDetails[0].imageDigest' --output text 2>/dev/null); \
+	if [ -n "$$DIGEST_UI" ] && [ "$$DIGEST_UI" != "None" ]; then printf "  UI:  $$DIGEST_UI\n"; else printf "  UI:  (could not resolve)\n"; fi
+	@$(MAKE) _print-aws-urls
+	@printf "\n$(BLUE)Access the API:$(RESET)\n"
+	@printf "  In-VPC:        curl http://<nlb-hostname>/health\n"
+	@printf "  Port-forward:  kubectl port-forward -n $(NAMESPACE) svc/office-convert 18080:80\n"
+	@printf "                 then http://localhost:18080/docs\n"
+	@printf "\n$(BLUE)Access the UI (Streamlit dashboard):$(RESET)\n"
+	@printf "  Port-forward:  kubectl port-forward -n $(NAMESPACE) svc/office-convert-ui 8501:8501\n"
+	@printf "                 then http://localhost:8501\n"
+
+# Print AWS console deep-links for the deployed resources. Called by both
+# deploy-dev (post-install) and undeploy-dev (post-delete) so the log
+# captures clickable URLs for visual verification in the AWS web console.
+_print-aws-urls:
+	@printf "\n$(BLUE)============================================================$(RESET)\n"
+	@printf "$(BLUE) AWS Console deep-links (open in browser to verify)$(RESET)\n"
+	@printf "$(BLUE)============================================================$(RESET)\n"
+	@CLUSTER=$$(kubectl config current-context | awk -F/ '{print $$NF}'); \
+	IMAGE_DIGEST=$$(aws ecr describe-images --repository-name office-convert --image-ids imageTag=$(IMAGE_TAG) --region $(AWS_REGION) --query 'imageDetails[0].imageDigest' --output text 2>/dev/null); \
+	NLB_HOST=$$(kubectl get svc -n $(NAMESPACE) -l app.kubernetes.io/instance=$(HELM_RELEASE) -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null); \
+	printf "  $(YELLOW)EKS cluster:$(RESET)\n"; \
+	printf "    https://$(AWS_REGION).console.aws.amazon.com/eks/home?region=$(AWS_REGION)#/clusters/$$CLUSTER\n\n"; \
+	printf "  $(YELLOW)EKS workloads in namespace $(NAMESPACE):$(RESET)\n"; \
+	printf "    https://$(AWS_REGION).console.aws.amazon.com/eks/home?region=$(AWS_REGION)#/clusters/$$CLUSTER/workloads?namespace=$(NAMESPACE)\n\n"; \
+	printf "  $(YELLOW)EKS pods in namespace $(NAMESPACE):$(RESET)\n"; \
+	printf "    https://$(AWS_REGION).console.aws.amazon.com/eks/home?region=$(AWS_REGION)#/clusters/$$CLUSTER/pods?namespace=$(NAMESPACE)\n\n"; \
+	printf "  $(YELLOW)ECR repository office-convert:$(RESET)\n"; \
+	printf "    https://$(AWS_REGION).console.aws.amazon.com/ecr/repositories/private/$(AWS_ACCOUNT_ID)/office-convert?region=$(AWS_REGION)\n\n"; \
+	if [ -n "$$IMAGE_DIGEST" ] && [ "$$IMAGE_DIGEST" != "None" ]; then \
+	    printf "  $(YELLOW)This image (tag=$(IMAGE_TAG)):$(RESET)\n"; \
+	    printf "    https://$(AWS_REGION).console.aws.amazon.com/ecr/repositories/private/$(AWS_ACCOUNT_ID)/office-convert/_/image/$$IMAGE_DIGEST/details?region=$(AWS_REGION)\n\n"; \
+	fi; \
+	printf "  $(YELLOW)EC2 Load Balancers (find the NLB by tag):$(RESET)\n"; \
+	printf "    https://$(AWS_REGION).console.aws.amazon.com/ec2/home?region=$(AWS_REGION)#LoadBalancers:\n\n"; \
+	if [ -n "$$NLB_HOST" ]; then \
+	    printf "  $(YELLOW)NLB hostname (live):$(RESET)\n"; \
+	    printf "    http://$$NLB_HOST\n\n"; \
+	fi; \
+	printf "  $(YELLOW)CloudWatch log groups (if container logs are shipped):$(RESET)\n"; \
+	printf "    https://$(AWS_REGION).console.aws.amazon.com/cloudwatch/home?region=$(AWS_REGION)#logsV2:log-groups\n\n"; \
+	printf "  $(YELLOW)IAM (verify nothing changed):$(RESET)\n"; \
+	printf "    https://us-east-1.console.aws.amazon.com/iamv2/home#/roles\n"
+	@printf "$(BLUE)============================================================$(RESET)\n"
+
+undeploy-dev: ## DEPLOY uninstall office-convert from EKS dev cluster (full revert; logs to deploy/logs/)
+	@command -v helm >/dev/null 2>&1 || { printf "$(YELLOW)ERROR: helm not found on PATH (needed for helm uninstall).$(RESET)\n"; exit 1; }
+	@command -v kubectl >/dev/null 2>&1 || { printf "$(YELLOW)ERROR: kubectl not found on PATH.$(RESET)\n"; exit 1; }
+	@mkdir -p $(DEPLOY_LOG_DIR)
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	LOG=$(DEPLOY_LOG_DIR)/undeploy-$$TS.log; \
+	printf "$(GREEN)Logging full undeploy to: $$LOG$(RESET)\n\n"; \
+	set -eo pipefail; \
+	{ \
+	    echo "============================================================"; \
+	    echo "undeploy-dev started at $$(date -Iseconds)"; \
+	    echo "kubectl ctx:    $$(kubectl config current-context)"; \
+	    echo "Namespace:      $(NAMESPACE)"; \
+	    echo "Helm release:   $(HELM_RELEASE)"; \
+	    echo "State BEFORE undeploy:"; \
+	    kubectl get pods,svc,configmap,secret -n $(NAMESPACE) 2>&1 || true; \
+	    echo "============================================================"; \
+	    echo ""; \
+	    $(MAKE) _undeploy-dev-impl; \
+	    echo ""; \
+	    echo "============================================================"; \
+	    echo "undeploy-dev finished at $$(date -Iseconds)"; \
+	    echo "State AFTER undeploy (should be empty / NotFound):"; \
+	    kubectl get all -n $(NAMESPACE) 2>&1 || true; \
+	    echo "============================================================"; \
+	} 2>&1 | tee $$LOG
+
+_undeploy-dev-impl:
+	@printf "$(GREEN)[1/3] helm uninstall...$(RESET)\n"
+	-helm uninstall $(HELM_RELEASE) --namespace $(NAMESPACE)
+	@printf "$(GREEN)[2/3] delete license Secret...$(RESET)\n"
+	-kubectl delete secret aspose-license --namespace $(NAMESPACE) --ignore-not-found
+	@printf "$(GREEN)[3/3] delete namespace $(NAMESPACE)...$(RESET)\n"
+	-kubectl delete namespace $(NAMESPACE) --ignore-not-found
+	@printf "$(GREEN)Undeploy complete. ECR images still exist (kept by design):$(RESET)\n"
+	@printf "    $(ECR_REPO):$(IMAGE_TAG)\n"
+	@printf "    $(ECR_REPO_UI):$(IMAGE_TAG)\n"
+	@printf "  To delete the ECR images:\n"
+	@printf "    aws ecr batch-delete-image --repository-name office-convert    --image-ids imageTag=$(IMAGE_TAG) --region $(AWS_REGION)\n"
+	@printf "    aws ecr batch-delete-image --repository-name office-convert-ui --image-ids imageTag=$(IMAGE_TAG) --region $(AWS_REGION)\n"
+	@printf "  To delete the ECR repos entirely:\n"
+	@printf "    aws ecr delete-repository --repository-name office-convert    --force --region $(AWS_REGION)\n"
+	@printf "    aws ecr delete-repository --repository-name office-convert-ui --force --region $(AWS_REGION)\n"
+	@$(MAKE) _print-aws-urls
+	@printf "\n$(YELLOW)Verify in AWS console:$(RESET)\n"
+	@printf "  - EKS workloads URL should show 'No items' for namespace $(NAMESPACE)\n"
+	@printf "  - Load Balancers URL should no longer list our NLB (~60s to deprovision)\n"
+	@printf "  - ECR repository URL should still show image tag $(IMAGE_TAG) (kept by design)\n"
+
+deploy-status: ## DEPLOY show deployment status (pods, service, NLB)
+	@kubectl get pods,svc,configmap,secret -n $(NAMESPACE) 2>&1 || printf "$(YELLOW)Namespace $(NAMESPACE) not found (not deployed yet).$(RESET)\n"
+
+deploy-logs: ## DEPLOY tail pod logs
+	@kubectl logs -n $(NAMESPACE) -l app.kubernetes.io/instance=$(HELM_RELEASE) --tail=200 -f
 
 # =============================================================================
 # CLEAN targets

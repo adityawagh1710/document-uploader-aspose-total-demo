@@ -1,0 +1,157 @@
+# Default values for office-convert dev deploy.
+# Override at install time with --set or --values.
+
+image:
+  # Filled in at install time:
+  #   --set image.repository=<acct>.dkr.ecr.<region>.amazonaws.com/office-convert
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Single replica for dev cluster. max_jobs=1 means one conversion at a time
+# per pod; scale by replicas if you need parallel conversions.
+replicaCount: 1
+
+# Pod-level memory cap matches compose mem_limit. No swap on Kubernetes by
+# default (see aidlc-docs/operations/eks-production-topology.md for the
+# swap-enabled node group design). Without swap, inputs > ~250 MB PPTX
+# will OOM-kill the pod.
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "4"
+    memory: "4Gi"
+
+service:
+  # LoadBalancer = AWS NLB (auto-provisioned). Internal scheme keeps the
+  # NLB VPC-only, since the /convert endpoint has no auth in v1.
+  type: LoadBalancer
+  port: 80
+  targetPort: 8080
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+
+# OFFICE_CONVERT_* env vars rendered into a ConfigMap. Pydantic
+# `env_prefix="OFFICE_CONVERT_"` (office_convert/config.py) consumes them.
+config:
+  log_format: "json"
+  log_level: "info"
+  max_jobs: 1
+  # 2 parallel workers fits comfortably in the 4Gi pod cap. The compose
+  # default of 4 assumes 6Gi RAM+swap; without swap we drop to 2 to give
+  # each worker meaningful headroom.
+  parallel: 2
+  # Per-worker RLIMIT_AS = 2 GiB. Two workers x 2 GiB = 4 GiB pod cap worst
+  # case. Aspose subdivision kicks in on OOM, so this is a safety floor
+  # rather than a hard target. Quoted to dodge Helm's int-to-scientific-
+  # notation conversion (values >= 2^31 render as "2.147e+09" otherwise).
+  worker_ram_bytes: "2147483648"
+  chunk_timeout_seconds: 600
+  scratch_dir: "/tmp/office-convert"
+  license_path: "/aspose/license.lic"
+
+# Aspose license is mounted from a pre-existing Secret. The Secret is NOT
+# created by this chart — create it before `helm install`:
+#   kubectl create secret generic aspose-license \
+#     --from-file=license.lic=./Aspose.TotalforC++.lic \
+#     --namespace office-convert-dev
+license:
+  secretName: "aspose-license"
+  secretKey: "license.lic"
+
+# Health probes hit /health. The endpoint returns 503 with structured
+# `problems` when license is expired or worker binaries missing, so the
+# readiness probe naturally takes the pod out of rotation.
+probes:
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    failureThreshold: 3
+    timeoutSeconds: 3
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+    timeoutSeconds: 5
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ============================================================
+# UI (Streamlit test dashboard)
+# ============================================================
+# The UI is a Streamlit app (test_ui.py) that drives the API for manual QA.
+# It runs as a separate Deployment+Service in the same namespace and talks
+# to the API via in-cluster DNS (so port-forward and NLB access give the
+# same UI experience).
+#
+# Three docker-socket-backed widgets in test_ui.py degrade silently to
+# empty values on EKS (no /var/run/docker.sock): the CPU/RAM tiles, the
+# worker process table, and the events feed. Core conversion + timing
+# charts + heartbeats + progress all work because they come from the API.
+ui:
+  enabled: true
+  image:
+    # Filled in at install time:
+    #   --set ui.image.repository=<acct>.dkr.ecr.<region>.amazonaws.com/office-convert-ui
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    # Internal NLB — same scheme as the API service. Reachable from inside
+    # the VPC at the NLB hostname; reachable from your laptop only via
+    # `kubectl port-forward -n office-convert-dev svc/office-convert-ui 8501:8501`
+    # until the corp VPN peers with the VPC (currently doesn't).
+    type: LoadBalancer
+    port: 8501
+    # Explicit loadBalancerClass forces AWS Load Balancer Controller (LBC)
+    # ownership, avoiding a race with the in-tree cloud controller (CCM).
+    # Without this, CCM can grab the service first and ignore the LBC-style
+    # `scheme: internal` annotation, leaving the NLB internet-facing.
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "external"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+  # 2026-05-18: limits bumped from 512Mi → 1.5Gi after OOMKills during
+  # interactive use. Streamlit + pandas + plotly cold-start is ~300 MiB on its
+  # own; uploaded file bytes + chart-building working set easily pushes past
+  # 512Mi. 1.5Gi gives a real buffer without being wasteful on a dev pod.
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1.5Gi"
+  # Streamlit server flags surfaced as env vars in the deployment.
+  # XSRF off because port-forward changes the request origin and Streamlit's
+  # default XSRF check rejects file uploads otherwise (the typical "AxiosError
+  # 403 on upload" failure). UI is internal-only with no auth in v1, so XSRF
+  # adds no real security here.
+  streamlit:
+    enableCORS: false
+    enableXsrfProtection: false
+  # Dockerfile.ui doesn't set a USER, so the container runs as root. The
+  # shared podSecurityContext (runAsNonRoot: true) would block this pod from
+  # starting, so the UI gets its own empty securityContexts.
+  # TODO: harden Dockerfile.ui to run as non-root and remove these overrides.
+  podSecurityContext: {}
+  containerSecurityContext: {}

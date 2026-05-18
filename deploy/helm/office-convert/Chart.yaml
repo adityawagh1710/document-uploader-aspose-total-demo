@@ -1,0 +1,17 @@
+apiVersion: v2
+name: office-convert
+description: Chunked Office to PDF conversion service using Aspose.Total C++
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/adityawagh1710/document-uploader-aspose-total-demo
+keywords:
+  - aspose
+  - office
+  - pdf
+  - converter
+  - docx
+  - pptx
+  - xlsx
+maintainers:
+  - name: office-convert maintainers
