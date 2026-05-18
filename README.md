@@ -1,12 +1,11 @@
 # office-convert
 
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![fastapi](https://img.shields.io/badge/fastapi-0.115-009688.svg)](https://fastapi.tiangolo.com/)
 [![aspose.total](https://img.shields.io/badge/aspose.total-c%2B%2B%2026.4-ff4081.svg)](https://products.aspose.com/total/cpp/)
 [![qpdf](https://img.shields.io/badge/qpdf-streaming%20merge-orange.svg)](https://qpdf.sourceforge.io/)
 [![docker](https://img.shields.io/badge/docker-required-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/)
-[![tests](https://img.shields.io/badge/tests-119%20passing-brightgreen.svg)](#tldr--quickstart)
+[![tests](https://img.shields.io/badge/tests-120-brightgreen.svg)](#tldr--quickstart)
 [![type checked](https://img.shields.io/badge/type%20checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
 [![lint](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://github.com/astral-sh/ruff)
 [![status](https://img.shields.io/badge/status-v1%20local%20PoC-yellow.svg)](#)
@@ -625,7 +624,6 @@ Makefile               Docker-first workflow orchestrator (delegates to
                        compose; run `make help`)
 pyproject.toml         Python deps + tool config (PEP 621, PEP 561)
 ruff.toml              Linter + formatter rules
-LICENSE                MIT (for this project's source code, NOT Aspose)
 README.md              You are here
 .gitignore             Defensive secrets + build artifact exclusions
 .dockerignore          Same, for the Docker build context
