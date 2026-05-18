@@ -392,12 +392,19 @@ def _docker_monitor() -> dict:
     fragment, every tick would block for that long and updates would arrive in
     big bunches, amplifying visible flicker. Instead a daemon thread refreshes
     the cache on its own cadence; the fragment just reads the dict — O(µs).
+
+    On Kubernetes there's no docker socket — every subprocess call would just
+    time out at 5 s and return nothing. Skip spawning the loop entirely when
+    /var/run/docker.sock is absent.
     """
     state: dict = {
         "lock": threading.Lock(),
         "stats": dict(_DEFAULT_DOCKER_STATS),
         "workers": [],
     }
+
+    if not Path("/var/run/docker.sock").exists():
+        return state
 
     def _refresh_loop() -> None:
         while True:
