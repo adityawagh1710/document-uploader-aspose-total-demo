@@ -403,3 +403,30 @@ XLSX automatically falls back to the legacy `WorkerPool` (N independent subproce
 - **Pre-probe**: size-based probe estimate was off by 83× on `sample_100mb.docx` (estimated 5345 pages, real 64). Re-plan after load corrects the chunk count, but pool size is already sized for the bad estimate. A pre-probe in a single worker before sizing the pool would let small-page-count documents take the single-worker path.
 - **PDF fork verification**: PDF still in the fork-allowed set but never tested under fork. First PDF crash with `worker stdout EOF` should trigger adding `"pdf"` to `_FORK_UNSAFE_FORMATS`.
 - **XLSX-under-fork investigation**: see above — would require post-fork Cells re-init. Currently deferred; XLSX uses legacy pool.
+
+### Dev cluster deployment + ingress decision (2026-05-18)
+
+Live deployment on `DEV05-EKS-CLUSTER`, namespace `office-convert-dev`, helm release `office-convert`. Both API + UI pods Running. NLB hostnames provisioned via `aws-load-balancer-scheme: internal` (VPC-only). Image tag `be4ac93-uifix1` (after the 2026-05-18 UI OOM fix bundle: limits 512Mi → 1.5Gi, docker-socket-guarded `_docker_monitor`, removed `curl get.docker.com` from `Dockerfile.ui`).
+
+**Reachability constraint, confirmed permanent (2026-05-18)**: NLB private IPs in `10.35.0.0/16` are unreachable from the operator's laptop. The corp FortiClient VPN gives `/32` routes for the EKS API endpoint (kubectl works) but does NOT tunnel VPC data-plane CIDRs. Verified by `ip route add 10.35.0.0/16 via 192.168.8.24 dev fctvpndc0b79cc` probe — packets enter the tunnel, hit corp HQ, get dropped because corp's server-side routing has no path to the VPC. **Server-side VPC peering does not exist**; the "add route" workaround is permanently dead.
+
+**Decision: ALB Ingress + ACM TLS** (mirrors `argocd/argocd-http-ingress`'s shape — only proven external-ingress precedent in this cluster). Path 1: **two Ingresses sharing one ALB** via `alb.ingress.kubernetes.io/group.name: office-convert`, **subdomain routing** (over path-routed, because Streamlit-behind-prefix is painful). Final hostnames:
+
+- **UI**: `office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com`
+- **API**: `office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com`
+
+Both single-label under the existing wildcard cert `*.dev05.k8s.opus2dev.com` (`arn:aws:acm:eu-west-1:537462380503:certificate/fab42f33-7d67-4ecf-b200-38af584485b0`, ISSUED). Route 53 zone `dev05.k8s.opus2dev.com.` is `Z045669519R5D9D8CKC79`. No external-dns installed — DNS records will be created manually post-Helm-deploy.
+
+**Rejected alternatives**: (B) Istio Ambient + Ingress Gateway — adds machinery no other app in cluster uses, doesn't fix reachability any better; (C) NLB scheme flip to `internet-facing` + `loadBalancerSourceRanges` — fastest but plaintext HTTP, new hostnames every redeploy, no app-layer surface for future Cognito/OIDC; (Path 2 one-Ingress path-routed) — Streamlit `STREAMLIT_SERVER_BASE_URL_PATH` + websocket idle_timeout + static asset rewrites; (multi-label hostnames) — would need a new ACM cert.
+
+**Implementation deferred to next session**. Helm chart change list, pre/post-deploy verifications, and reversibility notes captured in `aidlc-docs/operations/dev-deployment-topology.md`. Operator-memory landing pad: `reference_alb_ingress_plan.md` in the auto-memory store.
+
+**Gotcha for the next operator**: argocd's own Ingress references an **expired** cert ARN (`213a9222-0466-4e0f-9ca2-87e92c92944c`). Do not copy that ARN when cloning argocd's annotation shape. Use the wildcard `fab42f33`.
+
+**Argocd's corp inbound-cidrs snapshot 2026-05-18** (10 entries; verify with network admin before reusing): `213.210.23.82/32, 213.210.23.84/32, 31.121.79.58/32, 31.121.79.60/32, 18.133.115.188/32, 54.91.4.210/32, 18.168.253.57/32, 52.74.117.130/32, 165.65.37.128/29, 136.40.11.230/32`.
+
+### Port-forward wrapper verified clean (2026-05-18)
+
+`deploy/scripts/portforward.sh` re-tested end-to-end on 2026-05-18 from clean state. Both API (18080) and UI (8501) port-forwards bound on base ports, `/health` and `/_stcore/health` returned 200, kubectl processes stayed alive. The prior session's "UI didn't bind 8502 within 5s" failure did NOT reproduce — forensic read on `deploy/logs/portforward-ui.log` shows kubectl had actually printed `Forwarding from 127.0.0.1:8502 -> 8501` (port WAS bound); the prior failure was a VPN flap that killed kubectl's upstream tunnel after a successful bind, and `start_one()`'s "didn't bind in 5s" tail-log path emitted the misleading error.
+
+**Latent script bug** (deferred, not blocking): `start_one()` conflates "never bound" with "bound then upstream died" — both report "didn't bind within 5s". Fix would track whether `ss -tlnH` ever showed the port up inside the wait loop and emit a distinct error like "bound but kubectl process died — VPN/RBAC?" when it had. Low priority because the actionable cause (check VPN) is the same.

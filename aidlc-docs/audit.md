@@ -1562,3 +1562,116 @@ Applied two layers of optimization to `worker_cpp/formats/xlsx.cpp`:
 **Files**: `worker_cpp/formats/xlsx.cpp`, `compose.yaml`.
 
 ---
+## Session: EKS dev deployment ingress decision + research
+**Timestamp**: 2026-05-18T17:16:58Z
+**User Input** (turn 1): "Load old session"
+**AI Response**: Resumed from `aidlc-state.md` (WORKFLOW COMPLETE 2026-05-11) and project memory. Identified active thread: EKS dev deployment of `office-convert-dev` on DEV05-EKS-CLUSTER with NLB URLs unreachable from laptop (corp VPN does not peer with VPC data plane). Two open threads: (1) portforward.sh UI bind failure from prior session, (2) ALB Ingress vs Istio vs NLB-scheme-flip decision.
+
+**User Input** (turn 2 — selected from option chip): "Debug portforward.sh UI bind failure"
+**AI Response**: Re-ran `./deploy/scripts/portforward.sh start` from clean state. Script succeeded fully: API on 18080, UI on 8501, both `/health` + `/_stcore/health` returned HTTP 200, kubectl processes stayed alive, logs showed normal `Handling connection`. Prior failure did not reproduce. Forensic read on prior `portforward-ui.log` shows kubectl had actually printed `Forwarding from 127.0.0.1:8502 -> 8501` — the local port WAS bound; the prior "didn't bind in 5s" error was the wrong error message. Root cause was a VPN flap mid-test (cluster-side tunnel died after kubectl had already bound the local port, kubectl exited, `start_one()` then reported via the "didn't bind" tail-log path because `kill -0 $pid` returned non-zero).
+**Latent script bug** (deferred, not fixed): `start_one()` in `deploy/scripts/portforward.sh` conflates "never bound" with "bound then upstream died" — both report "didn't bind within 5s". Fix would be to track whether `ss -tlnH` ever showed the port up inside the wait loop and emit a distinct error like "bound but kubectl process died — VPN/RBAC?" when it had.
+**Context**: Diagnosis only. Updated memory file `reference_portforward_script.md` with the correct root cause. No script edits.
+
+---
+
+## Session: Public access for office-convert-dev — options analysis
+**Timestamp**: 2026-05-18T17:25:00Z
+**User Input** (turn 3): "Hi"
+**User Input** (turn 4): "How can i access those NBL urls publically"
+**AI Response**: Presented three options to expose `office-convert-dev` publicly: (A) ALB Ingress mirroring argocd's pattern — internet-facing ALB + ACM TLS + corp CIDR allowlist; (B) Istio Ambient + Ingress Gateway — adds machinery no other app in this cluster uses; (C) Flip NLB scheme to internet-facing + `load-balancer-source-ranges` allowlist — two-line stopgap, no TLS, no DNS. Recommended A unless same-day demo required.
+
+**User Input** (turn 5): "I prefer 2 but whats risk in that situation ?"
+**AI Response** (corrected reading: user meant option C, not option 2 — confirmed by subsequent ALB questions): Listed risks for option C: (1) plaintext HTTP — uploads of sensitive office docs travel cleartext, primary reason A is preferred; (2) allowlist is corp-egress IP, not user identity — no app-layer auth in v1 means anyone behind corp NAT (contractors, shared-NAT users) gets in; (3) allowlist drift / lockout risk + AWS ~60-CIDR cap per LB SG; (4) new NLB hostnames on every redeploy break bookmarks; (5) DoS amplification on a 1-slot service (`max_jobs: 1`, no swap on K8s pod); (6) no NLB access logs by default; (7) UI container runs as root.
+
+**User Input** (turn 6): "Whats are pros and cons with ALB Ingress + ACM TLS ?"
+**AI Response**: Pros — TLS termination at LB with auto-renewing ACM cert; matches cluster precedent (argocd-http-ingress 2y+ in production); single hostname (subdomain or path-routed); corp CIDR allowlist still applies; HTTP→HTTPS redirect built-in; S3 access logs one annotation away; WAF + Cognito/OIDC available later; DNS stability via CNAME. Cons — more moving parts upfront (ACM + Ingress + DNS); needs cert authority over a domain; Streamlit-behind-path-prefix is painful (subdomain routing avoids this); +5–10 ms vs NLB; allowlist drift problem still exists (smaller blast radius with TLS); v1 still has no app-layer auth.
+
+**User Input** (turn 7): "Lets say if we deploy it via helm can it be reverted back again ?"
+**AI Response**: Yes — Helm parts revert cleanly via `helm rollback` or the user's preferred `make undeploy-dev + make deploy-dev` cycle. AWS LBC reconciles the ALB out (~1 min) and recreates NLBs (~2 min). Pod state untouched throughout. `kubectl port-forward` keeps working as fallback. Irreversible items: current NLB hostnames are lost (already lost on every redeploy cycle anyway); new ALB hostname disappears on revert. Outside-Helm leftovers on revert: ACM cert (shared, don't touch), DNS records (manual cleanup via `aws route53 change-resource-record-sets --action DELETE`).
+
+**Context**: User pivoted from "prefer 2" to genuine interest in ALB Ingress (Path A). Options C and B no longer on the table.
+
+---
+
+## Session: ALB Ingress research — cluster prerequisites scout
+**Timestamp**: 2026-05-18T17:45:00Z
+**User Input** (turn 8): "Then do possible research an find out possible ways"
+**AI Response**: Created 5 tracking tasks. Scouted DEV05-EKS-CLUSTER in parallel:
+
+**ACM certificates (eu-west-1, account 537462380503)**:
+- `*.dev05.k8s.opus2dev.com` — **ISSUED**, ARN `arn:aws:acm:eu-west-1:537462380503:certificate/fab42f33-7d67-4ecf-b200-38af584485b0` (the cert to use for any new app under `dev05`).
+- `*.k8s.opus2dev.com` — ISSUED, In use, ARN `fb260958-f60c-48c4-8a42-e3d08c7b6a3c`.
+- `argocd.dev05.k8s.opus2dev.com` — **EXPIRED**, ARN `213a9222-0466-4e0f-9ca2-87e92c92944c` — but **argocd's Ingress still references this expired ARN in its annotation**. Gotcha: don't copy argocd's cert ARN blindly when cloning its Ingress shape.
+
+**Argocd Ingress shape (template to copy)** — annotations: `scheme: internet-facing`, `target-type: ip`, `listen-ports: [{"HTTP":80},{"HTTPS":443}]`, `ssl-policy: ELBSecurityPolicy-FS-1-2-Res-2019-08`, `inbound-cidrs: 213.210.23.82/32,213.210.23.84/32,31.121.79.58/32,31.121.79.60/32,18.133.115.188/32,54.91.4.210/32,18.168.253.57/32,52.74.117.130/32,165.65.37.128/29,136.40.11.230/32` (10 entries; `136.40.11.230/32` added more recently than 2024 baseline), `actions.ssl-redirect: HTTP_301 to HTTPS`, `ingressClassName: alb`, `target-group-attributes: deregistration_delay.timeout_seconds=0`.
+
+**Route 53 hosted zones (same account)**:
+- `dev05.k8s.opus2dev.com.` → `Z045669519R5D9D8CKC79` (where we'd write CNAME/A-alias records).
+- Sibling zones for dev01..dev07 + parent `k8s.opus2dev.com.` + `opus2-infraeng.com.`.
+
+**Existing dev05 DNS records (precedent)**: `argocd`, `gateway`, `platform-sclose`, `platform-sclose-auth`, `platform-dev-sandbox`, `platform-dev-sandbox-auth` — all A-alias to `k8s-*-*.elb.eu-west-1.amazonaws.com`. Established naming pattern: `<app>-<env-tier>`.
+
+**No external-dns installed** — DNS records must be created manually via `aws route53 change-resource-record-sets`.
+
+**Helm chart inventory** (`deploy/helm/office-convert/`): Chart.yaml, values.yaml, templates: api-service.yaml, api-deployment.yaml, api-configmap.yaml, ui-service.yaml, ui-deployment.yaml, _helpers.tpl. No `ingress.yaml` template yet — would be new.
+
+**Three concrete paths**:
+1. **Two Ingresses, one ALB, subdomain routing** (recommended) — `alb.ingress.kubernetes.io/group.name: office-convert` merges into single ALB; each Ingress has its own `spec.rules[].host:`; Streamlit at its natural root.
+2. One Ingress, path-routed — Streamlit-behind-prefix gotchas (`STREAMLIT_SERVER_BASE_URL_PATH`, websocket idle_timeout, static asset rewrites). Rejected.
+3. Share argocd's ALB via IngressGroup — would require modifying argocd's Ingress to add `group.name`. Touching prod argocd for convenience unsafe. Rejected.
+
+**Context**: Research deliverable complete. All AWS-side prerequisites verified present; remaining work is purely Helm + DNS records.
+
+---
+
+## Session: VPC peering probe via FortiClient — confirmed dead end
+**Timestamp**: 2026-05-18T18:05:00Z
+**User Input** (turn 9): "I have fixed VPN issue added new EE VPN using FortiClient you can verify"
+**AI Response**: Verified FortiClient interface `fctvpndc0b79cc` up at 192.168.8.24. Pushed routes for corp LAN (`192.168.0.0/16`), `10.10.10.0/24`, and ~30 public AWS/SaaS `/32`s — includes EKS API endpoint (kubectl works). However, NLB private IPs (`10.35.9.155` API, `10.35.9.88` UI) are in `10.35.0.0/16` (EKS VPC CIDR), which the VPN does NOT tunnel. `ip route get 10.35.9.155` confirmed kernel sends via default wifi gateway (`192.168.31.1`), not FortiClient. Both curls timed out at 8 s.
+
+**User Input** (turn 10): "Can you try this 1. Cheapest probe (1 line, reversible) — add 10.35.0.0/16 via FortiClient and try again. ..."
+**AI Response**: Attempted via Bash tool — failed due to non-interactive sudo. Asked user to run interactively.
+
+**User Input** (turn 11): "done, test again"
+**AI Response**: Route now installed: `10.35.0.0/16 via 192.168.8.24 dev fctvpndc0b79cc`. `ip route get 10.35.9.155` confirms packets now go via FortiClient. **Connection still timed out at 8 s on all four attempts** (API by IP, UI by IP, API by hostname, UI by hostname). Packets leave laptop into FortiClient tunnel, hit corp HQ, get dropped — corp has no server-side route to AWS VPC `10.35.0.0/16`.
+
+**Conclusion**: Server-side VPC peering does NOT exist. The "add route" path is permanently dead. Only fixes are ALB Ingress (Path A) or NLB scheme flip (Path C). Asked user to roll back the route with `sudo ip route del 10.35.0.0/16 via 192.168.8.24 dev fctvpndc0b79cc` (or wait for FortiClient reconnect to clear it).
+
+**Context**: One option (VPC peering / route hack) permanently ruled out and documented in [[project-dev-deployment-status]] memory.
+
+---
+
+## Session: Hostname decision for ALB Ingress
+**Timestamp**: 2026-05-18T18:25:00Z
+**User Input** (turn 12): "Can you suggest example subdomain routing"
+**AI Response**: Proposed three hostname shapes for Path 1 subdomain routing, all under `dev05.k8s.opus2dev.com` so the existing wildcard cert covers them: (A) long & explicit — `office-convert.dev05…` + `office-convert-api.dev05…`; (B) short — `oc.dev05…` + `oc-api.dev05…`; (C) product-y — `convert.dev05…` + `convert-api.dev05…`. Showed end-to-end architecture diagram (Browser → Route 53 → ALB → Host-header routing → ClusterIP Services → pods). Condensed Ingress spec example with `host:` rules.
+
+**User Input** (turn 13): "I want somehere dev-sandbox-v1 so can you suggest again"
+**AI Response**: Flagged RFC 6125 single-label wildcard constraint (`*.dev05.k8s.opus2dev.com` matches only one DNS label). Proposed three options that keep single-label under the existing cert: (1) **recommended** — `office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com` + `office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com` (mirrors `platform-dev-sandbox` style); (2) shorter `oc-dev-sandbox-v1`; (3) tier-prefix-first `dev-sandbox-v1-office-convert`. Both option-1 hostnames are 56 chars total (well under DNS limit 253; per-label 63). Multi-label alternative (e.g. `office-convert.dev-sandbox-v1.dev05…`) noted as needing a new ACM cert.
+
+**Decision converged**: Option 1 — `office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com` (UI) + `office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com` (API). Single-label, covered by existing wildcard cert.
+
+**Context**: Implementation plan now fully specified. Helm diff drafting deferred to next session.
+
+---
+
+## Session: Memory snapshot for next-session resumption
+**Timestamp**: 2026-05-18T18:45:00Z
+**User Input** (turn 14): "Save this conversation / memory will check this option again tomorrow"
+**AI Response**: Updated three memory files for next-session continuity:
+1. `project_dev_deployment_status.md` — recorded decision convergence (Path 1 + final hostnames) and the FortiClient VPC-peering probe failure as a permanent dead end.
+2. `reference_eks_cluster_topology.md` — full ACM cert table (with the gotcha that argocd references an expired cert), Route 53 zone ID, no-external-dns note, refreshed corp CIDR allowlist.
+3. **New** `reference_alb_ingress_plan.md` — exact change list (Helm chart edits + manual Route 53 records), pre-deploy verifications, post-deploy verifications, rejected alternatives, reversibility notes. Becomes the resumption landing pad.
+
+Updated `MEMORY.md` index to point at the new memory and updated existing entries.
+
+**Loose ends documented**: (1) refresh corp CIDR allowlist before deploy (current FortiClient/office egress IP must be in list); (2) `10.35.0.0/16` route still present on laptop, cosmetic — auto-clears on next FortiClient reconnect or via `sudo ip route del`; (3) port-forwards on `localhost:8501` / `localhost:18080` still running, stop with `./deploy/scripts/portforward.sh stop`.
+
+---
+
+## Session: AIDLC docs update
+**Timestamp**: 2026-05-18T19:00:00Z
+**User Input** (turn 15): "Update aidlc docs as per changes added today"
+**AI Response**: This audit block. Plus the post-AI-DLC sections added below to `aidlc-state.md` and the new `aidlc-docs/operations/dev-deployment-topology.md` file. Production-target topology in `aidlc-docs/operations/eks-production-topology.md` remains unchanged because that document captures the **queue-driven (Q5=D)** production design, which is intentionally different from the **HTTP-fronted dev deployment** we're iterating on now. Cross-reference added in `eks-production-topology.md` §8.2 pointing at the new dev-deployment doc.
+
+---
