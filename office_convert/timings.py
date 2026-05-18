@@ -16,7 +16,7 @@ import time
 from collections import deque
 from typing import Any
 
-_MAX_PER_REQUEST = 1000  # ~ 6 stages × dozens of workers — plenty
+_MAX_PER_REQUEST = 1000  # ~ 6 stages x dozens of workers — plenty
 _TTL_SECONDS = 1800  # 30 min, matches heartbeats
 
 

@@ -108,10 +108,10 @@ class Settings(BaseSettings):
     # the legacy N-independent-workers pool is used and each worker
     # independently loads the document. Cap is per-file-size-class:
     #
-    # - For workbooks ≲ 30 MB: 4 parallel Cells loads × ~150 MB amplified
+    # - For workbooks ≲ 30 MB: 4 parallel Cells loads x ~150 MB amplified
     #   footprint = ~600 MB peak, comfortably inside the 4 GB cgroup cap.
     #   Default raised 2 → 4 on 2026-05-15: sample_large.xlsx (2.65 MB,
-    #   800 pages) was render-bound (~2 s/page), so 2× more parallelism
+    #   800 pages) was render-bound (~2 s/page), so 2x more parallelism
     #   roughly halves wall-time of the render phase.
     # - For workbooks > 100 MB: the original 4-worker pattern OOM'd
     #   (req_e11ad522 2026-05-15 on a 98 MB / 23 k-page file). For that

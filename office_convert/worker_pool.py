@@ -44,9 +44,9 @@ from office_convert.errors import (
     RenderError,
 )
 from office_convert.heartbeats import heartbeat_store
-from office_convert.timings import timing_store
 from office_convert.job_progress import job_progress_store
 from office_convert.logging import current_request_id, emit_event
+from office_convert.timings import timing_store
 from office_convert.types import Chunk, FormatName
 
 if TYPE_CHECKING:
@@ -128,72 +128,31 @@ class PooledWorker:
         text = raw.decode("utf-8", errors="replace").rstrip()
         if not text:
             return
-        if text.startswith('{"type":"load_progress"'):
-            try:
-                msg = json.loads(text)
-            except ValueError:
-                msg = None
-            if isinstance(msg, dict):
-                value = msg.get("value")
-                if isinstance(value, int | float):
-                    rid = current_request_id.get()
-                    if rid and rid != "-":
-                        job_progress_store().update(rid, load_progress=float(value))
-                return
-        if text.startswith('{"type":"heartbeat"'):
-            try:
-                hb = json.loads(text)
-            except ValueError:
-                hb = None
-            if isinstance(hb, dict):
-                hb_record = {
-                    "worker": self._format,
-                    "pool_index": self._pool_index,
-                    "pid": self._pid,
-                    "phase": hb.get("phase"),
-                    "elapsed_s": hb.get("elapsed_s"),
-                    "rss_bytes": hb.get("rss_bytes"),
-                    "swap_bytes": hb.get("swap_bytes"),
-                    "cpu_jiffies": hb.get("cpu_jiffies"),
-                    "wall_ts": time.time(),
-                }
-                emit_event("pool_worker_heartbeat", level="debug", **hb_record)
-                rid = current_request_id.get()
-                if rid and rid != "-":
-                    heartbeat_store().record(rid, hb_record)
-                return
-        if text.startswith('{"type":"timing"'):
-            try:
-                ev = json.loads(text)
-            except ValueError:
-                ev = None
-            if isinstance(ev, dict):
-                # Forward every field except the dispatcher discriminator —
-                # this way different stages can carry different fields
-                # (e.g. `pool_render.summary` carries pages/per_page_ms in
-                # addition to the base duration_ms) without changing this
-                # parser.
-                payload = {k: v for k, v in ev.items() if k != "type"}
-                emit_event(
-                    "pool_worker_timing",
-                    level="info",
-                    worker=self._format,
-                    pool_index=self._pool_index,
-                    pid=self._pid,
-                    **payload,
-                )
-                # Also store under the live request_id so the Streamlit
-                # dashboard's stage-breakdown chart can plot it.
-                rid = current_request_id.get()
-                if rid and rid != "-":
-                    timing_store().record(rid, {
-                        "worker": self._format,
-                        "pool_index": self._pool_index,
-                        "pid": self._pid,
-                        "wall_ts": time.time(),
-                        **payload,
-                    })
-                return
+        msg = self._try_parse_typed_json(text)
+        if msg is None:
+            self._log_unparsed_stderr(text)
+            return
+        msg_type = msg.get("type")
+        if msg_type == "load_progress":
+            self._handle_load_progress(msg)
+        elif msg_type == "heartbeat":
+            self._handle_heartbeat(msg)
+        elif msg_type == "timing":
+            self._handle_timing(msg)
+        else:
+            self._log_unparsed_stderr(text)
+
+    @staticmethod
+    def _try_parse_typed_json(text: str) -> dict[str, Any] | None:
+        if not text.startswith('{"type":"'):
+            return None
+        try:
+            msg = json.loads(text)
+        except ValueError:
+            return None
+        return msg if isinstance(msg, dict) else None
+
+    def _log_unparsed_stderr(self, text: str) -> None:
         log.warning(
             "pool worker stderr (worker=%s pool_index=%s pid=%s): %s",
             self._format,
@@ -201,6 +160,59 @@ class PooledWorker:
             self._pid,
             text,
         )
+
+    def _handle_load_progress(self, msg: dict[str, Any]) -> None:
+        value = msg.get("value")
+        if not isinstance(value, int | float):
+            return
+        rid = current_request_id.get()
+        if rid and rid != "-":
+            job_progress_store().update(rid, load_progress=float(value))
+
+    def _handle_heartbeat(self, msg: dict[str, Any]) -> None:
+        hb_record = {
+            "worker": self._format,
+            "pool_index": self._pool_index,
+            "pid": self._pid,
+            "phase": msg.get("phase"),
+            "elapsed_s": msg.get("elapsed_s"),
+            "rss_bytes": msg.get("rss_bytes"),
+            "swap_bytes": msg.get("swap_bytes"),
+            "cpu_jiffies": msg.get("cpu_jiffies"),
+            "wall_ts": time.time(),
+        }
+        emit_event("pool_worker_heartbeat", level="debug", **hb_record)
+        rid = current_request_id.get()
+        if rid and rid != "-":
+            heartbeat_store().record(rid, hb_record)
+
+    def _handle_timing(self, msg: dict[str, Any]) -> None:
+        # Forward every field except the dispatcher discriminator —
+        # this way different stages can carry different fields
+        # (e.g. `pool_render.summary` carries pages/per_page_ms in
+        # addition to the base duration_ms) without changing this
+        # parser.
+        payload = {k: v for k, v in msg.items() if k != "type"}
+        emit_event(
+            "pool_worker_timing",
+            level="info",
+            worker=self._format,
+            pool_index=self._pool_index,
+            pid=self._pid,
+            **payload,
+        )
+        rid = current_request_id.get()
+        if rid and rid != "-":
+            timing_store().record(
+                rid,
+                {
+                    "worker": self._format,
+                    "pool_index": self._pool_index,
+                    "pid": self._pid,
+                    "wall_ts": time.time(),
+                    **payload,
+                },
+            )
 
     async def _cancel_stderr_task(self) -> None:
         if self._stderr_task is None:
