@@ -12,10 +12,13 @@ image:
 # per pod; scale by replicas if you need parallel conversions.
 replicaCount: 1
 
-# Pod-level memory cap matches compose mem_limit. No swap on Kubernetes by
-# default (see aidlc-docs/operations/eks-production-topology.md for the
-# swap-enabled node group design). Without swap, inputs > ~250 MB PPTX
-# will OOM-kill the pod.
+# Pod-level memory cap matches the original chart shape. No swap on
+# Kubernetes by default (see aidlc-docs/operations/eks-production-topology.md
+# for the swap-enabled node group design). Without swap, conversions of
+# inputs > ~250 MB may OOM mid-render — accepted trade-off for now.
+# UI pod is bumped to 4Gi separately (see ui.resources below) so the
+# Streamlit upload buffer can handle ~1 GiB files end-to-end even though
+# the API may not convert them successfully.
 resources:
   requests:
     cpu: "1"
@@ -172,17 +175,19 @@ ui:
     type: ClusterIP
     port: 8501
     annotations: {}
-  # 2026-05-18: limits bumped from 512Mi → 1.5Gi after OOMKills during
-  # interactive use. Streamlit + pandas + plotly cold-start is ~300 MiB on its
-  # own; uploaded file bytes + chart-building working set easily pushes past
-  # 512Mi. 1.5Gi gives a real buffer without being wasteful on a dev pod.
+  # 2026-05-19: limits bumped 1.5Gi → 4Gi to handle 1 GiB uploads.
+  # Streamlit's file_uploader needs ~3x file size in peak memory during a
+  # POST (raw bytes + Tornado buffer + base64 websocket payload), so a
+  # 1 GiB upload requires ~3 GiB pod headroom on top of Streamlit's
+  # 300 MiB cold-start baseline. Previous 1.5Gi limit was OOMKilling on
+  # 398 MiB uploads.
   resources:
     requests:
       cpu: "100m"
-      memory: "512Mi"
+      memory: "1.5Gi"
     limits:
       cpu: "500m"
-      memory: "1.5Gi"
+      memory: "4Gi"
   # Streamlit server flags surfaced as env vars in the deployment.
   # XSRF off because port-forward changes the request origin and Streamlit's
   # default XSRF check rejects file uploads otherwise (the typical "AxiosError
