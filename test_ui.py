@@ -955,17 +955,20 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
 # ============================================================
 # Live Plotly charts
 # ============================================================
-def _build_empty_chart(title: str) -> go.Figure:
+def _build_empty_chart(title: str, message: str = "Awaiting conversion data") -> go.Figure:
     """Empty styled placeholder chart for the "no data yet" state.
 
     Matches the dark grid + dimensions of the live charts so the Mega Row's
     rhythm is stable from page-load (pre-first-conversion) through live runs.
-    Centered "Awaiting conversion data" annotation reads as "instrument
-    ready" rather than "feature missing".
+    Centered annotation reads as "instrument ready" rather than "feature
+    missing". `message` overrides the default text — used by the timing /
+    Gantt slots to call out that those charts only populate for XLSX inputs
+    today (worker_cpp/formats/{docx,pptx,pdf}.cpp don't yet emit timing
+    events; only xlsx.cpp does).
     """
     fig = go.Figure()
     fig.add_annotation(
-        text="Awaiting conversion data",
+        text=message,
         xref="paper",
         yref="paper",
         x=0.5,
@@ -1623,6 +1626,24 @@ def live_charts():
 
     _slot_chart_label.markdown(label, unsafe_allow_html=True)
 
+    # Format-aware empty-state messaging for the timing + Gantt slots.
+    # Timing events are emitted by worker_cpp/formats/xlsx.cpp only; the
+    # docx/pptx/pdf workers don't have the equivalent `emit_timing_ms()`
+    # instrumentation yet. So a DOCX conversion populates Memory (heartbeats
+    # from the format-agnostic pool.cpp) but Time/Gantt stay empty by design.
+    # Surface that fact in the placeholder text instead of leaving the user
+    # to wonder why 2 charts are stuck.
+    src_name: str | None = None
+    if active is not None and active.get("input_name"):
+        src_name = active["input_name"]
+    elif _results and _results[0].get("input"):
+        src_name = _results[0]["input"]
+    ext = (src_name.rsplit(".", 1)[-1].lower() if src_name and "." in src_name else "")
+    timing_msg = (
+        "Awaiting timing data" if ext in {"xlsx", "xls", "xlt", "xlsm"}
+        else "Timing emitted by XLSX worker only (docx/pptx/pdf TBD)"
+    )
+
     fig_mem = _build_memory_chart(rid) if rid else None
     if fig_mem is None:
         fig_mem = _build_empty_chart("💾 Memory over time")
@@ -1636,7 +1657,7 @@ def live_charts():
 
     fig_tim = _build_timing_chart(rid) if rid else None
     if fig_tim is None:
-        fig_tim = _build_empty_chart("⏱️ Time per stage")
+        fig_tim = _build_empty_chart("⏱️ Time per stage", message=timing_msg)
     fig_tim.update_layout(uirevision="tim-chart")
     _slot_chart_tim.plotly_chart(
         fig_tim,
@@ -1647,7 +1668,7 @@ def live_charts():
 
     fig_gantt = _build_chunk_gantt(rid) if rid else None
     if fig_gantt is None:
-        fig_gantt = _build_empty_chart("📊 Chunk Gantt")
+        fig_gantt = _build_empty_chart("📊 Chunk Gantt", message=timing_msg)
     fig_gantt.update_layout(uirevision="gantt-chart")
     _slot_chart_gantt.plotly_chart(
         fig_gantt,

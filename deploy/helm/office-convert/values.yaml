@@ -52,6 +52,11 @@ config:
   chunk_timeout_seconds: 600
   scratch_dir: "/tmp/office-convert"
   license_path: "/aspose/license.lic"
+  # Force pool mode on every conversion (default Pydantic value is 2 = pool
+  # only when >= 2 chunks). 1 means even single-chunk small files use the
+  # pool, which is what makes the dashboard's heartbeat/timing/Gantt charts
+  # populate. Trade-off: pool mode adds ~1-2s fork+load overhead per conv.
+  pool_min_chunks: 1
   # Max accepted upload size on the /convert endpoint. Quoted to dodge
   # Helm's int-to-scientific-notation conversion. 1 GiB matches Pydantic's
   # `le=1*1024*1024*1024` upper bound in office_convert/config.py — to

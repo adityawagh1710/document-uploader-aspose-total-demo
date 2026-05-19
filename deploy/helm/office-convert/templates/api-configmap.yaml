@@ -14,3 +14,4 @@ data:
   OFFICE_CONVERT_SCRATCH_DIR: {{ .Values.config.scratch_dir | quote }}
   OFFICE_CONVERT_LICENSE_PATH: {{ .Values.config.license_path | quote }}
   OFFICE_CONVERT_MAX_INPUT_BYTES: {{ .Values.config.max_input_bytes | quote }}
+  OFFICE_CONVERT_POOL_MIN_CHUNKS: {{ .Values.config.pool_min_chunks | quote }}
