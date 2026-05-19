@@ -377,11 +377,16 @@ _deploy-dev-impl:
 	    --set ui.image.repository=$(ECR_REPO_UI) \
 	    --set ui.image.tag=$(IMAGE_TAG) \
 	    --wait --timeout 5m
-	@printf "$(GREEN)[7/7] Deploy complete. Pod status:$(RESET)\n"
-	@kubectl get pods,svc -n $(NAMESPACE)
+	@printf "$(GREEN)[7/8] Route 53 A-alias upsert...$(RESET)\n"
+	@AWS_PROFILE=$${AWS_PROFILE:-} NAMESPACE=$(NAMESPACE) ./deploy/scripts/route53-upsert.sh
+	@printf "$(GREEN)[8/8] Deploy complete. Pod status:$(RESET)\n"
+	@kubectl get pods,svc,ingress -n $(NAMESPACE)
 	@printf "\n$(BLUE)API NLB hostname (may take ~60s to populate):$(RESET)\n"
 	@NLB=$$(kubectl get svc office-convert -n $(NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null); \
-	if [ -n "$$NLB" ]; then printf "  $$NLB\n"; else printf "  (still provisioning — re-run \`make deploy-status\` in 60s)\n"; fi
+	if [ -n "$$NLB" ]; then printf "  $$NLB\n"; else printf "  (still provisioning, or already cut over to ClusterIP — check ALB Ingress instead)\n"; fi
+	@printf "\n$(BLUE)ALB Ingress hostname:$(RESET)\n"
+	@ALB=$$(kubectl get ingress office-convert-ui -n $(NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null); \
+	if [ -n "$$ALB" ]; then printf "  $$ALB\n"; else printf "  (still provisioning)\n"; fi
 	@printf "\n$(BLUE)Image digests (in ECR):$(RESET)\n"
 	@DIGEST=$$(aws ecr describe-images --repository-name office-convert --image-ids imageTag=$(IMAGE_TAG) --region $(AWS_REGION) --query 'imageDetails[0].imageDigest' --output text 2>/dev/null); \
 	if [ -n "$$DIGEST" ] && [ "$$DIGEST" != "None" ]; then printf "  API: $$DIGEST\n"; else printf "  API: (could not resolve)\n"; fi
@@ -458,11 +463,13 @@ undeploy-dev: ## DEPLOY uninstall office-convert from EKS dev cluster (full reve
 	} 2>&1 | tee $$LOG
 
 _undeploy-dev-impl:
-	@printf "$(GREEN)[1/3] helm uninstall...$(RESET)\n"
+	@printf "$(GREEN)[1/4] Route 53 A-alias delete (BEFORE helm uninstall so ALB still exists)...$(RESET)\n"
+	-AWS_PROFILE=$${AWS_PROFILE:-} ./deploy/scripts/route53-delete.sh
+	@printf "$(GREEN)[2/4] helm uninstall...$(RESET)\n"
 	-helm uninstall $(HELM_RELEASE) --namespace $(NAMESPACE)
-	@printf "$(GREEN)[2/3] delete license Secret...$(RESET)\n"
+	@printf "$(GREEN)[3/4] delete license Secret...$(RESET)\n"
 	-kubectl delete secret aspose-license --namespace $(NAMESPACE) --ignore-not-found
-	@printf "$(GREEN)[3/3] delete namespace $(NAMESPACE)...$(RESET)\n"
+	@printf "$(GREEN)[4/4] delete namespace $(NAMESPACE)...$(RESET)\n"
 	-kubectl delete namespace $(NAMESPACE) --ignore-not-found
 	@printf "$(GREEN)Undeploy complete. ECR images still exist (kept by design):$(RESET)\n"
 	@printf "    $(ECR_REPO):$(IMAGE_TAG)\n"
