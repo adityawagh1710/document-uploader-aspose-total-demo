@@ -1626,23 +1626,12 @@ def live_charts():
 
     _slot_chart_label.markdown(label, unsafe_allow_html=True)
 
-    # Format-aware empty-state messaging for the timing + Gantt slots.
-    # Timing events are emitted by worker_cpp/formats/xlsx.cpp only; the
-    # docx/pptx/pdf workers don't have the equivalent `emit_timing_ms()`
-    # instrumentation yet. So a DOCX conversion populates Memory (heartbeats
-    # from the format-agnostic pool.cpp) but Time/Gantt stay empty by design.
-    # Surface that fact in the placeholder text instead of leaving the user
-    # to wonder why 2 charts are stuck.
-    src_name: str | None = None
-    if active is not None and active.get("input_name"):
-        src_name = active["input_name"]
-    elif _results and _results[0].get("input"):
-        src_name = _results[0]["input"]
-    ext = (src_name.rsplit(".", 1)[-1].lower() if src_name and "." in src_name else "")
-    timing_msg = (
-        "Awaiting timing data" if ext in {"xlsx", "xls", "xlt", "xlsm"}
-        else "Timing emitted by XLSX worker only (docx/pptx/pdf TBD)"
-    )
+    # Empty-state message for the timing + Gantt slots. All four format
+    # workers (docx/pptx/pdf/xlsx) now emit `pool_load.*` + `pool_render.*`
+    # timing events via the shared worker_cpp/timing_util.h helper, so the
+    # only reason these charts stay empty is "no in-flight or recent run"
+    # — same as the Memory chart.
+    timing_msg = "Awaiting timing data"
 
     fig_mem = _build_memory_chart(rid) if rid else None
     if fig_mem is None:

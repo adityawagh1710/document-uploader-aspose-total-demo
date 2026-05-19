@@ -599,6 +599,39 @@ class ForkedPoolLeader:
                 if rid and rid != "-":
                     heartbeat_store().record(rid, hb_record)
                 return
+        if text.startswith('{"type":"timing"'):
+            try:
+                msg = json.loads(text)
+            except ValueError:
+                msg = None
+            if isinstance(msg, dict):
+                # Mirror WorkerPool._read_stderr's timing path so the
+                # Forked variant (docx/pptx/pdf) ends up at the same store
+                # the legacy one (xlsx) writes to. Pre-fix, the line below
+                # fell through to log.warning and the dashboard's Time /
+                # Gantt charts stayed empty for non-XLSX conversions.
+                payload = {k: v for k, v in msg.items() if k != "type"}
+                emit_event(
+                    "pool_worker_timing",
+                    level="info",
+                    worker=self._format,
+                    pool_index=payload.get("pool_index", 0),
+                    pid=self._pid,
+                    **{k: v for k, v in payload.items() if k != "pool_index"},
+                )
+                rid = current_request_id.get()
+                if rid and rid != "-":
+                    timing_store().record(
+                        rid,
+                        {
+                            "worker": self._format,
+                            "pool_index": payload.get("pool_index", 0),
+                            "pid": self._pid,
+                            "wall_ts": time.time(),
+                            **{k: v for k, v in payload.items() if k != "pool_index"},
+                        },
+                    )
+                return
         log.warning(
             "fork leader stderr (worker=%s pid=%s): %s",
             self._format,

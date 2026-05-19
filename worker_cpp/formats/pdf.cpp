@@ -13,7 +13,9 @@
 #include <system/object.h>
 #include <system/string.h>
 
+#include <chrono>
 #include <cstdio>
+#include <iostream>
 #include <string>
 
 #include "../error.h"
@@ -22,6 +24,7 @@
 #include "../probe.h"
 #include "../probe_util.h"
 #include "../render.h"
+#include "../timing_util.h"
 
 namespace office_convert {
 
@@ -127,7 +130,12 @@ void dispatch_probe(const ProbeArgs& args) {
 
 int pool_load(const std::string& input_path) {
     g_input_path = input_path;
+
+    auto t0 = std::chrono::steady_clock::now();
     g_page_count = probe_pdf_page_count(input_path);
+    auto t1 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_load.probe", t1 - t0);
+
     return g_page_count;
 }
 
@@ -135,7 +143,44 @@ void pool_render(int page_start, int page_end, const std::string& output_path) {
     if (g_input_path.empty()) {
         throw RenderException("pool_render: no document loaded");
     }
-    render_pdf_range(g_input_path, page_start, page_end, output_path);
+
+    // Reload the document each render (PDF pool reloads because Delete()
+    // mutates state). Instrument load / mutate / save separately so the
+    // Time-per-stage chart shows where per-chunk cost actually goes.
+    auto t0 = std::chrono::steady_clock::now();
+    auto source = System::MakeObject<Aspose::Pdf::Document>(
+        System::String(g_input_path.c_str()));
+    auto t1 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_render.document_load", t1 - t0);
+
+    int total_pages = source->get_Pages()->get_Count();
+
+    auto t2 = std::chrono::steady_clock::now();
+    // Fast path: full document — skip the Delete() loops entirely.
+    if (page_start == 1 && page_end >= total_pages) {
+        // no-op; just measure the (empty) mutation phase
+    } else {
+        // Delete pages after the requested range (from end backwards)
+        for (int i = total_pages; i > page_end; --i) {
+            source->get_Pages()->Delete(i);
+        }
+        // Delete pages before the requested range
+        for (int i = 1; i < page_start; ++i) {
+            source->get_Pages()->Delete(1);
+        }
+    }
+    auto t3 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_render.delete_pages", t3 - t2);
+
+    auto t4 = std::chrono::steady_clock::now();
+    source->Save(System::String(output_path.c_str()));
+    auto t5 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_render.save", t5 - t4);
+
+    const int pages_in_chunk = page_end - page_start + 1;
+    const long save_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count();
+    emit_render_summary(pages_in_chunk, page_start, page_end, save_ms);
 }
 
 }  // namespace office_convert

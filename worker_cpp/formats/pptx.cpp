@@ -14,7 +14,9 @@
 #include <system/object.h>
 #include <system/string.h>
 
+#include <chrono>
 #include <cstdio>
+#include <iostream>
 #include <string>
 
 #include "../error.h"
@@ -23,6 +25,7 @@
 #include "../probe.h"
 #include "../probe_util.h"
 #include "../render.h"
+#include "../timing_util.h"
 
 namespace office_convert {
 
@@ -115,16 +118,34 @@ void dispatch_probe(const ProbeArgs& args) {
 // --- Pool mode ---
 
 int pool_load(const std::string& input_path) {
+    auto t0 = std::chrono::steady_clock::now();
     g_presentation = System::MakeObject<Aspose::Slides::Presentation>(
         System::String(input_path.c_str()));
-    return g_presentation->get_Slides()->get_Count();
+    auto t1 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_load.presentation_load", t1 - t0);
+
+    auto t2 = std::chrono::steady_clock::now();
+    int slide_count = g_presentation->get_Slides()->get_Count();
+    auto t3 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_load.slide_count", t3 - t2);
+
+    return slide_count;
 }
 
 void pool_render(int page_start, int page_end, const std::string& output_path) {
     if (!g_presentation) {
         throw RenderException("pool_render: no document loaded");
     }
+
+    auto t0 = std::chrono::steady_clock::now();
     render_pptx_from(g_presentation, page_start, page_end, output_path);
+    auto t1 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_render.save", t1 - t0);
+
+    const int pages_in_chunk = page_end - page_start + 1;
+    const long save_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    emit_render_summary(pages_in_chunk, page_start, page_end, save_ms);
 }
 
 }  // namespace office_convert
