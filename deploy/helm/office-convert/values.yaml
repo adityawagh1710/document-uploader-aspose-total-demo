@@ -25,15 +25,14 @@ resources:
     memory: "4Gi"
 
 service:
-  # LoadBalancer = AWS NLB (auto-provisioned). Internal scheme keeps the
-  # NLB VPC-only, since the /convert endpoint has no auth in v1.
-  type: LoadBalancer
+  # ClusterIP — Ingress (ALB) is the only ingress surface now. The previous
+  # internal NLB was unreachable from corp laptops because the VPN doesn't
+  # peer with the VPC; the ALB Ingress fronts traffic via DNS + corp CIDR
+  # allowlist instead. See deploy/helm/office-convert/templates/ingress.yaml.
+  type: ClusterIP
   port: 80
   targetPort: 8080
-  annotations:
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
-    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+  annotations: {}
 
 # OFFICE_CONVERT_* env vars rendered into a ConfigMap. Pydantic
 # `env_prefix="OFFICE_CONVERT_"` (office_convert/config.py) consumes them.
@@ -153,20 +152,13 @@ ui:
     pullPolicy: IfNotPresent
   replicaCount: 1
   service:
-    # Internal NLB — same scheme as the API service. Reachable from inside
-    # the VPC at the NLB hostname; reachable from your laptop only via
-    # `kubectl port-forward -n office-convert-dev svc/office-convert-ui 8501:8501`
-    # until the corp VPN peers with the VPC (currently doesn't).
-    type: LoadBalancer
+    # ClusterIP — ALB Ingress fronts the UI now. The previous internal NLB
+    # was VPC-only and unreachable from corp laptops without VPC peering.
+    # See deploy/helm/office-convert/templates/ingress.yaml for the
+    # subdomain-routed ALB shared with the API.
+    type: ClusterIP
     port: 8501
-    # Explicit loadBalancerClass forces AWS Load Balancer Controller (LBC)
-    # ownership, avoiding a race with the in-tree cloud controller (CCM).
-    # Without this, CCM can grab the service first and ignore the LBC-style
-    # `scheme: internal` annotation, leaving the NLB internet-facing.
-    annotations:
-      service.beta.kubernetes.io/aws-load-balancer-type: "external"
-      service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
-      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    annotations: {}
   # 2026-05-18: limits bumped from 512Mi → 1.5Gi after OOMKills during
   # interactive use. Streamlit + pandas + plotly cold-start is ~300 MiB on its
   # own; uploaded file bytes + chart-building working set easily pushes past
