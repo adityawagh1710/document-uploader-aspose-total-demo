@@ -680,6 +680,12 @@ for r in reversed(_snap_results):
         st.session_state.history.insert(0, r)
         st.session_state.seen_result_ids.add(r["id"])
 
+# Bound session-state memory growth: each history item holds the full output
+# PDF bytes (`item["data"]`) and a Streamlit download_button blob, so an
+# unbounded list quickly pushes the UI pod past its 1.5Gi limit. Cap to the
+# same ceiling the process-wide store uses.
+del st.session_state.history[MAX_RECENT_RESULTS:]
+
 # ============================================================
 # LIVE STATS (auto-refresh every 2s — now actually live during conversion)
 #
@@ -949,6 +955,54 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
 # ============================================================
 # Live Plotly charts
 # ============================================================
+def _build_empty_chart(title: str) -> go.Figure:
+    """Empty styled placeholder chart for the "no data yet" state.
+
+    Matches the dark grid + dimensions of the live charts so the Mega Row's
+    rhythm is stable from page-load (pre-first-conversion) through live runs.
+    Centered "Awaiting conversion data" annotation reads as "instrument
+    ready" rather than "feature missing".
+    """
+    fig = go.Figure()
+    fig.add_annotation(
+        text="Awaiting conversion data",
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        font=dict(size=11, color="rgba(148,163,184,0.7)"),
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=title, font=dict(size=12)),
+        xaxis=dict(
+            title=None,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zerolinecolor="rgba(255,255,255,0.18)",
+            tickfont=dict(size=9),
+            showticklabels=False,
+            range=[0, 1],
+        ),
+        yaxis=dict(
+            title=None,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zerolinecolor="rgba(255,255,255,0.18)",
+            tickfont=dict(size=9),
+            showticklabels=False,
+            range=[0, 1],
+        ),
+        height=210,
+        margin=dict(l=8, r=14, t=36, b=24),
+        plot_bgcolor="rgba(15,23,42,0.7)",
+        paper_bgcolor="rgba(15,23,42,0)",
+        showlegend=False,
+    )
+    return fig
+
+
 def _build_memory_chart(request_id: str) -> go.Figure | None:
     """Multi-line chart: RSS (solid) + Swap (dotted) per pool worker over time.
 
@@ -1545,48 +1599,62 @@ def live_charts():
         last = _results[0]
         rid = last.get("id")
         if not rid:
-            return
-        label = (
-            f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
-            f'margin-bottom:-0.3rem;">📊 Last completed · '
-            f'<code style="font-size:0.8rem;">{rid}</code> · '
-            f'{last["input"]} · {last["time"]:.1f}s · '
-            f'<span style="opacity:0.6;">data kept for 30 min</span></div>'
-        )
+            rid = None
+            label = (
+                '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
+                'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
+                'charts will populate live</div>'
+            )
+        else:
+            label = (
+                f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
+                f'margin-bottom:-0.3rem;">📊 Last completed · '
+                f'<code style="font-size:0.8rem;">{rid}</code> · '
+                f'{last["input"]} · {last["time"]:.1f}s · '
+                f'<span style="opacity:0.6;">data kept for 30 min</span></div>'
+            )
     else:
-        return
+        rid = None
+        label = (
+            '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
+            'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
+            'charts will populate live</div>'
+        )
 
     _slot_chart_label.markdown(label, unsafe_allow_html=True)
 
-    fig_mem = _build_memory_chart(rid)
-    if fig_mem is not None:
-        fig_mem.update_layout(uirevision="mem-chart")
-        _slot_chart_mem.plotly_chart(
-            fig_mem,
-            width="stretch",
-            key="chart_mem",
-            config={"displayModeBar": False},
-        )
+    fig_mem = _build_memory_chart(rid) if rid else None
+    if fig_mem is None:
+        fig_mem = _build_empty_chart("💾 Memory over time")
+    fig_mem.update_layout(uirevision="mem-chart")
+    _slot_chart_mem.plotly_chart(
+        fig_mem,
+        width="stretch",
+        key="chart_mem",
+        config={"displayModeBar": False},
+    )
 
-    fig_tim = _build_timing_chart(rid)
-    if fig_tim is not None:
-        fig_tim.update_layout(uirevision="tim-chart")
-        _slot_chart_tim.plotly_chart(
-            fig_tim,
-            width="stretch",
-            key="chart_tim",
-            config={"displayModeBar": False},
-        )
+    fig_tim = _build_timing_chart(rid) if rid else None
+    if fig_tim is None:
+        fig_tim = _build_empty_chart("⏱️ Time per stage")
+    fig_tim.update_layout(uirevision="tim-chart")
+    _slot_chart_tim.plotly_chart(
+        fig_tim,
+        width="stretch",
+        key="chart_tim",
+        config={"displayModeBar": False},
+    )
 
-    fig_gantt = _build_chunk_gantt(rid)
-    if fig_gantt is not None:
-        fig_gantt.update_layout(uirevision="gantt-chart")
-        _slot_chart_gantt.plotly_chart(
-            fig_gantt,
-            width="stretch",
-            key="chart_gantt",
-            config={"displayModeBar": False},
-        )
+    fig_gantt = _build_chunk_gantt(rid) if rid else None
+    if fig_gantt is None:
+        fig_gantt = _build_empty_chart("📊 Chunk Gantt")
+    fig_gantt.update_layout(uirevision="gantt-chart")
+    _slot_chart_gantt.plotly_chart(
+        fig_gantt,
+        width="stretch",
+        key="chart_gantt",
+        config={"displayModeBar": False},
+    )
 
 
 # Stats display — drives the slots that live in the top section. Called
@@ -1608,7 +1676,11 @@ if uploaded_file:
             "⏳ A conversion is already running — submit another after it finishes."
         )
     else:
-        size_mb = len(uploaded_file.getvalue()) / 1024 / 1024
+        # `.size` reads the size from Streamlit's UploadedFile metadata
+        # without materializing the bytes. `getvalue()` would copy the full
+        # buffer just to call len() on it — wasted O(file_size) work on
+        # every script rerun until the user clicks Start Conversion.
+        size_mb = uploaded_file.size / 1024 / 1024
         st.info(f"📁 **{uploaded_file.name}** — {size_mb:.2f} MB")
 
         if st.button("▶️ Start Conversion", type="primary"):
@@ -1647,7 +1719,22 @@ if st.session_state.history:
                 key=f"dl_{i}_{item['ts']}",
             )
         with col3:
-            st.text(f"{item['time']:.1f}s")
+            # Per-session remove: drops just this entry from
+            # st.session_state.history. The process-wide s["results"] store
+            # (capped at MAX_RECENT_RESULTS) is untouched, so other sessions
+            # / full page refreshes still see the entry until process rotation
+            # ages it out. seen_result_ids retains the id so the deleted
+            # entry doesn't reappear on the next script rerun in THIS session.
+            del_id = item.get("id")
+            if st.button(
+                "🗑️",
+                key=f"del_{del_id or i}_{item['ts']}",
+                help="Remove from this session's history",
+            ):
+                st.session_state.history = [
+                    h for h in st.session_state.history if h.get("id") != del_id
+                ]
+                st.rerun()
 
 # ============================================================
 # LIVE EVENTS FEED — Kubernetes "Cluster problems"-style panel at the
