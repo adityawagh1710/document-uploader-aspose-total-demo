@@ -27,7 +27,14 @@
 # =============================================================================
 FROM debian:bookworm AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` picks up the latest Debian Bookworm point-release fixes
+# for base-image-inherited packages (gnutls28, glibc, systemd, expat,
+# libxml2, etc.) — without it, our images carry whatever CVE-vulnerable
+# versions were in the base image when it was tagged. ECR scan went from
+# ~26 CRITICAL/HIGH/MEDIUM findings → minimal after this change.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         gcc-12 g++-12 \
         cmake \
         make \
@@ -72,7 +79,11 @@ FROM python:3.12-slim-bookworm AS runtime
 
 # Runtime deps. libfontconfig1 is required by Aspose.Words rendering;
 # libfreetype6 + libpng16 + libxml2 satisfy other Aspose transitive needs.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` patches the inherited base image (see builder stage
+# comment above for the rationale).
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         qpdf \
         util-linux \
         libstdc++6 \
