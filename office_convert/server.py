@@ -290,6 +290,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         events = timing_store().get(request_id)
         return JSONResponse(content={"request_id": request_id, "timings": events})
 
+    @app.get("/stats")
+    async def container_stats() -> JSONResponse:
+        from office_convert.container_stats import read_container_stats
+
+        return JSONResponse(content=read_container_stats())
+
+    @app.get("/workers")
+    async def container_workers() -> JSONResponse:
+        from office_convert.container_stats import list_workers
+
+        return JSONResponse(content={"workers": list_workers()})
+
     @app.get("/jobs/{request_id}/progress")
     async def get_progress(request_id: str) -> JSONResponse:
         from office_convert.job_progress import job_progress_store

@@ -185,6 +185,18 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       API_URL: "http://office-convert:8080"
+      # Match the API's OFFICE_CONVERT_MAX_INPUT_BYTES=1 GiB (above).
+      # Streamlit's default file_uploader cap is 200 MB, which silently
+      # rejects bigger files before they reach the API. Value in MiB.
+      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "1024"
+      # XSRF off — newer Streamlit versions enforce XSRF strictly on
+      # file uploads and the check rejects them with a silent 403 in
+      # ANY origin mismatch (port-forward, reverse-proxy, even just
+      # localhost browsers depending on Streamlit version). The UI is
+      # internal-only with no auth in v1, so XSRF adds no real security.
+      # Matches the EKS chart (deploy/helm/.../values.yaml ui.streamlit).
+      STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION: "false"
+      STREAMLIT_SERVER_ENABLE_CORS: "false"
     depends_on:
       - office-convert
 
