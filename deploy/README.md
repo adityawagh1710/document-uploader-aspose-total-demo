@@ -13,13 +13,15 @@ migration plan, read
 
 ```
 deploy/
-├── README.md           ← this file
+├── README.md            ← this file
 ├── helm/
-│   └── office-convert/ ← Helm chart (API + UI; values.yaml is the entry point)
+│   └── office-convert/  ← Helm chart (API + UI + Ingress; values.yaml is the entry point)
 ├── scripts/
-│   ├── portforward.sh  ← idempotent kubectl port-forward wrapper for API + UI
-│   └── eks-vpn-routes.sh  ← adds /32 routes for the EKS API endpoint after VPN reconnect
-└── logs/               ← timestamped deploy / undeploy / port-forward logs (gitignored)
+│   ├── portforward.sh       ← idempotent kubectl port-forward wrapper for API + UI
+│   ├── eks-vpn-routes.sh    ← adds /32 routes for the EKS API endpoint after VPN reconnect
+│   ├── route53-upsert.sh    ← UPSERTs both A-aliases at UI/API hostnames → live ALB (called from `make deploy-dev`)
+│   └── route53-delete.sh    ← DELETEs both A-aliases (called from `make undeploy-dev` BEFORE `helm uninstall`)
+└── logs/                ← timestamped deploy / undeploy / port-forward logs (gitignored)
 ```
 
 ## Prerequisites
@@ -27,7 +29,7 @@ deploy/
 - `kubectl` configured against `DEV05-EKS-CLUSTER` (account `537462380503`, region `eu-west-1`, profile `opus2-dev`).
 - `helm` v3.16+.
 - `aws` CLI with `opus2-dev` SSO credentials.
-- Corp VPN active. EKS API endpoint reaches via `/32` routes pushed by `eks-vpn-routes.sh`. NLB private IPs are NOT reachable from the laptop today (corp does not peer with the VPC) — use `portforward.sh` for browser access.
+- Corp VPN active. EKS API endpoint reaches via `/32` routes pushed by `eks-vpn-routes.sh`. NLB private IPs are NOT reachable from the laptop (corp does not peer with the VPC) — for browser access use **either** the ALB Ingress (live since 2026-05-19, see [`aidlc-docs/operations/dev-deployment-topology.md`](../aidlc-docs/operations/dev-deployment-topology.md) §11) **or** `portforward.sh` as fallback.
 
 ## Common workflows
 
@@ -36,16 +38,23 @@ All commands run from the repo root unless noted.
 ### Install / update
 
 ```bash
-AWS_ACCOUNT_ID=537462380503 AWS_REGION=eu-west-1 \
+AWS_PROFILE=opus2-dev AWS_ACCOUNT_ID=537462380503 AWS_REGION=eu-west-1 \
     IMAGE_TAG=$(git rev-parse --short HEAD) \
     make deploy-dev
 ```
 
-`make deploy-dev` performs a **full undeploy + redeploy** cycle (not
-`helm upgrade` in place — this is the project's deliberate workflow).
-Pushes API + UI images to ECR if missing, then `helm install`s the chart.
-Logs land in `deploy/logs/deploy-<timestamp>.log`; the rendered manifest
-lands in `deploy/logs/manifest-<timestamp>.yaml`.
+`make deploy-dev` runs an 8-step pipeline: ECR repo create-if-missing → ECR
+login → build + push API + UI images → namespace + license `Secret` →
+`helm upgrade --install` → **`route53-upsert.sh`** (waits for the ALB
+hostname, then UPSERTs both A-aliases) → print pod/service/ingress state +
+NLB + ALB hostnames + image digests + AWS console deep-links.
+
+Internally the target uses `helm upgrade --install` (idempotent), but the
+operator convention is to **always run `make undeploy-dev` first** before
+re-deploying — see [`reference_corp_vpn_constraints`](#known-constraints)
+linked memory `feedback_deploy_workflow`. Logs land in
+`deploy/logs/deploy-<timestamp>.log`; the rendered manifest lands in
+`deploy/logs/manifest-<timestamp>.yaml`.
 
 ### Tear down
 
@@ -53,9 +62,16 @@ lands in `deploy/logs/manifest-<timestamp>.yaml`.
 make undeploy-dev
 ```
 
-`helm uninstall` + namespace cleanup. AWS Load Balancer Controller
-deprovisions the NLBs on the way out (~1 min). Re-running `make deploy-dev`
-later allocates fresh NLB hostnames — AWS doesn't recycle ELB names.
+4-step pipeline: **`route53-delete.sh`** (runs FIRST, while the Ingress
+still holds the ALB DNS name needed for the Route 53 DELETE payload) →
+`helm uninstall` → delete license `Secret` → delete namespace. ECR images
+are retained by design; cleanup commands for them are printed (not run).
+AWS LBC deprovisions the ALB + NLBs in ~60 s after `helm uninstall`.
+Re-running `make deploy-dev` later allocates fresh ALB + NLB hostnames
+(AWS doesn't recycle ELB names), and `route53-upsert.sh` repoints DNS
+automatically — so the bookmarkable hostnames in
+[`aidlc-docs/operations/dev-deployment-topology.md`](../aidlc-docs/operations/dev-deployment-topology.md)
+§11 survive any undeploy/redeploy cycle.
 
 ### Browser access (port-forward)
 
@@ -93,9 +109,10 @@ sessions outside the port-forward flow.
 
 - **API Deployment** — FastAPI orchestrator (`uvicorn office_convert.server:app`), `replicaCount: 1`, `max_jobs: 1`, `parallel: 2`. Resources: `1–4 CPU`, `2–4 GiB memory`. **No swap on K8s** (vs. compose's 6 GiB cushion); big PPTX/XLSX inputs > ~250 MB will OOM the pod.
 - **UI Deployment** — Streamlit dashboard (`test_ui.py`). Resources: `0.1–0.5 CPU`, `512Mi–1.5Gi memory` (bumped from 512Mi after OOMKills on 2026-05-18). Talks to the API via in-cluster DNS.
-- **Two LoadBalancer Services** — both `scheme: internal` NLBs today. **Migration to ALB Ingress + ACM TLS planned** — see `aidlc-docs/operations/dev-deployment-topology.md` §4 for the target shape and §6 for the change list.
+- **Two LoadBalancer Services** — both internal NLBs. Currently coexist alongside the ALB Ingress (commit A "alongside NLBs"); local commit `33ba4c6` flips them to `ClusterIP` to drop the dormant NLBs.
+- **Two Ingresses sharing one ALB** (`templates/ingress.yaml`) — internet-facing, corp-CIDR allowlisted, wildcard ACM TLS terminated at the ALB. `group.name: office-convert` merges UI + API Ingresses onto the same ALB; subdomain routing by Host header. See [`aidlc-docs/operations/dev-deployment-topology.md`](../aidlc-docs/operations/dev-deployment-topology.md) §6/§11 for the as-built spec and live state.
 - **ConfigMap** — `OFFICE_CONVERT_*` env vars; consumed by Pydantic's `env_prefix` in `office_convert/config.py`.
-- **License via existing Secret** — `aspose-license` Secret must exist before `helm install`. Not chart-managed; create with:
+- **License via existing Secret** — `aspose-license` Secret must exist before `helm install`. Not chart-managed; created automatically by `make deploy-dev` step [5/8] from `$(LICENSE_FILE)`, or manually with:
   ```bash
   kubectl create secret generic aspose-license \
       --from-file=license.lic=./Aspose.TotalforC++.lic \
@@ -104,9 +121,10 @@ sessions outside the port-forward flow.
 
 ## Known constraints
 
-- **NLB reachability**: corp FortiClient VPN gives `/32` routes for the EKS API endpoint (kubectl works) but does NOT tunnel VPC private CIDRs. NLB private IPs in `10.35.0.0/16` are unreachable from the laptop. Verified by route probe 2026-05-18 — adding `ip route add 10.35.0.0/16 via 192.168.8.24 dev fctvpndc0b79cc` does NOT help (corp's server-side routing has no path to the VPC). **The workaround is `portforward.sh`; the migration is ALB Ingress with a corp-CIDR-allowlisted internet-facing URL.**
+- **NLB reachability** (unchanged from 2026-05-18): corp FortiClient VPN gives `/32` routes for the EKS API endpoint (kubectl works) but does NOT tunnel VPC private CIDRs. The internal NLB private IPs in `10.35.0.0/16` are unreachable from the laptop, and laptop-side static routes don't help (corp HQ has no server-side path to the VPC). The ALB Ingress (live since 2026-05-19) is the production access path; `portforward.sh` is the fallback. The dormant internal NLBs survive only because commit B hasn't been deployed yet.
+- **Browser-to-ALB reachability**: requires the operator's egress IP to be in `values.yaml` `ingress.inboundCidrs`. Aditya's split-tunnel laptop hits the ALB via local ISP (not via FortiClient tunnel), so the per-operator ISP IP must be allowlisted — either committed to the chart (for stable office IPs) or added live via `kubectl annotate` (for ephemeral home IPs). See [`aidlc-docs/operations/dev-deployment-topology.md`](../aidlc-docs/operations/dev-deployment-topology.md) §11 for the live `kubectl annotate` recipe.
 - **UI runs as root**: `Dockerfile.ui` doesn't set `USER`. Explicit TODO in `values.yaml`. Pod's `securityContext` is empty (the shared `podSecurityContext.runAsNonRoot: true` would block the UI from starting otherwise).
-- **No application-layer auth in v1**: Q6 = X in `aidlc-docs/aidlc-state.md`. Whatever sits in front of the LB is the only gate. Today that's "VPC-internal only"; post-ALB-migration it will be "corp CIDR allowlist + TLS".
+- **No application-layer auth in v1**: Q6 = X in `aidlc-docs/aidlc-state.md`. Whatever sits in front of the LB is the only gate. Currently that's "corp CIDR allowlist + TLS" at the ALB; the dormant NLBs add an extra "VPC-internal only" layer for any caller that finds them.
 
 ## Cross-references
 

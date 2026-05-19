@@ -293,6 +293,11 @@ HELM_RELEASE    ?= office-convert
 ECR_REPO         = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/office-convert
 ECR_REPO_UI      = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/office-convert-ui
 DEPLOY_LOG_DIR  ?= $(PROJECT_DIR)/deploy/logs
+# Route 53 zone for the ALB Ingress A-aliases. Default matches the office-convert
+# chart's `ingress.uiHost` / `apiHost` (both under dev05.k8s.opus2dev.com). Exported
+# so deploy/scripts/route53-{upsert,delete}.sh inherit it.
+HOSTED_ZONE_ID  ?= Z045669519R5D9D8CKC79
+export HOSTED_ZONE_ID
 
 deploy-dev: ## DEPLOY install office-convert to EKS dev cluster (logs to deploy/logs/; needs AWS_ACCOUNT_ID, AWS_REGION, IMAGE_TAG)
 	@if [ -z "$(AWS_ACCOUNT_ID)" ] || [ -z "$(AWS_REGION)" ] || [ -z "$(IMAGE_TAG)" ]; then \
@@ -351,25 +356,25 @@ deploy-dev: ## DEPLOY install office-convert to EKS dev cluster (logs to deploy/
 	} 2>&1 | tee $$LOG
 
 _deploy-dev-impl:
-	@printf "$(GREEN)[1/7] ECR repos (create if missing)...$(RESET)\n"
+	@printf "$(GREEN)[1/8] ECR repos (create if missing)...$(RESET)\n"
 	aws ecr describe-repositories --repository-names office-convert --region $(AWS_REGION) >/dev/null 2>&1 \
 	    || aws ecr create-repository --repository-name office-convert --region $(AWS_REGION) --image-scanning-configuration scanOnPush=true
 	aws ecr describe-repositories --repository-names office-convert-ui --region $(AWS_REGION) >/dev/null 2>&1 \
 	    || aws ecr create-repository --repository-name office-convert-ui --region $(AWS_REGION) --image-scanning-configuration scanOnPush=true
-	@printf "$(GREEN)[2/7] ECR login...$(RESET)\n"
+	@printf "$(GREEN)[2/8] ECR login...$(RESET)\n"
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
-	@printf "$(GREEN)[3/7] Build + tag + push API image $(ECR_REPO):$(IMAGE_TAG)...$(RESET)\n"
+	@printf "$(GREEN)[3/8] Build + tag + push API image $(ECR_REPO):$(IMAGE_TAG)...$(RESET)\n"
 	$(MAKE) build
 	docker tag $(IMAGE_PROD) $(ECR_REPO):$(IMAGE_TAG)
 	docker push $(ECR_REPO):$(IMAGE_TAG)
-	@printf "$(GREEN)[4/7] Build + tag + push UI image $(ECR_REPO_UI):$(IMAGE_TAG)...$(RESET)\n"
+	@printf "$(GREEN)[4/8] Build + tag + push UI image $(ECR_REPO_UI):$(IMAGE_TAG)...$(RESET)\n"
 	docker build -t $(IMAGE_UI) -f Dockerfile.ui .
 	docker tag $(IMAGE_UI) $(ECR_REPO_UI):$(IMAGE_TAG)
 	docker push $(ECR_REPO_UI):$(IMAGE_TAG)
-	@printf "$(GREEN)[5/7] Namespace + license Secret...$(RESET)\n"
+	@printf "$(GREEN)[5/8] Namespace + license Secret...$(RESET)\n"
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	kubectl create secret generic aspose-license --from-file=license.lic=$(LICENSE_FILE) --namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	@printf "$(GREEN)[6/7] helm install/upgrade...$(RESET)\n"
+	@printf "$(GREEN)[6/8] helm install/upgrade...$(RESET)\n"
 	helm upgrade --install $(HELM_RELEASE) deploy/helm/office-convert \
 	    --namespace $(NAMESPACE) \
 	    --set image.repository=$(ECR_REPO) \
@@ -394,10 +399,19 @@ _deploy-dev-impl:
 	if [ -n "$$DIGEST_UI" ] && [ "$$DIGEST_UI" != "None" ]; then printf "  UI:  $$DIGEST_UI\n"; else printf "  UI:  (could not resolve)\n"; fi
 	@$(MAKE) _print-aws-urls
 	@printf "\n$(BLUE)Access the API:$(RESET)\n"
-	@printf "  In-VPC:        curl http://<nlb-hostname>/health\n"
+	@API_HOST=$$(kubectl get ingress office-convert -n $(NAMESPACE) -o jsonpath='{.spec.rules[0].host}' 2>/dev/null); \
+	if [ -n "$$API_HOST" ]; then \
+	    printf "  Public ALB:    https://$$API_HOST/docs   (corp-CIDR allowlisted; see deploy/helm/office-convert/values.yaml ingress.inboundCidrs)\n"; \
+	    printf "                 https://$$API_HOST/health\n"; \
+	fi
+	@printf "  In-VPC NLB:    curl http://<nlb-hostname>/health   (VPC-internal only; dormant alongside ALB until commit B)\n"
 	@printf "  Port-forward:  kubectl port-forward -n $(NAMESPACE) svc/office-convert 18080:80\n"
 	@printf "                 then http://localhost:18080/docs\n"
 	@printf "\n$(BLUE)Access the UI (Streamlit dashboard):$(RESET)\n"
+	@UI_HOST=$$(kubectl get ingress office-convert-ui -n $(NAMESPACE) -o jsonpath='{.spec.rules[0].host}' 2>/dev/null); \
+	if [ -n "$$UI_HOST" ]; then \
+	    printf "  Public ALB:    https://$$UI_HOST/   (corp-CIDR allowlisted)\n"; \
+	fi
 	@printf "  Port-forward:  kubectl port-forward -n $(NAMESPACE) svc/office-convert-ui 8501:8501\n"
 	@printf "                 then http://localhost:8501\n"
 
@@ -483,7 +497,8 @@ _undeploy-dev-impl:
 	@$(MAKE) _print-aws-urls
 	@printf "\n$(YELLOW)Verify in AWS console:$(RESET)\n"
 	@printf "  - EKS workloads URL should show 'No items' for namespace $(NAMESPACE)\n"
-	@printf "  - Load Balancers URL should no longer list our NLB (~60s to deprovision)\n"
+	@printf "  - Load Balancers URL should no longer list our NLBs OR ALB (~60s each to deprovision)\n"
+	@printf "  - Route 53 hosted zone $(HOSTED_ZONE_ID) should no longer list the UI/API A-aliases\n"
 	@printf "  - ECR repository URL should still show image tag $(IMAGE_TAG) (kept by design)\n"
 
 deploy-status: ## DEPLOY show deployment status (pods, service, NLB)

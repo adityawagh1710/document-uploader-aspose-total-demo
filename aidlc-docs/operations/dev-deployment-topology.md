@@ -6,7 +6,7 @@
 
 **Namespace**: `office-convert-dev`. Helm release: `office-convert`.
 
-**Last update**: 2026-05-18.
+**Last update**: 2026-05-19.
 
 ---
 
@@ -20,7 +20,7 @@ This file is the source of truth for that reality.
 
 ---
 
-## 2. Current topology (as of 2026-05-18, pre-ALB)
+## 2. Topology overview (workload shape, both 2026-05-18 NLB-only and 2026-05-19 ALB-alongside states)
 
 ```
 ┌──── Laptop (corp VPN: FortiClient) ───────────────────────────────────────────┐
@@ -73,6 +73,7 @@ Both `scheme: internal` → VPC-only. Reachable from inside the VPC; unreachable
 | Laptop on FortiClient corp VPN | ✅ (via `/32` routes + IP allowlist on EKS endpoint) | ❌ (no VPC peering server-side, confirmed by route probe 2026-05-18) |
 | Laptop via kubectl port-forward | ✅ | ✅ (tunneled through control plane) |
 | Pod-to-pod inside cluster | ✅ | ✅ (in-cluster Service DNS) |
+| Laptop direct → ALB (split-tunnel, ISP IP allowlisted) | n/a | ✅ — verified 2026-05-19 (`200 OK`, ~0.6s) once `103.53.234.52/32` was added to ALB `inbound-cidrs` |
 | Random public IP | ❌ (allowlist) | ❌ (internal NLB) |
 
 **The FortiClient VPC peering probe (2026-05-18, ruled out permanently)**: User added EE VPN via FortiClient (interface `fctvpndc0b79cc`). Manually adding `ip route add 10.35.0.0/16 via 192.168.8.24 dev fctvpndc0b79cc` correctly routed packets through the tunnel, but they timed out at corp HQ — corp's server-side routing does NOT include the EKS VPC `10.35.0.0/16`. Path permanently dead; do not retry.
@@ -81,9 +82,9 @@ Both `scheme: internal` → VPC-only. Reachable from inside the VPC; unreachable
 
 ---
 
-## 4. Target topology (next, pre-implementation)
+## 4. Target topology (as-built 2026-05-19 — was forward-plan when this section was authored 2026-05-18)
 
-**Decision converged 2026-05-18**: ALB Ingress mirroring argocd's pattern, **two Ingresses sharing one ALB** via `alb.ingress.kubernetes.io/group.name: office-convert`, **subdomain routing**.
+**Decision converged 2026-05-18, implemented 2026-05-19**: ALB Ingress mirroring argocd's pattern, **two Ingresses sharing one ALB** via `alb.ingress.kubernetes.io/group.name: office-convert`, **subdomain routing**. Currently coexists with the dormant internal NLBs (commit A "alongside NLBs"); the dormant NLB drop is local commit `33ba4c6`, unpushed.
 
 ```
 Browser ──HTTPS──▶ <hostname>.dev05.k8s.opus2dev.com
@@ -129,37 +130,50 @@ Both single-label under `dev05.k8s.opus2dev.com` so the existing wildcard cert c
 | Route 53 zone `dev05.k8s.opus2dev.com.` | exists | `Z045669519R5D9D8CKC79` |
 | AWS Load Balancer Controller | running | `kube-system/aws-load-balancer-controller` (2 replicas) |
 | Argocd Ingress (template precedent) | running | `argocd/argocd-http-ingress` (2y+ in production) |
-| external-dns | **NOT installed** | — Route 53 records must be created manually |
+| external-dns | **NOT installed** | — Route 53 records managed by `deploy/scripts/route53-{upsert,delete}.sh` (called from Makefile, see §6) |
 
 **Argocd cert gotcha**: `argocd-http-ingress` currently references the **expired** cert `213a9222-0466-4e0f-9ca2-87e92c92944c`. Don't copy that ARN. Use the wildcard `fab42f33` for new apps.
 
 ---
 
-## 6. Exact change plan (Path 1)
+## 6. As-built change set (commit A — `37f01c0`, 2026-05-19)
 
-**Helm chart edits** (`deploy/helm/office-convert/`):
+The plan in this section has been executed. Commit A landed the ALB Ingress **alongside the dormant NLBs** (both still provisioned per request — full cutover is the unmerged local commit `33ba4c6` "step B").
 
-| File | Change |
+**Helm chart, as-shipped at `37f01c0`** (`deploy/helm/office-convert/`):
+
+| File | State at commit A | Cutover (commit B, local-only) |
+|---|---|---|
+| `templates/api-service.yaml` | Unchanged — `type: LoadBalancer` + internal-NLB annotations (NLB still provisioned alongside ALB). | Switch to `type: ClusterIP`, drop NLB annotations. |
+| `templates/ui-service.yaml` | Unchanged — `type: LoadBalancer` + internal-NLB annotations. | Switch to `type: ClusterIP`, drop NLB annotations. |
+| `templates/ingress.yaml` | **NEW**. Two `Ingress` resources sharing `group.name: office-convert`, each `host:`-routed. SSL-redirect action wired on port 80. Per-Ingress `healthcheck-path` (UI: `/_stcore/health`, API: `/health`). | No change. |
+| `values.yaml` | New `ingress:` block: `enabled: true`, `uiHost`, `apiHost`, `certificateArn`, `inboundCidrs` (10-CIDR argocd-lineage), `groupName: office-convert`, `sslPolicy`, `idleTimeoutSeconds: 300`, healthcheck paths. Service `type:` left at `LoadBalancer`. | Service `type:` flipped to `ClusterIP`, NLB annotations removed. |
+
+**Route 53 automation** — added 2026-05-19 alongside the chart:
+
+| Script | When | What |
+|---|---|---|
+| `deploy/scripts/route53-upsert.sh` | Step `[7/8]` of `make deploy-dev` (after `helm upgrade --install`) | Polls `kubectl get ingress` for up to 180s waiting for the ALB hostname to populate, then `aws route53 change-resource-record-sets UPSERT` both UI + API A-aliases. Idempotent — safe to re-run. |
+| `deploy/scripts/route53-delete.sh` | Step `[1/4]` of `make undeploy-dev` (**before** `helm uninstall`) | Looks up each record's current `AliasTarget.DNSName` (Route 53 DELETE requires it to match exactly), then submits the DELETE. Idempotent — skips silently if a record is absent. Must run before `helm uninstall` because once the Ingress is gone, the script can't recover the AliasTarget DNS name. |
+
+Both scripts default to the project's hosted zone `Z045669519R5D9D8CKC79` and the two production hostnames; all values overridable via env vars (`HOSTED_ZONE_ID`, `UI_HOST`, `API_HOST`, `ALB_ZONE_ID`).
+
+**Operator-facing Makefile targets** (top-level `Makefile`):
+
+| Target | Steps (in order) |
 |---|---|
-| `templates/api-service.yaml` | Drop `aws-load-balancer-*` annotations; switch default `type: LoadBalancer` → `ClusterIP` via values.yaml. |
-| `templates/ui-service.yaml` | Same — drop NLB annotations, switch to ClusterIP. |
-| `templates/ingress.yaml` | **NEW**. Two `Ingress` resources sharing `group.name: office-convert`, each with `spec.rules[].host:` set. SSL-redirect action, healthcheck-path per service. |
-| `values.yaml` | Switch service `type` defaults; add `ingress:` block with `enabled`, `uiHost`, `apiHost`, `certificateArn`, `inboundCidrs`, `groupName`, `sslPolicy`, `idleTimeoutSeconds`. |
+| `make deploy-dev` | (1) ECR repo create-if-missing → (2) ECR login → (3-4) build + push API + UI images → (5) namespace + license `Secret` → (6) `helm upgrade --install` → **(7) `route53-upsert.sh`** → (8) print NLB + ALB hostnames, image digests, AWS console deep-links. |
+| `make undeploy-dev` | **(1) `route53-delete.sh`** → (2) `helm uninstall` → (3) delete license Secret → (4) delete namespace. ECR images intentionally retained — cleanup commands printed but not run. |
 
-**Outside Helm (one-time, manual)**:
-1. After `make deploy-dev`, get the ALB hostname:
-   ```bash
-   kubectl -n office-convert-dev get ingress -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}'
-   ```
-2. Create two A-alias records pointing at it via `aws route53 change-resource-record-sets --hosted-zone-id Z045669519R5D9D8CKC79 ...` (one per hostname).
+Per [[feedback-deploy-workflow]] operator convention: always `make undeploy-dev && make deploy-dev`, never run `make deploy-dev` against a live release. The Makefile uses `helm upgrade --install` internally for idempotence, but the operator's discipline is to tear down first.
 
 ---
 
-## 7. Pre-deploy verifications
+## 7. Pre-deploy checks (items 4–5 are now in-chart; keep 1–3 as operator checks)
 
-Before running `make deploy-dev` with the new chart:
+The Streamlit idle-timeout and healthcheck-paths from the original pre-deploy list have moved into `values.yaml`, so they're no longer manual gates. What remains for the operator:
 
-1. **Refresh corp CIDR allowlist** — argocd's snapshot has `136.40.11.230/32` added since 2024 baseline. Verify with network admin that the current corp egress + your FortiClient IP are in the list, otherwise you'll create an ALB you can't reach.
+1. **Confirm the chart's `inboundCidrs` is still correct** — `values.yaml` line `ingress.inboundCidrs:` carries the committed list. Refresh it if corp egress has changed, OR add new operator IPs via the live `kubectl annotate` pattern (see §11) for one-off testing without churning the chart.
 2. **Confirm wildcard cert is still ISSUED**:
    ```bash
    aws acm describe-certificate \
@@ -168,30 +182,30 @@ Before running `make deploy-dev` with the new chart:
      --query 'Certificate.Status'
    ```
    Expect: `"ISSUED"`.
-3. **Confirm Route 53 zone write access** — try a dry-run via `aws route53 change-resource-record-sets` with minimal payload to surface any permission gap.
-4. **Streamlit websocket idle timeout** — set `alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300` on the UI Ingress (default 60s will hang Streamlit's persistent websocket). Group-shared LB attributes are merged across Ingresses; setting on both with the same value is safest.
-5. **Health-check paths** — UI: `/_stcore/health`; API: `/health` (default).
+3. **Confirm Route 53 zone write access** — `route53-upsert.sh` will fail loudly with the AWS error if your AWS identity lacks `route53:ChangeResourceRecordSets` on zone `Z045669519R5D9D8CKC79`. No dry-run needed; just be ready to read the error.
 
 ---
 
 ## 8. Post-deploy verifications
 
-1. `kubectl -n office-convert-dev get ingress` → both Ingresses have an ADDRESS (same ALB hostname for both — group-shared).
-2. Create both Route 53 A-aliases.
+`make deploy-dev` runs steps 1–2 below automatically; verify the rest manually.
+
+1. ✅ *(auto)* `kubectl -n office-convert-dev get ingress` → both Ingresses have an ADDRESS (same ALB hostname for both — group-shared). Surfaced in the deploy log under `[8/8] Deploy complete`.
+2. ✅ *(auto)* Route 53 A-aliases created by `route53-upsert.sh`. Verify they propagated with `dig +short office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com` (expect 3 ALB IPs).
 3. From a corp-allowlisted IP: `curl -v https://office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com/_stcore/health` → expect HTTP 200, valid cert chain.
 4. From a NON-allowlisted IP (mobile hotspot) — same curl should hang/refuse. Confirms the allowlist works.
-5. Open the UI hostname in a browser, upload a real document, verify the conversion round-trip works end-to-end (the original "real UI test" still pending since 2026-05-18 — VPN flapped, then port-forward distractions).
+5. Open the UI hostname in a browser, upload a real document, verify the conversion round-trip works end-to-end.
 
 ---
 
 ## 9. Reversibility
 
-- `helm rollback office-convert <prev-rev> -n office-convert-dev` OR the preferred `make undeploy-dev + make deploy-dev` cycle reverses the Helm parts cleanly.
-- AWS LBC reconciles: ALB removed (~1 min), NLBs recreated with new random hostnames (~2 min).
-- ACM cert is shared/wildcard — don't delete.
-- Route 53 records survive Helm rollback; remove manually with `aws route53 change-resource-record-sets --action DELETE` if you want them gone.
-- `kubectl port-forward` keeps working throughout — unconditional fallback.
-- Total revert cost: ~5 min wall time, sub-cent AWS proration.
+- **Full revert**: `make undeploy-dev` runs `route53-delete.sh` first (Route 53 records gone in ~60s), then `helm uninstall` (ALB deprovisioned in ~60s, NLBs in ~60s), then deletes the license Secret + namespace. Idempotent; safe to re-run if any step fails.
+- **Partial rollback to a prior Helm revision**: `helm rollback office-convert <prev-rev> -n office-convert-dev` reverts the chart but does NOT re-run `route53-upsert.sh` (no Makefile target wraps it). If the rollback recreates the ALB with a new hostname, the existing Route 53 A-aliases will point at the old (now gone) ALB DNS — re-run `./deploy/scripts/route53-upsert.sh` manually after rollback to repoint them.
+- **ECR images**: retained on undeploy by design (`make undeploy-dev` prints the cleanup commands but doesn't run them).
+- **ACM cert**: shared/wildcard — don't delete.
+- **`kubectl port-forward`**: keeps working throughout via `deploy/scripts/portforward.sh` — unconditional fallback regardless of ALB state.
+- **Total revert cost**: ~5 min wall time, sub-cent AWS proration.
 
 ---
 
@@ -205,7 +219,65 @@ Before running `make deploy-dev` with the new chart:
 
 ---
 
-## 11. Cross-references
+## 11. As-deployed state (2026-05-19)
+
+The plan in §6 has been executed. Live state on `DEV05-EKS-CLUSTER`:
+
+**Image**: `office-convert:37f01c0` (digest `sha256:b5910a7…`). Helm release `office-convert`, rev 1 at this image tag.
+
+**Routes provisioned cluster-wide** (only 3 public hostnames in the entire cluster):
+
+| Host | Owner | Backing |
+|---|---|---|
+| `argocd.dev05.k8s.opus2dev.com` | `argocd/argocd-http-ingress` (2y+) | dedicated ALB |
+| `office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com` | `office-convert-dev/office-convert-ui` | shared ALB `k8s-officeconvert-921b81ff67-…` |
+| `office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com` | `office-convert-dev/office-convert` | (same ALB ↑, group.name shared) |
+
+**Live `inbound-cidrs` allowlist** (15 CIDRs on both Ingresses):
+
+| Origin | CIDRs | Persistence |
+|---|---|---|
+| Chart values (argocd-snapshot lineage) | `213.210.23.82/32, 213.210.23.84/32, 31.121.79.58/32, 31.121.79.60/32, 18.133.115.188/32, 54.91.4.210/32, 18.168.253.57/32, 52.74.117.130/32, 165.65.37.128/29, 136.40.11.230/32` | committed in chart — survives redeploy |
+| Office VPN egress (added live 2026-05-19) | `114.143.153.146/32, 114.143.153.147/32, 103.68.11.58/32, 103.68.11.59/32` | **NOT in chart** — lost on next redeploy until committed |
+| Aditya's local ISP egress (added live 2026-05-19) | `103.53.234.52/32` | **NOT in chart** — intentionally ephemeral; will rotate |
+
+> **Note re. the original argocd snapshot**: the 10-CIDR list inherited into the chart corresponds to an **earlier** state of argocd's annotation. As of 2026-05-19, argocd's live `inbound-cidrs` is **5 CIDRs** only (`213.210.23.82, 31.121.79.58, 18.133.115.188, 54.91.4.210, 18.168.253.57`). The chart preserved the broader original set on purpose; argocd's narrower live list is informational.
+
+**Operations performed live (not yet persisted to chart)**:
+
+```bash
+# Pattern used for live allowlist edits — applies to BOTH ingresses atomically
+CURRENT=$(kubectl get ingress -n office-convert-dev office-convert-ui \
+  -o jsonpath='{.metadata.annotations.alb\.ingress\.kubernetes\.io/inbound-cidrs}')
+NEW="$CURRENT,<new-cidr>/32"
+kubectl annotate --overwrite ingress -n office-convert-dev \
+  office-convert office-convert-ui \
+  "alb.ingress.kubernetes.io/inbound-cidrs=$NEW"
+```
+
+> Why patch both atomically: when the two Ingresses in the same `group.name` have mismatched `inbound-cidrs`, AWS LBC emits `Warning  FailedBuildModel  conflicting inbound-cidrs` and stops reconciling. Single `kubectl annotate` covering both ingress names keeps the window <3 s and the existing rules stay in force throughout.
+
+**Verifications performed 2026-05-19**:
+
+| Check | Method | Result |
+|---|---|---|
+| DNS resolution | `dig +short office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com` | 3 ALB IPs (`34.253.143.92, 34.255.233.83, 52.49.56.248`) |
+| TLS chain | `curl -v https://office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com/_stcore/health` | valid wildcard cert `fab42f33` |
+| UI health | `GET /_stcore/health` | `200 OK "ok"` (~620ms) |
+| API health | `GET /health` | `200 OK {"ready":true,"license_days_remaining":354,...}` (~630ms) |
+| Pre-allowlist behavior | curl from a non-allowlisted IP | TCP `Connection timed out` after 8s — SG drop confirmed |
+| Group reconciliation | `kubectl get events -n office-convert-dev` | `SuccessfullyReconciled` final state after each annotate |
+
+**Outstanding follow-ups**:
+
+1. **Persist the 4 office CIDRs in the chart** — `deploy/helm/office-convert/values.yaml` `ingress.inboundCidrs:`. The personal `103.53.234.52/32` must NOT be committed (it will rotate with the ISP's DHCP).
+2. **Ask corp IT** to confirm the canonical list of office egress public IPs (in case more than 4 exist) and whether `*.dev05.k8s.opus2dev.com` is covered by their server-side outbound allowlist (relevant only for full-tunnel routing — see §3).
+3. **Decide on the open-vs-allowlist long-term posture** — `0.0.0.0/0` + WAF rate-limit, vs keep CIDR allowlist + IT extends FortiClient routes for future operators, vs add Cognito/OIDC at the ALB. Currently default-deny with per-CIDR exceptions; not committed to a long-term shape.
+4. **Drop the dormant NLBs** — `office-convert` + `office-convert-ui` Services are still `type: LoadBalancer` with internal NLB hostnames, alongside the ALB. Local commit `33ba4c6` cuts them over to `ClusterIP`. Safe to deploy now that the ALB is verified.
+
+---
+
+## 12. Cross-references
 
 - Production target topology: `aidlc-docs/operations/eks-production-topology.md`.
 - Hard constraints, SKU pivots, fork-after-load history: `aidlc-docs/aidlc-state.md` (Hard Constraints + Post-AI-DLC sections).
