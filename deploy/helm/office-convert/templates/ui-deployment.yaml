@@ -43,6 +43,11 @@ spec:
               value: {{ .Values.ui.streamlit.enableCORS | quote }}
             - name: STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION
               value: {{ .Values.ui.streamlit.enableXsrfProtection | quote }}
+            # Streamlit's default upload cap is 200 MB; raised to match the
+            # API's max_input_bytes so the UI doesn't reject before the
+            # API ceiling kicks in.
+            - name: STREAMLIT_SERVER_MAX_UPLOAD_SIZE
+              value: {{ .Values.ui.streamlit.maxUploadSizeMb | quote }}
             - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
               value: "false"
           readinessProbe:

@@ -13,3 +13,4 @@ data:
   OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS: {{ .Values.config.chunk_timeout_seconds | quote }}
   OFFICE_CONVERT_SCRATCH_DIR: {{ .Values.config.scratch_dir | quote }}
   OFFICE_CONVERT_LICENSE_PATH: {{ .Values.config.license_path | quote }}
+  OFFICE_CONVERT_MAX_INPUT_BYTES: {{ .Values.config.max_input_bytes | quote }}

@@ -52,6 +52,14 @@ config:
   chunk_timeout_seconds: 600
   scratch_dir: "/tmp/office-convert"
   license_path: "/aspose/license.lic"
+  # Max accepted upload size on the /convert endpoint. Quoted to dodge
+  # Helm's int-to-scientific-notation conversion. 1 GiB matches Pydantic's
+  # `le=1*1024*1024*1024` upper bound in office_convert/config.py — to
+  # raise above 1 GiB you'd need to bump that Field constraint too.
+  # 500 MB is the comfortable working ceiling; >500 MB risks pod OOM
+  # because K8s deploys have no swap (compose deploys have a 2 GB swap
+  # cushion).
+  max_input_bytes: "1073741824"
 
 # Aspose license is mounted from a pre-existing Secret. The Secret is NOT
 # created by this chart — create it before `helm install`:
@@ -178,6 +186,12 @@ ui:
   streamlit:
     enableCORS: false
     enableXsrfProtection: false
+    # Max file size Streamlit's file_uploader accepts (MiB; Streamlit
+    # multiplies by 1024*1024). Default is 200; raised to 1024 so the UI
+    # matches the API's 1 GiB `max_input_bytes` ceiling. 500 MB is the
+    # comfortable working ceiling; uploads >500 MB risk pod OOM on K8s
+    # (no swap), so the UI surfaces them but they may fail mid-conversion.
+    maxUploadSizeMb: 1024
   # Dockerfile.ui doesn't set a USER, so the container runs as root. The
   # shared podSecurityContext (runAsNonRoot: true) would block this pod from
   # starting, so the UI gets its own empty securityContexts.
