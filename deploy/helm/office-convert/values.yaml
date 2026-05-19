@@ -120,27 +120,10 @@ ingress:
   certificateArn: arn:aws:acm:eu-west-1:537462380503:certificate/fab42f33-7d67-4ecf-b200-38af584485b0
   # Same TLS policy argocd uses. FS = forward secrecy, TLS 1.2 minimum.
   sslPolicy: ELBSecurityPolicy-FS-1-2-Res-2019-08
-  # Corp + office egress IP allowlist — applied as the ALB security group
-  # ingress rules. Composed of two sourced sets:
-  #
-  #   (a) UK/US corp-egress lineage, originally seeded from argocd's Ingress
-  #       on 2026-05-19. Argocd's live annotation has since narrowed to 5
-  #       CIDRs; we keep the broader original superset on purpose so older
-  #       corp egress paths still resolve. Do NOT refresh from argocd
-  #       blindly — that would silently drop allowed IPs.
-  #
-  #   (b) Office VPN egress IPs (Aditya's office, added 2026-05-19). These
-  #       are durable per-office allocations; refresh only if network admin
-  #       confirms the office NAT pool changed.
-  #
-  # Personal home-ISP IPs are intentionally NOT in this list — they rotate
-  # with DHCP. Patch live for one-off testing instead:
-  #   kubectl annotate --overwrite ingress -n office-convert-dev \
-  #     office-convert office-convert-ui \
-  #     alb.ingress.kubernetes.io/inbound-cidrs="$EXISTING,NEW.IP/32"
-  # (Patch BOTH ingress names atomically — group.name=office-convert merges
-  #  them onto one ALB and AWS LBC refuses to reconcile if they diverge.)
-  inboundCidrs: "213.210.23.82/32,213.210.23.84/32,31.121.79.58/32,31.121.79.60/32,18.133.115.188/32,54.91.4.210/32,18.168.253.57/32,52.74.117.130/32,165.65.37.128/29,136.40.11.230/32,114.143.153.146/32,114.143.153.147/32,103.68.11.58/32,103.68.11.59/32"
+  # Corp egress IP allowlist — seeded from argocd's Ingress 2026-05-19.
+  # Refresh from `kubectl -n argocd get ingress argocd-http-ingress -o jsonpath='{.metadata.annotations.alb\.ingress\.kubernetes\.io/inbound-cidrs}'`
+  # before each deploy, or ask network admin if anything changed.
+  inboundCidrs: "213.210.23.82/32,213.210.23.84/32,31.121.79.58/32,31.121.79.60/32,18.133.115.188/32,54.91.4.210/32,18.168.253.57/32,52.74.117.130/32,165.65.37.128/29,136.40.11.230/32"
   # ALB's default idle timeout is 60 s, which kills Streamlit's persistent
   # websocket. 300 s matches Streamlit's own server.keepAlive default.
   idleTimeoutSeconds: 300

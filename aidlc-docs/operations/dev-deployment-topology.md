@@ -237,11 +237,9 @@ The plan in §6 has been executed. Live state on `DEV05-EKS-CLUSTER`:
 
 | Origin | CIDRs | Persistence |
 |---|---|---|
-| Corp-egress lineage (originally from argocd) | `213.210.23.82/32, 213.210.23.84/32, 31.121.79.58/32, 31.121.79.60/32, 18.133.115.188/32, 54.91.4.210/32, 18.168.253.57/32, 52.74.117.130/32, 165.65.37.128/29, 136.40.11.230/32` | committed in chart — survives redeploy |
-| Office VPN egress | `114.143.153.146/32, 114.143.153.147/32, 103.68.11.58/32, 103.68.11.59/32` | committed in chart 2026-05-19 — survives redeploy |
-| Personal local-ISP egress | `103.53.234.52/32` | **NOT in chart** — intentionally ephemeral; rotates with DHCP |
-
-> See `deploy/helm/office-convert/values.yaml` `ingress.inboundCidrs` for the committed 14; the 1 personal-ISP CIDR is applied via the `kubectl annotate` recipe below.
+| Chart values (argocd-snapshot lineage) | `213.210.23.82/32, 213.210.23.84/32, 31.121.79.58/32, 31.121.79.60/32, 18.133.115.188/32, 54.91.4.210/32, 18.168.253.57/32, 52.74.117.130/32, 165.65.37.128/29, 136.40.11.230/32` | committed in chart — survives redeploy |
+| Office VPN egress (added live 2026-05-19) | `114.143.153.146/32, 114.143.153.147/32, 103.68.11.58/32, 103.68.11.59/32` | **NOT in chart** — lost on next redeploy until committed |
+| Aditya's local ISP egress (added live 2026-05-19) | `103.53.234.52/32` | **NOT in chart** — intentionally ephemeral; will rotate |
 
 > **Note re. the original argocd snapshot**: the 10-CIDR list inherited into the chart corresponds to an **earlier** state of argocd's annotation. As of 2026-05-19, argocd's live `inbound-cidrs` is **5 CIDRs** only (`213.210.23.82, 31.121.79.58, 18.133.115.188, 54.91.4.210, 18.168.253.57`). The chart preserved the broader original set on purpose; argocd's narrower live list is informational.
 
