@@ -15,6 +15,7 @@
 #include <system/object.h>
 #include <system/string.h>
 
+#include <chrono>
 #include <cstdio>
 #include <iostream>
 #include <sstream>
@@ -26,6 +27,7 @@
 #include "../probe.h"
 #include "../probe_util.h"
 #include "../render.h"
+#include "../timing_util.h"
 
 namespace office_convert {
 
@@ -145,19 +147,37 @@ private:
 }  // namespace
 
 int pool_load(const std::string& input_path) {
+    auto t0 = std::chrono::steady_clock::now();
     auto load_opts = System::MakeObject<Aspose::Words::Loading::LoadOptions>();
     auto cb = System::MakeObject<LoadProgressCallback>();
     load_opts->set_ProgressCallback(cb);
     g_document = System::MakeObject<Aspose::Words::Document>(
         System::String(input_path.c_str()), load_opts);
-    return g_document->get_PageCount();
+    auto t1 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_load.document_load", t1 - t0);
+
+    auto t2 = std::chrono::steady_clock::now();
+    int page_count = g_document->get_PageCount();
+    auto t3 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_load.pagination", t3 - t2);
+
+    return page_count;
 }
 
 void pool_render(int page_start, int page_end, const std::string& output_path) {
     if (!g_document) {
         throw RenderException("pool_render: no document loaded");
     }
+
+    auto t0 = std::chrono::steady_clock::now();
     render_docx_from(g_document, page_start, page_end, output_path);
+    auto t1 = std::chrono::steady_clock::now();
+    emit_timing_ms("pool_render.save", t1 - t0);
+
+    const int pages_in_chunk = page_end - page_start + 1;
+    const long save_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    emit_render_summary(pages_in_chunk, page_start, page_end, save_ms);
 }
 
 }  // namespace office_convert

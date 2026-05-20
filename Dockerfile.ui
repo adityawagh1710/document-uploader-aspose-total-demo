@@ -1,9 +1,15 @@
 FROM python:3.12-slim-bookworm
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
+# `apt-get upgrade` patches base-image-inherited packages (gnutls28,
+# glibc, systemd, expat, etc.) to the latest Debian Bookworm point
+# releases. Without it, the slim base ships with whatever package
+# versions were current when the python:3.12-slim-bookworm tag was
+# built, even if Debian has since released CVE fixes. Worth the
+# ~30s build time + ~50 MB layer growth.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         ca-certificates \
-    && curl -fsSL https://get.docker.com | sh \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir streamlit requests plotly pandas

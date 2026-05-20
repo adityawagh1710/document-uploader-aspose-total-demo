@@ -104,6 +104,31 @@ Need the SDK or license?
   (specify "Aspose.Total **for C++**" — the Python-via-.NET license is NOT
   compatible with this build).
 
+### Path C — EKS dev cluster (Helm)
+
+A working dev deployment lives under `deploy/` for shared dogfooding /
+multi-operator testing. Same image, same orchestrator — running on
+`DEV05-EKS-CLUSTER` in namespace `office-convert-dev`. Host requirements:
+`kubectl`, `helm`, `aws` CLI, corp VPN.
+
+```bash
+# Push images to ECR, then:
+AWS_ACCOUNT_ID=537462380503 AWS_REGION=eu-west-1 IMAGE_TAG=$(git rev-parse --short HEAD) \
+    make deploy-dev          # full undeploy + redeploy; logs to deploy/logs/
+
+# Access via port-forward (NLBs are internal; corp VPN doesn't peer with VPC):
+./deploy/scripts/portforward.sh start
+# → API on http://localhost:18080, UI on http://localhost:8501
+
+# Tear down:
+make undeploy-dev
+```
+
+Full layout, scripts, and the in-flight ALB Ingress migration plan
+(with corp-CIDR-allowlisted internet-facing URL) are documented in
+[`deploy/README.md`](deploy/README.md) and
+[`aidlc-docs/operations/dev-deployment-topology.md`](aidlc-docs/operations/dev-deployment-topology.md).
+
 ---
 
 ## Why chunked
@@ -125,10 +150,18 @@ output.
 
 ## v1 Status & What's In The Box
 
-This is a **local PoC**. It runs as a single container on a single host.
-Cloud deployment (EKS, SQS, S3, multi-tenancy) is explicitly deferred —
-see `aidlc-docs/inception/requirements/requirement-verification-questions.md`
-for the cloud-target work that was scoped out of v1.
+The conversion engine is a **single-container service** — the canonical
+deployment is Docker Compose on a single host (Path A / Path B above), and
+that's still the v1 PoC the AI-DLC workflow produced. A working **EKS dev
+deployment** (Path C) runs the same image on `DEV05-EKS-CLUSTER` for
+shared dogfooding; see `aidlc-docs/operations/dev-deployment-topology.md`
+for the current shape and the in-flight ALB Ingress migration.
+
+The full **v1-cloud target** (queue-driven via per-tenant SQS, no public
+HTTP, DynamoDB job state, multi-tenant isolation) is explicitly deferred
+— `aidlc-docs/operations/eks-production-topology.md` captures that
+production design, and the original 25-question requirement set lives at
+`aidlc-docs/inception/requirements/requirement-verification-questions.md`.
 
 **Generated and complete** (run as-is):
 

@@ -261,6 +261,8 @@ In v1 (Q5=D, queue-driven) **the orchestrator has no public HTTP endpoint**. The
 
 A `ClusterIP` Service on port 8080 exists for the kubelet readiness/liveness probes, scoped to the cluster — never exposed.
 
+**Diverges from the current dev deployment**: the actual `office-convert-dev` namespace on DEV05 runs an HTTP-fronted FastAPI orchestrator + Streamlit UI behind AWS load balancers (initially internal NLBs, migrating to a corp-CIDR-allowlisted internet-facing ALB Ingress with ACM TLS). That dev shape is intentional — it lets the operator dogfood the same image used by `compose.yaml` against the cluster without re-architecting the codebase to be SQS-driven. See [`dev-deployment-topology.md`](./dev-deployment-topology.md) for the active dev topology, its reachability constraints (corp VPN does not peer with VPC data plane — confirmed 2026-05-18), and the planned ALB Ingress change. The queue-driven design here remains the v1-cloud target.
+
 ### 8.3 NetworkPolicy
 
 ```yaml

@@ -386,12 +386,17 @@ _DEFAULT_DOCKER_STATS = {"cpu": "N/A", "mem_usage": "N/A", "mem_pct": "N/A", "pi
 
 @st.cache_resource
 def _docker_monitor() -> dict:
-    """Background-thread cache of `docker stats` + `docker top`.
+    """Background-thread cache of container stats from the API's /stats + /workers.
 
-    `docker stats --no-stream` takes ~1–2s per call. If we ran it inside the
-    fragment, every tick would block for that long and updates would arrive in
-    big bunches, amplifying visible flicker. Instead a daemon thread refreshes
-    the cache on its own cadence; the fragment just reads the dict — O(µs).
+    Replaces the original `docker stats` / `docker top` subprocess path so the
+    same UI works on:
+      - Docker compose locally (cgroup v1)
+      - EKS dev05 pods (cgroup v2; no docker socket, but /sys/fs/cgroup works)
+      - any other container runtime that exposes cgroup files (always the case)
+
+    The API exposes raw cumulative counters via GET /stats and GET /workers
+    (see office_convert/container_stats.py). This loop fetches both ~every
+    second and computes CPU% from the delta between consecutive samples.
     """
     state: dict = {
         "lock": threading.Lock(),
@@ -399,50 +404,82 @@ def _docker_monitor() -> dict:
         "workers": [],
     }
 
+    def _fmt_bytes_mib(n: int) -> str:
+        return f"{n / 1024 / 1024:.2f}MiB"
+
     def _refresh_loop() -> None:
+        # Cumulative-counter state for CPU% delta computation.
+        prev_cpu_usec: int | None = None
+        prev_at: float | None = None
+        prev_workers: dict[int, tuple[int, float]] = {}  # pid -> (cpu_usec, sampled_at)
+
         while True:
             new_stats = dict(_DEFAULT_DOCKER_STATS)
             try:
-                result = subprocess.run(
-                    [
-                        "docker",
-                        "stats",
-                        "office-convert",
-                        "--no-stream",
-                        "--format",
-                        "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    parts = result.stdout.strip().split("\t")
+                r = requests.get(f"{API_URL}/stats", timeout=2)
+                if r.ok:
+                    s = r.json()
+                    cur_usec = int(s["cpu_usage_usec"])
+                    cur_at = float(s["sampled_at"])
+                    if prev_cpu_usec is not None and prev_at is not None and cur_at > prev_at:
+                        d_usec = max(0, cur_usec - prev_cpu_usec)
+                        d_t = cur_at - prev_at
+                        cpu_pct = (d_usec / 1_000_000.0) / d_t * 100.0
+                    else:
+                        cpu_pct = 0.0
+                    prev_cpu_usec = cur_usec
+                    prev_at = cur_at
+
+                    mem_bytes = int(s["mem_bytes"])
+                    mem_max = int(s["mem_max_bytes"])
+                    mem_pct = (mem_bytes / mem_max * 100.0) if mem_max > 0 else 0.0
+                    mem_usage_str = (
+                        f"{_fmt_bytes_mib(mem_bytes)} / {_fmt_bytes_mib(mem_max)}"
+                        if mem_max > 0
+                        else _fmt_bytes_mib(mem_bytes)
+                    )
                     new_stats = {
-                        "cpu": parts[0],
-                        "mem_usage": parts[1],
-                        "mem_pct": parts[2],
-                        "pids": parts[3],
+                        "cpu": f"{cpu_pct:.2f}%",
+                        "mem_usage": mem_usage_str,
+                        "mem_pct": f"{mem_pct:.2f}%",
+                        "pids": str(int(s["pids_current"])),
                     }
             except Exception:
                 pass
 
-            new_workers: list[str] = []
+            new_workers: list[dict] = []
             try:
-                result = subprocess.run(
-                    ["docker", "top", "office-convert", "-o", "pid,pcpu,pmem,time,args"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                if result.returncode == 0:
-                    new_workers = [
-                        line
-                        for line in result.stdout.strip().split("\n")
-                        if "office-convert-worker" in line
-                    ]
+                r = requests.get(f"{API_URL}/workers", timeout=2)
+                if r.ok:
+                    fresh_workers = r.json().get("workers", [])
+                    current_pids: set[int] = set()
+                    for w in fresh_workers:
+                        pid = int(w["pid"])
+                        cur_usec = int(w["cpu_usage_usec"])
+                        cur_at = float(w["sampled_at"])
+                        current_pids.add(pid)
+                        prev = prev_workers.get(pid)
+                        if prev is not None and cur_at > prev[1]:
+                            d_usec = max(0, cur_usec - prev[0])
+                            d_t = cur_at - prev[1]
+                            cpu_pct_w = (d_usec / 1_000_000.0) / d_t * 100.0
+                        else:
+                            cpu_pct_w = 0.0
+                        prev_workers[pid] = (cur_usec, cur_at)
+                        new_workers.append(
+                            {
+                                "pid": pid,
+                                "cpu_pct": cpu_pct_w,
+                                "rss_bytes": int(w.get("rss_bytes", 0)),
+                                "cmdline": w.get("cmdline", ""),
+                                "etime_sec": float(w.get("etime_sec", 0.0)),
+                            }
+                        )
+                    # Drop sample state for PIDs that have exited so the dict
+                    # doesn't grow unbounded across a long Streamlit session.
+                    for stale_pid in list(prev_workers.keys()):
+                        if stale_pid not in current_pids:
+                            del prev_workers[stale_pid]
             except Exception:
                 pass
 
@@ -450,7 +487,7 @@ def _docker_monitor() -> dict:
                 state["stats"] = new_stats
                 state["workers"] = new_workers
 
-            time.sleep(1.5)  # docker stats itself takes ~1.5s, so this is "as fast as possible"
+            time.sleep(1.0)
 
     thread = threading.Thread(target=_refresh_loop, daemon=True)
     thread.start()
@@ -643,6 +680,12 @@ for r in reversed(_snap_results):
         st.session_state.history.insert(0, r)
         st.session_state.seen_result_ids.add(r["id"])
 
+# Bound session-state memory growth: each history item holds the full output
+# PDF bytes (`item["data"]`) and a Streamlit download_button blob, so an
+# unbounded list quickly pushes the UI pod past its 1.5Gi limit. Cap to the
+# same ceiling the process-wide store uses.
+del st.session_state.history[MAX_RECENT_RESULTS:]
+
 # ============================================================
 # LIVE STATS (auto-refresh every 2s — now actually live during conversion)
 #
@@ -761,23 +804,21 @@ def live_stats():
     if workers:
         rows = []
         for w in workers:
-            parts = w.split()
-            if len(parts) < 2:
-                continue
-            pid = parts[0]
-            cpu_str = parts[1]
+            pid = w.get("pid", "")
+            cpu_val = float(w.get("cpu_pct", 0.0))
+            cmdline = w.get("cmdline", "")
             fmt = (
-                "docx" if "docx" in w
-                else "pptx" if "pptx" in w
-                else "xlsx" if "xlsx" in w
-                else "pdf" if "pdf" in w
+                "docx" if "docx" in cmdline
+                else "pptx" if "pptx" in cmdline
+                else "xlsx" if "xlsx" in cmdline
+                else "pdf" if "pdf" in cmdline
                 else "—"
             )
-            mode = "pool" if "pool" in w else "render" if "render" in w else "probe"
-            try:
-                cpu_val = float(cpu_str.rstrip("%"))
-            except ValueError:
-                cpu_val = 0.0
+            mode = (
+                "pool" if "pool" in cmdline
+                else "render" if "render" in cmdline
+                else "probe"
+            )
             cpu_pct_w = max(0.0, min(100.0, cpu_val))
             rows.append(
                 f'<tr>'
@@ -914,6 +955,57 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
 # ============================================================
 # Live Plotly charts
 # ============================================================
+def _build_empty_chart(title: str, message: str = "Awaiting conversion data") -> go.Figure:
+    """Empty styled placeholder chart for the "no data yet" state.
+
+    Matches the dark grid + dimensions of the live charts so the Mega Row's
+    rhythm is stable from page-load (pre-first-conversion) through live runs.
+    Centered annotation reads as "instrument ready" rather than "feature
+    missing". `message` overrides the default text — used by the timing /
+    Gantt slots to call out that those charts only populate for XLSX inputs
+    today (worker_cpp/formats/{docx,pptx,pdf}.cpp don't yet emit timing
+    events; only xlsx.cpp does).
+    """
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        font=dict(size=11, color="rgba(148,163,184,0.7)"),
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=title, font=dict(size=12)),
+        xaxis=dict(
+            title=None,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zerolinecolor="rgba(255,255,255,0.18)",
+            tickfont=dict(size=9),
+            showticklabels=False,
+            range=[0, 1],
+        ),
+        yaxis=dict(
+            title=None,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zerolinecolor="rgba(255,255,255,0.18)",
+            tickfont=dict(size=9),
+            showticklabels=False,
+            range=[0, 1],
+        ),
+        height=210,
+        margin=dict(l=8, r=14, t=36, b=24),
+        plot_bgcolor="rgba(15,23,42,0.7)",
+        paper_bgcolor="rgba(15,23,42,0)",
+        showlegend=False,
+    )
+    return fig
+
+
 def _build_memory_chart(request_id: str) -> go.Figure | None:
     """Multi-line chart: RSS (solid) + Swap (dotted) per pool worker over time.
 
@@ -1510,48 +1602,69 @@ def live_charts():
         last = _results[0]
         rid = last.get("id")
         if not rid:
-            return
-        label = (
-            f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
-            f'margin-bottom:-0.3rem;">📊 Last completed · '
-            f'<code style="font-size:0.8rem;">{rid}</code> · '
-            f'{last["input"]} · {last["time"]:.1f}s · '
-            f'<span style="opacity:0.6;">data kept for 30 min</span></div>'
-        )
+            rid = None
+            label = (
+                '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
+                'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
+                'charts will populate live</div>'
+            )
+        else:
+            label = (
+                f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
+                f'margin-bottom:-0.3rem;">📊 Last completed · '
+                f'<code style="font-size:0.8rem;">{rid}</code> · '
+                f'{last["input"]} · {last["time"]:.1f}s · '
+                f'<span style="opacity:0.6;">data kept for 30 min</span></div>'
+            )
     else:
-        return
+        rid = None
+        label = (
+            '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
+            'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
+            'charts will populate live</div>'
+        )
 
     _slot_chart_label.markdown(label, unsafe_allow_html=True)
 
-    fig_mem = _build_memory_chart(rid)
-    if fig_mem is not None:
-        fig_mem.update_layout(uirevision="mem-chart")
-        _slot_chart_mem.plotly_chart(
-            fig_mem,
-            width="stretch",
-            key="chart_mem",
-            config={"displayModeBar": False},
-        )
+    # Empty-state message for the timing + Gantt slots. All four format
+    # workers (docx/pptx/pdf/xlsx) now emit `pool_load.*` + `pool_render.*`
+    # timing events via the shared worker_cpp/timing_util.h helper, so the
+    # only reason these charts stay empty is "no in-flight or recent run"
+    # — same as the Memory chart.
+    timing_msg = "Awaiting timing data"
 
-    fig_tim = _build_timing_chart(rid)
-    if fig_tim is not None:
-        fig_tim.update_layout(uirevision="tim-chart")
-        _slot_chart_tim.plotly_chart(
-            fig_tim,
-            width="stretch",
-            key="chart_tim",
-            config={"displayModeBar": False},
-        )
+    fig_mem = _build_memory_chart(rid) if rid else None
+    if fig_mem is None:
+        fig_mem = _build_empty_chart("💾 Memory over time")
+    fig_mem.update_layout(uirevision="mem-chart")
+    _slot_chart_mem.plotly_chart(
+        fig_mem,
+        width="stretch",
+        key="chart_mem",
+        config={"displayModeBar": False},
+    )
 
-    fig_gantt = _build_chunk_gantt(rid)
-    if fig_gantt is not None:
-        fig_gantt.update_layout(uirevision="gantt-chart")
-        _slot_chart_gantt.plotly_chart(
-            fig_gantt,
-            width="stretch",
-            key="chart_gantt",
-            config={"displayModeBar": False},
-        )
+    fig_tim = _build_timing_chart(rid) if rid else None
+    if fig_tim is None:
+        fig_tim = _build_empty_chart("⏱️ Time per stage", message=timing_msg)
+    fig_tim.update_layout(uirevision="tim-chart")
+    _slot_chart_tim.plotly_chart(
+        fig_tim,
+        width="stretch",
+        key="chart_tim",
+        config={"displayModeBar": False},
+    )
+
+    fig_gantt = _build_chunk_gantt(rid) if rid else None
+    if fig_gantt is None:
+        fig_gantt = _build_empty_chart("📊 Chunk Gantt", message=timing_msg)
+    fig_gantt.update_layout(uirevision="gantt-chart")
+    _slot_chart_gantt.plotly_chart(
+        fig_gantt,
+        width="stretch",
+        key="chart_gantt",
+        config={"displayModeBar": False},
+    )
 
 
 # Stats display — drives the slots that live in the top section. Called
@@ -1573,7 +1686,11 @@ if uploaded_file:
             "⏳ A conversion is already running — submit another after it finishes."
         )
     else:
-        size_mb = len(uploaded_file.getvalue()) / 1024 / 1024
+        # `.size` reads the size from Streamlit's UploadedFile metadata
+        # without materializing the bytes. `getvalue()` would copy the full
+        # buffer just to call len() on it — wasted O(file_size) work on
+        # every script rerun until the user clicks Start Conversion.
+        size_mb = uploaded_file.size / 1024 / 1024
         st.info(f"📁 **{uploaded_file.name}** — {size_mb:.2f} MB")
 
         if st.button("▶️ Start Conversion", type="primary"):
@@ -1612,7 +1729,22 @@ if st.session_state.history:
                 key=f"dl_{i}_{item['ts']}",
             )
         with col3:
-            st.text(f"{item['time']:.1f}s")
+            # Per-session remove: drops just this entry from
+            # st.session_state.history. The process-wide s["results"] store
+            # (capped at MAX_RECENT_RESULTS) is untouched, so other sessions
+            # / full page refreshes still see the entry until process rotation
+            # ages it out. seen_result_ids retains the id so the deleted
+            # entry doesn't reappear on the next script rerun in THIS session.
+            del_id = item.get("id")
+            if st.button(
+                "🗑️",
+                key=f"del_{del_id or i}_{item['ts']}",
+                help="Remove from this session's history",
+            ):
+                st.session_state.history = [
+                    h for h in st.session_state.history if h.get("id") != del_id
+                ]
+                st.rerun()
 
 # ============================================================
 # LIVE EVENTS FEED — Kubernetes "Cluster problems"-style panel at the
