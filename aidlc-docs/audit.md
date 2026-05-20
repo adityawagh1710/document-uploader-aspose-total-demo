@@ -1754,3 +1754,82 @@ Logged to `deploy/logs/deploy-pathB-20260520-103011.log`.
 **Context**: Live operational session — the cluster IS up and verified end-to-end. All resources documented in the new state.md + topology.md sections above this entry.
 
 ---
+
+## Session: 2026-05-20 afternoon UI ship pile + image swap + helm SSA conflict
+**Timestamp**: 2026-05-20T15:00:00Z
+**User Input** (turn 13): "hey there are one icon which was action as gif and was rotating images where is it now or what was it for ?"
+**AI Response**: Traced history — the rotating icon was Streamlit's built-in `st.spinner(...)` widget, removed in commit `5a7001a` (2026-05-14) when conversion was moved to a background thread so live stats could keep updating during the run.
+
+**User Input** (turn 14): "Can we add something like above more attractive ? find out ?"
+**AI Response**: Researched 4 indicator options (equalizer bars / braille spinner / conic ring / sweep stripes). User picked equalizer bars.
+
+**User Input** (turn 15-16): "rebuild and test it" + "I dont see anything in UI"
+**AI Response**: Eq-bars only render inside the conversion callout. User clarified they wanted always-visible eq-bars too.
+
+**User Input** (turn 17): "Can you add something like above near Like heartbeat but always visible"
+**AI Response**: Offered 3 placement options. User picked header next to LIVE. Shipped green eq-bars replacing the static green pulsing dot.
+
+**Then a long iterative loop**: user said "okay start" then "next" repeatedly. Shipped a 12-item UI improvement menu over multiple iterations:
+
+1. Sparklines in CPU + RAM util-cards (30-sample ring buffer, y-axis pinned 0..100, threshold colors)
+2. Worker-row cyan pulse when CPU > 0.5%
+3. Slide-in toast on conversion complete (session_state `toast_shown_ids` dedupe + `toast_active.expires_at` for slot cleanup after 5s CSS animation)
+4. 🧹 Clear-all history button (wipes session + process-wide `s["results"]` + toast tracking)
+5. Skeleton shimmer on empty Plotly slots — used pure-HTML fallback because Plotly's canvas can't host CSS animations from the page `<style>` block. Created memory `reference_plotly_css_limit.md` documenting the pattern.
+6. Hover glow on KPI tiles + status pills
+7. License countdown progress bar in the License tile (days_remaining/365)
+8. Format icons (📄/📊/📈/📕) in history rows + latest banner via new `_format_icon()` helper
+9. Lifetime KPI tile (count + bytes_in/out, cumulative since process start, not bounded by MAX_RECENT_RESULTS=20)
+10. Per-format performance summary panel (4 cells: docx/pptx/xlsx/pdf, count + avg + p95 via new `_percentile()` helper + per-format `deque(maxlen=100)`)
+11. 🔄 Re-run last conversion button — preserves input bytes on s["results"][0]["input_data"] only; pops from older entries to keep memory bounded
+12. 🗑️ Clear-cache button hitting new `DELETE /cache` endpoint + `CacheManager.clear()` method
+13. 🔍 History filter text input (case-insensitive substring match on input filename)
+
+User declined #12 cancel-in-flight conversion (would need backend signal handling).
+
+Two bug fixes also shipped along the way:
+- `Cache.final_temp_path()` mkdir on demand — fixes `FileNotFoundError` from `qpdf.concat_streaming` when cache vol is empty (local-only; dev05 has cache disabled)
+- `live_charts()` called unconditionally — fixes empty Mega Row skeletons when there's no active conversion AND no history (regression from incomplete commit `3db61fa`)
+
+**User Input** (turn ~30): "save memory"
+**AI Response**: Rewrote `project_dashboard_layout.md` with current ~2250-line structure, all CSS animation vocabulary, fragment cadences, state-management gotchas. Created new `reference_plotly_css_limit.md`. Updated MEMORY.md index.
+
+**User Input** (turn ~31): "Commit and push"
+**AI Response**: Created 3 logical commits and pushed to `origin/aspose-upgrades-v2`:
+- `a3f006f` fix: cache mkdir + always render chart skeletons
+- `d0ca782` feat: `DELETE /cache` endpoint + `CacheManager.clear()`
+- `d206642` feat(ui): dashboard polish + cache/history controls (+758 lines to test_ui.py)
+
+Approach: backed up the 3 modified files to `/tmp/uisplit/`, reverted to HEAD, re-applied each layer atomically with a commit between. Worked cleanly; final `git log --oneline` matches the intended narrative.
+
+**User Input** (turn ~32): "Now i want to deploy it on dev05 is there any possibility be just replacing images it will get deployed or will have to follow undeploy redeploy thing ? just ans"
+**AI Response**: Yes — `kubectl set image` rolls just the image without touching Ingress / ALB / Route 53 / live allowlist. Caveat called out: violates the chart-first deploy workflow per [[feedback-deploy-workflow]], but justified here to preserve the 5 live-patched non-chart CIDRs.
+
+**User Input** (turn ~33): "build and push d206642 then kubectl set image"
+**AI Response**: Executed:
+1. ECR login.
+2. `docker build` API → tag → push (fully cache-hit since local images were warm; ~5 s).
+3. `docker build -f Dockerfile.ui` → tag → push (cache-hit).
+4. `kubectl set image` on both deployments. Container names match deploy names (`office-convert` and `office-convert-ui`).
+5. `kubectl rollout status` — clean rolls (~35 s API, ~32 s UI).
+6. Verified: both pods on `d206642`, API + UI HTTP 200, new `DELETE /cache` route reachable + returns `{"enabled":false}` (confirms new code is running AND that cache is disabled by chart design).
+
+**User Input** (turn ~34): "yes update the memory"
+**AI Response**: Updated `project_dev_deployment_status.md` frontmatter + Status section with the new image, pod names, ECR digests, and a 🚨 Gotcha section flagging Helm rev divergence (`helm history` still says `0cf9f43` because we didn't run helm upgrade). Updated MEMORY.md index.
+
+**User Input** (turn ~35): "yes run helm upgrade to re-align"
+**AI Response**: Ran `helm upgrade --reuse-values --set image.tag=d206642 --set ui.image.tag=d206642`. **FAILED** with Server-Side-Apply conflict on `alb.ingress.kubernetes.io/inbound-cidrs` — kubectl-annotate (our earlier live patches) owns the field, helm's SSA refuses to overwrite. Helm history now has rev 2 in `failed` state.
+
+Net effect:
+- Original "naked helm upgrade would downgrade" gotcha RESOLVED (rev 2's stored values say d206642, so re-render produces d206642).
+- NEW gotcha: any helm operation that re-applies the Ingress will hit the same SSA conflict and fail. `make deploy-dev IMAGE_TAG=anything` is blocked until field-manager ownership is reconciled. Only full undeploy+deploy clears the field managers.
+- Live state unchanged (pods on d206642, 15-CIDR allowlist intact, both endpoints HTTP 200).
+
+Updated `project_dev_deployment_status.md` Gotcha section to reflect the new SSA-conflict reality + 3 resolution paths + recommended posture (image rolls via kubectl set image, chart changes via undeploy+deploy + re-annotate, long-term: `values-dev.yaml` overlay).
+
+**User Input** (turn 36): "AIDLC docs ?"
+**AI Response**: This audit block, plus updates to `aidlc-state.md` (3 new sections: ship pile, image swap, helm SSA divergence) and `dev-deployment-topology.md` §12 (updated header, current state line, added image-swap subsection + SSA conflict subsection + ship-pile-now-live table).
+
+**Context**: Live operational session, multiple inflection points, ended with both green (live state healthy at d206642) and yellow (helm release no longer cleanly reconcilable) signals. No regressions, no rollback needed. All learning captured in memory + AIDLC docs for future sessions.
+
+---

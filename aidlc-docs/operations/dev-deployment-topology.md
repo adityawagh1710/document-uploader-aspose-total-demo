@@ -6,7 +6,7 @@
 
 **Namespace**: `office-convert-dev`. Helm release: `office-convert`.
 
-**Last update**: 2026-05-20. Reconciliation pass over 2026-05-19 ship pile + 2026-05-20T10:30 redeploy. **Current state: DEPLOYED** on image `0cf9f43` — see §12 for redeploy timeline.
+**Last update**: 2026-05-20T15:00 IST. **Current state: DEPLOYED** on image `d206642` (image swap via `kubectl set image` at 14:55 IST). Helm release rev 1 still references `0cf9f43`; rev 2 attempt FAILED with SSA conflict — see §12 for timeline + gotcha.
 
 ---
 
@@ -224,7 +224,7 @@ The Streamlit idle-timeout and healthcheck-paths from the original pre-deploy li
 
 The plan in §6 has been executed. State on `DEV05-EKS-CLUSTER` at the peak of 2026-05-19 (before the 2026-05-19T23:04 undeploy — see §12 for current state):
 
-**Image**: `office-convert:0cf9f43`. Helm release `office-convert`.
+**Image**: `office-convert:d206642` (rolled via `kubectl set image` 2026-05-20T14:55 IST). Helm release `office-convert` rev 1 still says `0cf9f43`; rev 2 attempt FAILED — see §12 SSA conflict subsection.
 
 **Routes provisioned cluster-wide** (only 3 public hostnames in the entire cluster):
 
@@ -278,9 +278,9 @@ kubectl annotate --overwrite ingress -n office-convert-dev \
 
 ---
 
-## 12. Lifecycle: undeploy 2026-05-19T23:04 → redeploy 2026-05-20T10:30
+## 12. Lifecycle: undeploy 2026-05-19T23:04 → redeploy 10:30 → image-swap 14:55 (2026-05-20)
 
-**Current state**: DEPLOYED on image `0cf9f43`, Helm rev 1 (fresh install). ALB `k8s-officeconvert-921b81ff67-1648401858.eu-west-1.elb.amazonaws.com`. Both endpoints verified `HTTP 200` from operator's laptop. Live allowlist = 15 CIDRs (10 chart corp + 1 home ISP `36.255.185.84/32` + 4 office VPN `114.143.153.146/.147, 103.68.11.58/.59`); the 5 non-chart CIDRs are live-patched only and will be lost on the next undeploy/redeploy cycle.
+**Current state**: DEPLOYED on image `d206642` (rolled via `kubectl set image` at 14:55 IST). ALB `k8s-officeconvert-921b81ff67-1648401858.eu-west-1.elb.amazonaws.com` unchanged. Both endpoints HTTP 200 from operator's laptop. Live allowlist = 15 CIDRs (10 chart corp + 1 home ISP `36.255.185.84/32` + 4 office VPN `114.143.153.146/.147, 103.68.11.58/.59`); the 5 non-chart CIDRs are live-patched and were **preserved across the image swap** (because we didn't touch the Ingresses). They WILL still be lost on the next undeploy/redeploy cycle.
 
 ### Undeploy 2026-05-19T23:04
 
@@ -322,6 +322,63 @@ Image digests in ECR (account 537462380503, region eu-west-1, tag `0cf9f43`):
 | `ffb86d9` | Pool mode forced default + format-aware empty placeholders |
 | `77781df` | DOCX/PPTX/PDF `pool_load`/`pool_render` timing events |
 | `0cf9f43` | `apt-get upgrade` clears ~54-58% of base-image CVEs |
+
+### Image swap to `d206642` (2026-05-20T14:55 IST, `kubectl set image`)
+
+After the UI polish ship pile (3 commits `a3f006f` + `d0ca782` + `d206642` — see `aidlc-state.md` for full detail), rolled the new images onto the live deployment via `kubectl set image` rather than the canonical undeploy+redeploy cycle. Rationale: undeploy resets the live ALB allowlist to the 10 chart CIDRs only, dropping the 5 live-patched entries that took manual `kubectl annotate` work to install. Image-swap preserves everything except the pod ReplicaSets.
+
+Sequence:
+1. ECR login + `docker build -t office-convert:dev .` (fully cache-hit, ~5 s) + tag + push as `d206642`.
+2. `docker build -t office-convert:ui -f Dockerfile.ui .` (cache-hit) + tag + push as `d206642`.
+3. `kubectl set image -n office-convert-dev deploy/office-convert office-convert=<ECR>/office-convert:d206642`
+4. `kubectl set image -n office-convert-dev deploy/office-convert-ui office-convert-ui=<ECR>/office-convert-ui:d206642`
+5. `kubectl rollout status` for both — clean rolls (~35 s API, ~32 s UI).
+
+Verification (from operator laptop, traffic via local ISP per split-tunnel):
+- API `GET /health` → 200, `{"ready":true,"license_days_remaining":353,...}`
+- UI `GET /_stcore/health` → 200
+- New `DELETE /cache` route reachable: returns `{"enabled":false,...}` on dev05 — confirms d206642 code is running AND that the cache is correctly disabled here (no `OFFICE_CONVERT_CACHE_DIR` in chart).
+
+Image digests in ECR (tag `d206642`, account 537462380503, region eu-west-1):
+- API: `sha256:eece63482ea0fbe5624ad1921d68bcbe4b07be4aec2602da628ac68378074d46`
+- UI:  `sha256:3d50dfc572814210582de91cf43a166e7c17d5a26f09a703dde2b88e56ec8e91`
+
+### ⚠️ Helm release vs live state divergence + SSA conflict (2026-05-20T14:55 IST)
+
+Attempted `helm upgrade --reuse-values --set image.tag=d206642 --set ui.image.tag=d206642` immediately after the kubectl set image swap, hoping to record a Helm rev matching live state. **The upgrade FAILED** with a Server-Side-Apply field-manager conflict:
+
+```
+conflict with "kubectl-annotate" using networking.k8s.io/v1:
+  .metadata.annotations.alb.ingress.kubernetes.io/inbound-cidrs
+```
+
+Root cause: when we ran `kubectl annotate` earlier to add the 5 non-chart CIDRs onto both Ingresses, kubectl registered itself as the field manager for that annotation. Modern helm (3.13+) uses Server-Side Apply and refuses to overwrite fields owned by another manager.
+
+Net state:
+- **Helm rev 1**: `deployed`, May 20 10:30, `image.tag: 0cf9f43` (initial install values).
+- **Helm rev 2**: `failed`, May 20 14:45, SSA conflict on Ingress apply. **But `helm get values` returns rev 2's values (`tag: d206642`)** — the stored values dict IS updated despite the failed apply.
+- **Live state**: pods on `d206642`, 15-CIDR allowlist intact, both endpoints HTTP 200.
+- **Ingress field managers**: `helm` (rev 1 ownership of chart-rendered fields), `controller` (AWS LBC, ×2), `kubectl-annotate` (our 5 live-patches).
+
+**Gotcha shift**: the original concern that "naked `helm upgrade` would silently downgrade to 0cf9f43" is RESOLVED (rev 2's stored values say d206642, so re-render produces d206642 not 0cf9f43). A NEW failure mode took its place: **any helm operation that re-applies the Ingress will hit the same SSA conflict and fail**. `make deploy-dev IMAGE_TAG=anything` is blocked at the helm step until field-manager ownership is reconciled.
+
+**Resolution paths**:
+1. **Accept it; redeploy via undeploy+deploy when needed**. `make undeploy-dev` deletes the Ingresses (clears all field managers), then `make deploy-dev` creates fresh Ingresses owned by helm. After deploy, re-annotate the 5 non-chart CIDRs (5 minutes of allowlist rebuild — same workflow as 2026-05-19T23:04 → 2026-05-20T10:30).
+2. **`helm upgrade --force`**: forces re-apply but ALSO overwrites the live annotations with chart values, losing the 5 live-patched CIDRs. Same end-state as #1 but loses the rebuild prompt.
+3. **Steal field-manager ownership without redeploy**: out-of-scope; would require `kubectl patch --field-manager helm` or hand-editing `.metadata.managedFields`. Brittle and undocumented.
+
+**Recommended posture going forward**:
+- Image-only rolls → `kubectl set image` (bypasses helm, preserves live allowlist).
+- Chart changes (env vars, resource limits, ingress shape) → full `make undeploy-dev && make deploy-dev`, then re-annotate the 5 non-chart CIDRs.
+- Long-term fix (still open question, raised 2026-05-19): gitignored `values-dev.yaml` overlay with the 4 office CIDRs, sourced via `helm install -f`. Just got more pressing because every chart-change deploy now triggers the SSA conflict path until field managers are reset.
+
+### Ship pile that's now live at `d206642` (3 commits on top of `0cf9f43`)
+
+| Commit | Theme |
+|---|---|
+| `a3f006f` | fix: Cache.final_temp_path() mkdir + live_charts() always called (dropped the gate) |
+| `d0ca782` | feat: `DELETE /cache` endpoint + `CacheManager.clear()` |
+| `d206642` | feat(ui): dashboard polish — eq-bars, sparklines, worker pulse, toast, Lifetime tile, per-format perf, history filter, Re-run, clear-cache, hover glow, license bar, format icons, skeleton shimmer, +758 lines |
 
 ---
 
