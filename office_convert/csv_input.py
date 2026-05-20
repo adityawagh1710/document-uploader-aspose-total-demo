@@ -33,9 +33,7 @@ def is_csv_filename(filename: str | None) -> bool:
 
 def csv_bytes_to_xlsx_bytes(csv_bytes: bytes) -> bytes:
     """Wrap CSV content as a minimal XLSX (one inline-string sheet)."""
-    rows = list(
-        csv.reader(io.StringIO(csv_bytes.decode("utf-8-sig", errors="replace")))
-    )
+    rows = list(csv.reader(io.StringIO(csv_bytes.decode("utf-8-sig", errors="replace"))))
     col_widths = _estimate_col_widths(rows)
     orientation = (
         "landscape"
@@ -63,9 +61,7 @@ def _estimate_col_widths(rows: list[list[str]]) -> list[float]:
     return widths
 
 
-def _sheet_xml(
-    rows: list[list[str]], col_widths: list[float], orientation: str
-) -> str:
+def _sheet_xml(rows: list[list[str]], col_widths: list[float], orientation: str) -> str:
     cols_xml = (
         "<cols>"
         + "".join(
