@@ -1669,14 +1669,16 @@ def live_charts():
 
 # Stats display — drives the slots that live in the top section. Called
 # from here so the fragment definitions earlier in the file are in scope.
+# live_charts() handles three states internally:
+#   - active conversion → real-time data
+#   - completed results → last conversion's recap
+#   - neither → 3 "Awaiting conversion data" skeletons
+# Without this unconditional call, a fresh container start (no history yet)
+# leaves the Mega Row right side blank — defeats the skeleton design from
+# commit 3db61fa.
 if _snap_active is not None:
     conversion_status()
-    live_charts()
-elif _snap_results:
-    # No live conversion, but a recent one finished — show its charts.
-    # The backend retains heartbeats + timings for 30 minutes after
-    # completion, so the user can review what just happened.
-    live_charts()
+live_charts()
 
 # Action block — only the upload/start UI lives below the file picker.
 # Stats display above is independent of upload state.

@@ -66,11 +66,16 @@ class CacheManager:
         """Return a temp path for tee-to-cache during streaming merge.
 
         Caller writes to this path while streaming; caller then calls
-        `finalize_final` on success. None if cache disabled.
+        `finalize_final` on success. None if cache disabled. The parent
+        directory is ensured-existing here so qpdf.concat_streaming can
+        open the returned path for write without a FileNotFoundError —
+        matches the contract that atomic_write() already enforces for
+        chunk writes at line ~101.
         """
         if not self.enabled():
             return None
         target = self._final_path(source_sha256)
+        target.parent.mkdir(parents=True, exist_ok=True)
         return target.with_suffix(target.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex}")
 
     def finalize_final(self, source_sha256: str, temp_path: Path) -> None:
