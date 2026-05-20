@@ -2163,8 +2163,8 @@ if _snap_error and _snap_error["ts"] > st.session_state.seen_error_ts:
     st.session_state.seen_error_ts = _snap_error["ts"]
 
 uploaded_file = st.file_uploader(
-    "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT)",
-    type=["docx", "pptx", "xlsx", "pdf", "doc", "xls", "ppt"],
+    "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT, CSV)",
+    type=["docx", "pptx", "xlsx", "pdf", "doc", "xls", "ppt", "csv"],
 )
 
 

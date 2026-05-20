@@ -18,7 +18,9 @@ mandatory design artifacts:
 A single FastAPI process (`office_convert.server:app`) exposes `POST
 /convert` and `GET /health` on localhost. Per request, the
 **orchestrator** buffers the multipart input to a per-request scratch
-directory, probes the document via a worker subprocess, plans
+directory, normalizes CSV uploads to XLSX in place (via the stdlib
+`csv_input` module) so the workers only ever see OOXML/OLE2/PDF inputs,
+probes the document via a worker subprocess, plans
 deterministic chunks bounded by 10 pages or 50 MB, and dispatches
 chunk renders to **`/usr/local/bin/office-convert-worker`** (a native
 C++ binary linking Aspose.Total C++) subprocesses with `prlimit
@@ -78,6 +80,7 @@ propagates `request_id` across async tasks via `contextvars`.
 | `cache`         | Filesystem cache for final + per-chunk PDFs, keyed by `<aspose_version>/<sha256>`         |
 | `license`       | Load `.lic`, expose `days_remaining()` / `is_expired()`, apply to Aspose runtime          |
 | `probe`         | Aspose-based input introspection via worker subprocess in `--probe` mode                  |
+| `csv_input`     | Stdlib CSV→XLSX normalization (one inline-string sheet, width-based portrait/landscape page setup) so CSV uploads can flow through the xlsx worker |
 | `logging`       | JSON-lines + human formatters, `request_id` propagation via `contextvars`                 |
 | `types`         | Shared frozen dataclasses (Chunk, ChunkPlan, ProbeResult, ConversionResult, Diagnostic)   |
 
@@ -300,7 +303,11 @@ Every diagnostic carries `request_id`; same value is in the
 ## Data Flow (text version of the diagram in `component-dependency.md`)
 
 ```
-multipart → scratch input file → probe (subprocess) → ProbeResult
+multipart → scratch input file
+  (if filename ends .csv → csv_input.csv_bytes_to_xlsx_bytes rewrites the
+   buffered body in place as XLSX; size re-checked vs max_input_bytes)
+→ detect_format (magic bytes + OOXML/OLE2 disambiguation) → FormatName
+→ probe (subprocess) → ProbeResult
 ProbeResult → plan_chunks (pure) → ChunkPlan
 for chunk in plan (parallel ≤ N):
     cache.get_chunk(sha) || aspose_worker.render_chunk → chunk PDF on disk
