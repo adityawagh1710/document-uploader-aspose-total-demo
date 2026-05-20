@@ -1999,3 +1999,54 @@ Committed those onto the same `aspose-upgrades-v7-ui-package` branch (one PR, tw
 Future work this enables: incremental splits of `office_convert_ui/app.py` into focused modules (`style.py`, `render.py`, `fragments.py`, `state.py`). Each split is a similar low-risk operation — relocate code, no logic change, same verification loop. Estimated 0.5-1 session per split.
 
 ---
+
+## Session: tier 1 perf wins + XLSX local pool-size bump
+**Timestamp**: 2026-05-20T20:25:00Z
+
+**User Input**: "In ientire code base what can be optimized without breaking anything ?"
+**AI Response**: Quick scan of biggest files + common low-hanging-fruit patterns. Listed a structured menu of 19 optimization candidates ranked by tier (free wins / higher impact / structural / risky). Top picks for Tier 1: shared HTTP Session, explicit timeouts (already done), pinned pip versions, pytest-xdist, fragment cadence tuning. Recommended starting with the first 3.
+
+**User Input**: "Tier 1 — Free wins"
+**AI Response**: Quick discovery — found that timeouts were already in place on all 8 `requests.*` calls (skip #2), fragment cadences were already reasonable (skip #5). Trimmed to 3 actionable items:
+
+1. **Shared `requests.Session` in UI**: replaced `requests.get/post/delete(` with `_SESSION.*` via `replace_all` Edit operations. Added a module-level `_SESSION = requests.Session()` declaration. 8 call sites swapped cleanly.
+
+2. **Pin UI deps in `Dockerfile.ui`**: replaced unpinned `pip install streamlit requests plotly pandas` with `==X.Y.*` floors matching pyproject.toml convention.
+
+3. **pytest-xdist parallelism**: added `pytest-xdist==3.6.*` to BOTH `pyproject.toml [project.optional-dependencies.dev]` AND `Dockerfile.test` (hardcoded duplicate dep list — flagged as a future dedup target). Added `-n auto` to 5 `pytest` invocations in Makefile.
+
+Verified end-to-end: `make qa` → 119 passed, 1 skipped, parallel workers `[gw0]…[gw6]` visible, wall time 80s → 67s. Bundle committed as `b76c404` "perf: tier 1 free wins". Pushed to v7 branch.
+
+**User Input**: "Locally why its not taking 4 workers xls type files"
+**AI Response**: Diagnosed. Found the XLSX-specific cap (`xlsx_max_pool_size`) in `office_convert/config.py:120` (default 4) being overridden by `compose.yaml` env var (default 2 via `${OFFICE_CONVERT_XLSX_MAX_POOL_SIZE:-2}`). The reason: Aspose.Cells is fork-unsafe (per 2026-05-15 carve-out), so each XLSX worker independently loads the workbook — 4 workers × large workbook risks OOM. The compose default was conservative for the `req_e11ad522` 98 MB / 23,637-page incident class.
+
+Showed 3 options: (A) accept the cap, (B) raise compose default to 4 (safe locally given 6 GiB swap cushion), (C) implement size-aware cap in orchestrator (the documented TODO in config.py).
+
+**User Input**: "go with B first if not then C"
+**AI Response**: Executed B. Edited `compose.yaml` line 81: `${OFFICE_CONVERT_XLSX_MAX_POOL_SIZE:-2}` → `${OFFICE_CONVERT_XLSX_MAX_POOL_SIZE:-4}`. Recreated API container, verified env var now reads 4 inside container. Smoke-tested with `single_sheet.xlsx` (3 pages, 11 KB):
+- `dispatch_mode mode=pool workers=4` ✓ (setting reaches code path)
+- Actual `pool_worker_spawn` events: 1 — correctly capped by `min(parallel=4, chunks=1) = 1` for a single-chunk file
+- Multi-worker spawn would require a multi-chunk XLSX (≥800 pages at the 200-page floor); test corpus only has 8-11 KB files
+
+Couldn't exercise the 4-worker spawn empirically without a bigger test file. Code path traced through `orchestrator.py:192` + `config.py:120` instead — both confirm the new value 4 is what would gate. Trusted the code path and offered to either synthesize a multi-chunk XLSX or commit. Operator chose commit.
+
+**User Input**: "commit and push"
+**AI Response**: Committed as `afe7c0e` "perf(local): raise OFFICE_CONVERT_XLSX_MAX_POOL_SIZE default 2 → 4 in compose" on the v7 branch. Pushed.
+
+**User Input**: "Do it and also aidlc + memory + read me"
+**AI Response**: This audit block, plus updates to:
+- `aidlc-state.md`: new "Tier 1 free wins perf pass" section + new "XLSX local pool-size cap raised 2 → 4" section with the full diagnosis, resolution, why-EKS-keeps-2, and a sketch of the future size-aware-cap code change.
+- `project_xlsx_performance.md` memory: updated the "Caveat: compose.yaml env override may still pin xlsx_max_pool_size to 2" line — now records that compose default WAS raised to 4 as of this session.
+- `README.md`: fixed two stale claims — `OFFICE_CONVERT_PARALLEL` default `2` → `4` (matches code default in config.py:27); added a new env-var row for `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE` explaining the XLSX-specific cap + why EKS chart keeps 2. Updated the troubleshooting "503 busy on every request" row to reference the new XLSX cap.
+
+PR description draft refreshed for the v7 branch (now 4 commits: refactor → AIDLC reconciliation → tier 1 perf → XLSX compose cap).
+
+**Context**: A pair of related performance changes:
+- Tier 1 wins: 80s test wall time → 67s; UI connection-pool reuse for fragment polling; reproducible UI builds via pinned versions.
+- XLSX local concurrency: matches the global PARALLEL=4 setting; safe under local compose's swap cushion; dev05 stays defensively capped at 2 until the size-aware cap lands.
+
+Two doc-quality observations worth keeping:
+- `Dockerfile.test` duplicates the dev deps list from `pyproject.toml`. Both must be updated for any dev-dep change. Future dedup PR target.
+- `config.py:117-120` already documents the size-aware cap TODO — it's been waiting for someone to implement it. Sketch is in `aidlc-state.md` for whoever picks it up.
+
+---
