@@ -63,6 +63,21 @@ id_ed25519.*
 .gitignore
 .gitattributes
 aidlc-docs/
+.github/
+
+# =============================================================================
+# Orchestration / build infrastructure — never COPY'd by any Dockerfile,
+# but get sent to the docker daemon on every build if not excluded.
+# Excluding them shrinks the build context (~1.5-2 MB for the deploy/
+# Helm tree) and avoids spurious cache busts when editing operational
+# config that doesn't affect image content.
+# =============================================================================
+Makefile
+compose.yaml
+compose.yml
+docker-compose.yml
+docker-compose.*.yml
+deploy/
 
 # =============================================================================
 # Python build / cache / test artifacts (host-side; image installs fresh)
