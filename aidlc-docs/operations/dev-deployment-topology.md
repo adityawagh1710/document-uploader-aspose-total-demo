@@ -6,7 +6,7 @@
 
 **Namespace**: `office-convert-dev`. Helm release: `office-convert`.
 
-**Last update**: 2026-05-20T15:45 IST. **Current state: DEPLOYED** on image `d206642` + live concurrency `max_jobs=2, parallel=4` (ConfigMap-patched 15:45). Helm release rev 1 still references `0cf9f43`; rev 2 attempt FAILED with SSA conflict. 3 chart-vs-live drifts (CIDRs, helm rev, ConfigMap concurrency) — see §12 for timeline.
+**Last update**: 2026-05-20T18:40 IST. **Current state: REDEPLOYED clean** on image `616c58d` (main HEAD) via canonical chart-first `make undeploy-dev && make deploy-dev`. Helm rev 1 deployed (SSA-failed rev 2 is gone — fresh history). 4 live patches re-applied via kubectl: 15-CIDR allowlist, idle_timeout=900, MAX_JOBS=2/PARALLEL=4. New ALB hostname `…-1254648625` — see §12.
 
 ---
 
@@ -280,12 +280,15 @@ kubectl annotate --overwrite ingress -n office-convert-dev \
 
 ## 12. Lifecycle: undeploy 2026-05-19T23:04 → redeploy 10:30 → image-swap 14:55 (2026-05-20)
 
-**Current state**: DEPLOYED on image `d206642` (rolled via `kubectl set image` at 14:55 IST) + live concurrency `max_jobs=2, parallel=4` (ConfigMap-patched + rollout-restarted at 15:45 IST). ALB `k8s-officeconvert-921b81ff67-1648401858.eu-west-1.elb.amazonaws.com` unchanged. Both endpoints HTTP 200 from operator's laptop. Live allowlist = 15 CIDRs (10 chart corp + 1 home ISP `36.255.185.84/32` + 4 office VPN `114.143.153.146/.147, 103.68.11.58/.59`); the 5 non-chart CIDRs are live-patched and were **preserved across both the image swap and the concurrency bump** (because we didn't touch the Ingresses). They WILL still be lost on the next undeploy/redeploy cycle.
+**Current state**: REDEPLOYED clean on image `616c58d` (main HEAD) via canonical `make undeploy-dev && make deploy-dev` at 18:33 IST, followed by re-application of the 4 live patches at 18:40 IST. New ALB hostname `k8s-officeconvert-921b81ff67-1254648625.eu-west-1.elb.amazonaws.com` (was `-1648401858`). Helm rev 1 deployed cleanly (no failed rev 2 — SSA blocker cleared with the fresh Ingresses). Both endpoints HTTP 200 from operator's laptop after ~5 min DNS propagation lag.
 
-**Chart-vs-live drift inventory** (3 items, all pending):
-1. `values.yaml` `ingress.inboundCidrs` has 10 CIDRs; live has 15.
-2. Helm rev 1 says `image.tag: 0cf9f43`; live has `d206642`.
-3. `values.yaml` `config.maxJobs: 1, config.parallel: 2`; live has `2, 4`.
+Live allowlist = 15 CIDRs (10 chart corp + 1 home ISP `36.255.185.84/32` + 4 office VPN `114.143.153.146/.147, 103.68.11.58/.59`); 5 of those are kubectl-annotate live-patches, will be lost on the next undeploy/redeploy cycle.
+
+**Chart-vs-live drift inventory** (4 items, fresh baseline post-redeploy):
+1. `values.yaml ingress.inboundCidrs` has 10 CIDRs; live has 15.
+2. `values.yaml config.maxJobs: 1, config.parallel: 2`; live has `2, 4`.
+3. `values.yaml ingress.idleTimeoutSeconds: 300`; live has `900`.
+4. Helm rev 1 `image.tag` matches live (`616c58d`) — this dimension is currently zero.
 
 ### Undeploy 2026-05-19T23:04
 
@@ -402,7 +405,64 @@ Verification:
 
 **Risk**: with memory still at 4Gi and no swap on K8s, two concurrent XLSX conversions of large (>50 MB) workbooks can OOM. Worst-case: `2 jobs × 4 workers × ~700 MB Cells workbook load` ≈ 5.6 GB → exceeds the 4 GiB limit. DOCX/PPTX/PDF safe because fork-after-load uses copy-on-write — RAM ≈ 1× loaded document regardless of `parallel`. Watch for `OOMKilled` in `kubectl get events -n office-convert-dev`.
 
-### Ship pile that's now live at `d206642` (3 commits on top of `0cf9f43`)
+### Chart-first redeploy + 4-patch re-application (2026-05-20T18:33–18:40 IST)
+
+Canonical undeploy+deploy cycle. Resets all chart-vs-live drift to a fresh baseline, then re-applies the 4 mutations the operator needs persistent.
+
+**Why now**: this afternoon's UI pod was flapping with 3 restarts; helm rev 2 was in failed state (SSA conflict on `inbound-cidrs`); main HEAD had advanced past `d206642` to `616c58d` (PR #4 — CSV-branch qa fixes). Three good reasons to take the chart-first path.
+
+**Sequence**:
+1. **18:31** — `make undeploy-dev`: route53-delete.sh removed both A-aliases; helm uninstall deprovisioned the ALB; namespace + license Secret deleted. The deletion of the Ingress resources also wiped all field-manager state (the kubectl-annotate ownership that was blocking helm reconcile).
+2. **18:33** — `make deploy-dev IMAGE_TAG=616c58d`: full 8-step pipeline. Docker build was partial cache-hit (C++ worker_cpp cached; Python layers rebuilt). Helm install rev 1 completed in ~30 s. Route 53 UPSERT to new ALB hostname `…-1254648625` (was `-1648401858`). Change ID `/change/C0864986398EHVE9RY5Z7`.
+3. **18:38** — Both pods 1/1 Ready. End-to-end from inside the cluster OK; from operator's laptop **failed HTTP 000** because the chart's allowlist contains only the 10 corp CIDRs and operator's home ISP is not yet in it.
+4. **18:40** — Re-applied 4 live patches in a tight batch:
+
+   ```bash
+   # Single atomic call for BOTH Ingress annotations on BOTH Ingresses
+   kubectl annotate --overwrite ingress -n office-convert-dev \
+     office-convert office-convert-ui \
+     "alb.ingress.kubernetes.io/inbound-cidrs=<15 CIDRs joined by comma>" \
+     "alb.ingress.kubernetes.io/load-balancer-attributes=idle_timeout.timeout_seconds=900"
+   ```
+
+   The 15 CIDRs = 10 corp chart CIDRs + `36.255.185.84/32` home + `114.143.153.146/32, 114.143.153.147/32, 103.68.11.58/32, 103.68.11.59/32` office VPN.
+
+   ```bash
+   kubectl patch configmap office-convert-config -n office-convert-dev --type=merge \
+     -p '{"data":{"OFFICE_CONVERT_MAX_JOBS":"2","OFFICE_CONVERT_PARALLEL":"4"}}'
+   kubectl rollout restart deploy/office-convert -n office-convert-dev
+   ```
+
+   The rollout-restart is mandatory because env vars are sourced via `envFrom: configMapRef:` — only read at pod start. ~35 s rollout. UI pod was NOT restarted (no env change for it).
+
+5. **18:40** — DNS propagation lag: Route 53 had both records; Cloudflare 1.1.1.1 resolved them; 8.8.8.8 and operator's home resolver lagged ~5 min. Verified live state via `curl --resolve` to bypass DNS — both endpoints returned `200 OK` immediately. Per the DNS NXDOMAIN cache trap memo, `/etc/hosts` is the immediate workaround when DNS lag is annoying.
+
+**Image digests in ECR (tag `616c58d`, account 537462380503, region eu-west-1)**:
+- API: `sha256:d2ced290af1d8be950e5ba7c898f210df266b0b2a39495fdb27061ecbb211075`
+- UI:  `sha256:4252c5089b102df185c864066842209e68faff4ece33a5862aa8cba37a84c897`
+
+**Outcome relative to pre-redeploy**:
+
+| | Before (15:45 IST) | After (18:40 IST) |
+|---|---|---|
+| Helm history | rev 1 deployed + rev 2 FAILED | rev 1 deployed (clean) |
+| Image | `d206642` (lagged main by 1 PR) | `616c58d` (matches main HEAD) |
+| UI pod restarts | 3 (flapping) | 0 (fresh) |
+| ALB hostname | `…-1648401858` | `…-1254648625` (new ALB) |
+| SSA conflict on next helm op | YES (kubectl-annotate owns inbound-cidrs) | YES, but freshly-seeded — same outcome on the NEXT helm op |
+| Chart-vs-live drifts | 3 + 1 cosmetic | 3 + 0 (image now matches) |
+
+**SSA conflict re-introduced as expected**: the 4 live patches at 18:40 made kubectl-annotate the field manager for `inbound-cidrs` and `load-balancer-attributes` again. Any next `helm upgrade` will hit the same conflict. The cycle going forward stays as documented: image-only rolls via `kubectl set image`; chart changes via full undeploy+deploy + re-patch.
+
+### Ship pile that's now live at `616c58d` (commits in main beyond previous `d206642`)
+
+| Commit | Theme |
+|---|---|
+| `082daf3` (squash of v2 PR #2) | Today's UI polish ship pile + cache mkdir + DELETE /cache + AIDLC reconciliations (all of `a3f006f` + `d0ca782` + `d206642` + `068eff1` + `263b970`) — already on main via PR #2 |
+| `ea50538` (squash of v3 PR #3) | The 2026-05-20 afternoon AIDLC concurrency-bump reconciliation |
+| `616c58d` (squash of v2.1 PR #4) | "chore: get make qa green on the CSV branch" — CSV format work that's the first content unique to `616c58d` vs `d206642`. Substantive code changes unknown to this doc — image was built fresh from main HEAD. |
+
+### Ship pile that's now live at `d206642` (3 commits on top of `0cf9f43`) [historical, pre-616c58d]
 
 | Commit | Theme |
 |---|---|
