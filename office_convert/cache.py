@@ -78,7 +78,7 @@ class CacheManager:
         target.parent.mkdir(parents=True, exist_ok=True)
         return target.with_suffix(target.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex}")
 
-    def clear(self) -> dict:
+    def clear(self) -> dict[str, bool | int]:
         """Wipe the cache directory's contents and report what was freed.
 
         Returns a dict with `enabled` (False when no cache_dir configured —

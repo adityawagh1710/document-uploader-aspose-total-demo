@@ -64,7 +64,7 @@ def read_container_stats() -> dict[str, Any]:
             for line in _CPU_V2.read_text().splitlines():
                 if line.startswith("usage_usec"):
                     parts = line.split()
-                    if len(parts) >= 2:
+                    if len(parts) >= 2:  # noqa: PLR2004 — cgroup cpu.stat is "usage_usec N" (key, value)
                         cpu_usage_usec = int(parts[1])
                     break
         mem_bytes = _read_int(_MEM_CURRENT_V2)

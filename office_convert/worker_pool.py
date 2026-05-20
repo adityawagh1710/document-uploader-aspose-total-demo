@@ -558,7 +558,7 @@ class ForkedPoolLeader:
         except Exception:
             log.exception("fork leader stderr reader crashed")
 
-    def _handle_stderr_line(self, raw: bytes) -> None:
+    def _handle_stderr_line(self, raw: bytes) -> None:  # noqa: PLR0912 — flat dispatch over C++ event types (load_progress / heartbeat / timing); branches reflect protocol, not complexity
         text = raw.decode("utf-8", errors="replace").rstrip()
         if not text:
             return
