@@ -42,6 +42,10 @@ ACCEPTED_UPLOAD_FORMATS: tuple[str, ...] = (
     "xls",
     "ppt",
     "csv",
+    "rtf",
+    "odt",
+    "ods",
+    "odp",
 )
 
 PDF_MAGIC = b"%PDF-"
@@ -49,11 +53,23 @@ ZIP_MAGIC = b"PK\x03\x04"
 # Microsoft Compound File Binary (CFB / OLE2). Used by every pre-2007
 # Office binary format: .doc/.dot, .xls/.xlt/.xlm, .ppt/.pot/.pps.
 OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+# Rich Text Format — Aspose.Words ingests RTF natively, so we route it
+# through the docx worker without any pre-conversion step.
+RTF_MAGIC = b"{\\rtf"
 
 OOXML_CONTENT_TYPE_TO_FORMAT: dict[str, FormatName] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml": "docx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml": "pptx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml": "xlsx",
+}
+
+# ODF files also start with ZIP magic. Per ODF spec, the first ZIP entry is
+# an uncompressed "mimetype" file whose contents identify the document type.
+# Aspose handles ODT/ODS/ODP natively via the docx/xlsx/pptx workers respectively.
+ODF_MIMETYPE_TO_FORMAT: dict[str, FormatName] = {
+    "application/vnd.oasis.opendocument.text": "docx",
+    "application/vnd.oasis.opendocument.spreadsheet": "xlsx",
+    "application/vnd.oasis.opendocument.presentation": "pptx",
 }
 
 # CFB directory entries store stream names as UTF-16LE. Search the first
@@ -123,6 +139,9 @@ def detect_format(
     if magic_bytes.startswith(OLE2_MAGIC):
         return _classify_ole2(source_path, filename)
 
+    if magic_bytes.startswith(RTF_MAGIC):
+        return "docx"
+
     head_hex = magic_bytes[:8].hex()
     raise UnsupportedFormatError(detected_magic=head_hex, accepted=list(ACCEPTED_UPLOAD_FORMATS))
 
@@ -176,13 +195,24 @@ def _classify_ole2(source_path: Path | None, filename: str | None) -> FormatName
 
 
 def _inspect_ooxml_path(path: Path) -> FormatName:
-    """Read [Content_Types].xml from the on-disk OOXML zip via the central directory."""
+    """Classify a ZIP-magic document on disk as OOXML or ODF.
+
+    ODF: read the `mimetype` entry (uncompressed first entry per ODF spec)
+    and map text/spreadsheet/presentation → docx/xlsx/pptx workers.
+    OOXML: fall back to `[Content_Types].xml` and map by content-type string.
+    """
     try:
         with zipfile.ZipFile(path) as zf:
-            content = zf.read("[Content_Types].xml").decode("utf-8", errors="replace")
-            return _classify_by_content_types(content)
+            names = set(zf.namelist())
+            if "mimetype" in names:
+                mimetype = zf.read("mimetype").decode("utf-8", errors="replace").strip()
+                if mimetype in ODF_MIMETYPE_TO_FORMAT:
+                    return ODF_MIMETYPE_TO_FORMAT[mimetype]
+            if "[Content_Types].xml" in names:
+                content = zf.read("[Content_Types].xml").decode("utf-8", errors="replace")
+                return _classify_by_content_types(content)
     except (zipfile.BadZipFile, OSError, EOFError, KeyError):
-        log.debug("could not read [Content_Types].xml from %s; defaulting to docx", path)
+        log.debug("could not classify zip document %s; defaulting to docx", path)
     return "docx"
 
 

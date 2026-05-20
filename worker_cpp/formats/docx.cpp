@@ -6,6 +6,7 @@
 
 #include <Aspose.Words.Cpp/Document.h>
 #include <Aspose.Words.Cpp/Licensing/License.h>
+#include <Aspose.Words.Cpp/LoadFormat.h>
 #include <Aspose.Words.Cpp/Loading/DocumentLoadingArgs.h>
 #include <Aspose.Words.Cpp/Loading/IDocumentLoadingCallback.h>
 #include <Aspose.Words.Cpp/Loading/LoadOptions.h>
@@ -17,6 +18,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -37,6 +39,19 @@ constexpr const char* kFormat = "docx";
 
 // Module-level document handle for pool mode.
 System::SharedPtr<Aspose::Words::Document> g_document;
+
+// Aspose.Words' LoadFormat::Auto fails to detect ODT in this C++ build —
+// the loader expects OOXML structure when handed a zip-magic file and raises
+// FileCorruptedException on the ODF layout. Force the LoadFormat::Odt hint
+// when the input filename advertises ODF Text (.odt) or its template (.ott).
+bool input_ends_with_odt(const std::string& path) {
+    auto ends = [&](const char* suffix) {
+        size_t n = std::strlen(suffix);
+        return path.size() >= n
+            && path.compare(path.size() - n, n, suffix) == 0;
+    };
+    return ends(".odt") || ends(".ott");
+}
 
 void verify_license_file(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -65,14 +80,22 @@ void render_docx_from(System::SharedPtr<Aspose::Words::Document> doc,
 }
 
 void render_docx(const RenderArgs& args) {
+    auto load_opts = System::MakeObject<Aspose::Words::Loading::LoadOptions>();
+    if (input_ends_with_odt(args.input)) {
+        load_opts->set_LoadFormat(Aspose::Words::LoadFormat::Odt);
+    }
     auto doc = System::MakeObject<Aspose::Words::Document>(
-        System::String(args.input.c_str()));
+        System::String(args.input.c_str()), load_opts);
     render_docx_from(doc, args.page_start, args.page_end, args.output);
 }
 
 int probe_docx_page_count(const std::string& input) {
+    auto load_opts = System::MakeObject<Aspose::Words::Loading::LoadOptions>();
+    if (input_ends_with_odt(input)) {
+        load_opts->set_LoadFormat(Aspose::Words::LoadFormat::Odt);
+    }
     auto doc = System::MakeObject<Aspose::Words::Document>(
-        System::String(input.c_str()));
+        System::String(input.c_str()), load_opts);
     return doc->get_PageCount();
 }
 
@@ -151,6 +174,9 @@ int pool_load(const std::string& input_path) {
     auto load_opts = System::MakeObject<Aspose::Words::Loading::LoadOptions>();
     auto cb = System::MakeObject<LoadProgressCallback>();
     load_opts->set_ProgressCallback(cb);
+    if (input_ends_with_odt(input_path)) {
+        load_opts->set_LoadFormat(Aspose::Words::LoadFormat::Odt);
+    }
     g_document = System::MakeObject<Aspose::Words::Document>(
         System::String(input_path.c_str()), load_opts);
     auto t1 = std::chrono::steady_clock::now();

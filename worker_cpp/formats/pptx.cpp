@@ -6,9 +6,11 @@
 // slide indices are also 1-based, so we pass them directly.
 
 #include <DOM/ISlideCollection.h>
+#include <DOM/LoadOptions.h>
 #include <DOM/Presentation.h>
 #include <Export/PdfOptions.h>
 #include <Export/SaveFormat.h>
+#include <LoadFormat.h>
 #include <Util/License.h>
 #include <system/array.h>
 #include <system/object.h>
@@ -16,6 +18,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <string>
 
@@ -35,6 +38,27 @@ constexpr const char* kFormat = "pptx";
 
 // Module-level document handle for pool mode.
 System::SharedPtr<Aspose::Slides::Presentation> g_presentation;
+
+// Aspose.Slides' default loader fails on ODP for the same reason
+// Aspose.Words fails on ODT (see docx.cpp): zip-magic file without OOXML
+// structure → FileCorruptedException. Force the LoadFormat::Odp hint when
+// the input filename advertises ODF Presentation (.odp) or its template (.otp).
+bool input_ends_with_odp(const std::string& path) {
+    auto ends = [&](const char* suffix) {
+        size_t n = std::strlen(suffix);
+        return path.size() >= n
+            && path.compare(path.size() - n, n, suffix) == 0;
+    };
+    return ends(".odp") || ends(".otp");
+}
+
+System::SharedPtr<Aspose::Slides::LoadOptions> make_load_opts(const std::string& input) {
+    auto opts = System::MakeObject<Aspose::Slides::LoadOptions>();
+    if (input_ends_with_odp(input)) {
+        opts->set_LoadFormat(Aspose::Slides::LoadFormat::Odp);
+    }
+    return opts;
+}
 
 void verify_license_file(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -61,13 +85,13 @@ void render_pptx_from(System::SharedPtr<Aspose::Slides::Presentation> pres,
 
 void render_pptx(const RenderArgs& args) {
     auto pres = System::MakeObject<Aspose::Slides::Presentation>(
-        System::String(args.input.c_str()));
+        System::String(args.input.c_str()), make_load_opts(args.input));
     render_pptx_from(pres, args.page_start, args.page_end, args.output);
 }
 
 int probe_pptx_slide_count(const std::string& input) {
     auto pres = System::MakeObject<Aspose::Slides::Presentation>(
-        System::String(input.c_str()));
+        System::String(input.c_str()), make_load_opts(input));
     return pres->get_Slides()->get_Count();
 }
 
@@ -120,7 +144,7 @@ void dispatch_probe(const ProbeArgs& args) {
 int pool_load(const std::string& input_path) {
     auto t0 = std::chrono::steady_clock::now();
     g_presentation = System::MakeObject<Aspose::Slides::Presentation>(
-        System::String(input_path.c_str()));
+        System::String(input_path.c_str()), make_load_opts(input_path));
     auto t1 = std::chrono::steady_clock::now();
     emit_timing_ms("pool_load.presentation_load", t1 - t0);
 
