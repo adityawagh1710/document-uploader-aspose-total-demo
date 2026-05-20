@@ -1954,3 +1954,48 @@ Verified post-state: each repo holds exactly one tag = `616c58d`. Live endpoints
 - Doc-only changes batched onto the existing `aspose-upgrades-v5` PR branch rather than creating a new PR — both sets of changes are doc reconciliation for the same operational session.
 
 ---
+
+## Session: UI package refactor (test_ui.py → office_convert_ui/app.py)
+**Timestamp**: 2026-05-20T20:05:00Z
+
+**User Input**: "Lets do some core refactoring without breaking anything"
+**AI Response**: Exploratory survey. Found 16 test files + `mypy strict=true` + ruff + `make qa` target → strong safety net. Listed 6 refactor candidates ranked by safety × value: (1) extract CSS to dashboard.css, (2) extract render helpers to render.py, (3) extract fragments to fragments.py, (4) type-annotate `_state()` as TypedDict, (5) unify `ForkedPoolLeader` + `WorkerPool` (risky given XLSX-fork-unsafe carve-out), (6) replace string-concat HTML with templates. Recommended starting with #1 (CSS extraction).
+
+**User Input**: "No i want to move UI related things in office_convert_ui can we do that ?"
+**AI Response**: Scoped the move. Grep showed:
+- `test_ui.py` has ZERO Python imports from `office_convert.*` — the UI talks to the API via HTTP. So the move has no module-resolution effects.
+- Code-side path references: only `Dockerfile.ui` (2 lines: `COPY` source + `CMD` arg).
+- Doc/comment refs: `deploy/README.md`, `deploy/helm/office-convert/values.yaml`, `aidlc-docs/operations/dev-deployment-topology.md`, `office_convert/container_stats.py` docstring.
+- Historical AIDLC doc refs (aidlc-state.md, audit.md) intentionally left untouched — those document past events.
+
+Proposed two structures: (A) minimal — keep filename `test_ui.py` under the new package; (B) rename `test_ui.py` → `app.py` during the move. Recommended B because "test_ui" was historical baggage, `app.py` matches Streamlit/FastAPI conventions, and aligns with the ECR repo name `office-convert-ui`. Zero extra effort over A.
+
+**User Input**: "Execute plan B"
+**AI Response**: Executed:
+
+1. Created new branch `aspose-upgrades-v7-ui-package` from current main (`7dbfbce`).
+2. Created `office_convert_ui/__init__.py` with a package docstring noting "talks to the API via HTTP, no compile-time dependency on `office_convert`".
+3. `git mv test_ui.py office_convert_ui/app.py` — 100% similarity, rename tracked, blame preserved.
+4. Updated `Dockerfile.ui`: `COPY office_convert_ui/ /app/office_convert_ui/` + `CMD ["streamlit", "run", "office_convert_ui/app.py", ...]`.
+5. Updated 4 doc/comment refs (deploy/README.md, deploy/helm/.../values.yaml, dev-deployment-topology.md, container_stats.py).
+6. Verification:
+   - `make qa` → 119 passed, 1 skipped (zero regressions; the 1 skip is the pre-existing missing-worker-binary test that's always skipped on dev machines)
+   - `docker compose up -d --build test-ui` → clean rebuild
+   - Container's process: `streamlit run office_convert_ui/app.py ...` ✓
+   - `GET /_stcore/health` → 200 ✓
+   - No errors in container logs ✓
+7. Committed (`c4657d4` "refactor: move test_ui.py into office_convert_ui/ package") + pushed to `origin/aspose-upgrades-v7-ui-package`.
+
+**User Input**: "AIDLC ?"
+**AI Response**: Updated three artifacts (this audit block included):
+- Memory `project_dashboard_layout.md`: all `test_ui.py` references replaced with `office_convert_ui/app.py` (4 occurrences in frontmatter description + body).
+- `aidlc-state.md`: new "UI code reorganized into `office_convert_ui/` package" section with full rationale, files-changed table, verification result, and the list of future split candidates this refactor enables.
+- This audit block.
+
+Committed those onto the same `aspose-upgrades-v7-ui-package` branch (one PR, two commits: code refactor + doc reconciliation).
+
+**Context**: A genuinely safe refactor. Made possible by the fact that the UI was already HTTP-coupled to the API (no in-process imports), so all "what could break" surfaces were path references — easy to enumerate via grep. The pattern generalizes: when a refactor is constrained to path/name changes with no logic change, the verification loop (mypy + tests + container rebuild + smoke) catches everything in ~90 seconds.
+
+Future work this enables: incremental splits of `office_convert_ui/app.py` into focused modules (`style.py`, `render.py`, `fragments.py`, `state.py`). Each split is a similar low-risk operation — relocate code, no logic change, same verification loop. Estimated 0.5-1 session per split.
+
+---
