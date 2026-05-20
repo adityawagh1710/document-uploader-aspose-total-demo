@@ -612,3 +612,48 @@ Good guardrail. The user-facing recovery was a clean restate of the three paths 
 3. `values.yaml` `config.maxJobs: 1, config.parallel: 2`; live has `2, 4` (ConfigMap-patched).
 
 Next full chart-first deploy (when it happens) needs to fold all three drifts together: bump office CIDRs option (overlay or commit), bump concurrency in chart, and accept that the helm-vs-live image will re-align on fresh install.
+
+### Chart-first redeploy clears all 4 drifts + re-applies live patches (2026-05-20T18:33–18:40 IST)
+
+Operator triggered the canonical undeploy+deploy cycle to reset state. Outcome: every chart-vs-live drift accumulated this afternoon was cleared by the fresh install, then 4 live patches were re-applied via kubectl to restore the operationally-needed mutations. Same drift inventory at the end (4 items), but they're now a fresh baseline rather than crusty layered state.
+
+**Motivation**:
+- The UI pod was flapping with 3 restarts in ~4 hours (cause never confirmed — possibly the Streamlit upload OOM-on-very-large-files path, or a liveness probe edge case).
+- Helm rev 2 was in FAILED state since 14:45 IST because of the SSA conflict on Ingress `inbound-cidrs`. Any subsequent `helm upgrade` would have failed at the same conflict point.
+- Main HEAD had advanced past `d206642` to `616c58d` ("chore: get make qa green on the CSV branch") via PR #4 — the live image was missing the CSV-branch work.
+
+**Sequence**:
+1. **18:31** — `make undeploy-dev` (5 min): route53-delete.sh removed both A-aliases; helm uninstall deprovisioned the ALB; namespace + license Secret deleted. Field-manager state on Ingresses wiped along with the resources (resolves the SSA blocker).
+2. **18:33** — `make deploy-dev IMAGE_TAG=616c58d` (5 min): full canonical 8-step pipeline.
+   - Steps 3-4 (docker build + push): cache-hit on C++ worker_cpp layers; Python layers rebuilt from `616c58d` (which had advanced past the previous `d206642` build).
+   - Step 6 (`helm upgrade --install --wait`): fresh install at rev 1, completed in ~30s.
+   - Step 7 (`route53-upsert.sh`): polled for new ALB hostname (~30s), UPSERT'd both A-aliases. New ALB: `k8s-officeconvert-921b81ff67-1254648625.eu-west-1.elb.amazonaws.com` (was `-1648401858`). Route 53 change ID `/change/C0864986398EHVE9RY5Z7`.
+3. **18:38** — Both pods 1/1 Ready on image `616c58d`. End-to-end via `kubectl exec`/`port-forward` returned `200 OK`. End-to-end from operator's laptop **failed** (HTTP 000) because:
+   - Chart's `ingress.inboundCidrs` ships only the 10 corp CIDRs; operator's home ISP `36.255.185.84/32` and the 4 office VPN CIDRs are deliberately NOT committed (per [[feedback-office-ips-not-in-chart]] revert decision 2026-05-19).
+   - Expected — same recipe as the morning's first deploy.
+4. **18:40** — Re-applied 4 live patches that the operator wanted persistent across this session:
+   - Single `kubectl annotate --overwrite ingress -n office-convert-dev office-convert office-convert-ui` covering BOTH Ingresses with BOTH annotations in one call (atomic — minimises the SSA reconcile window between the two PATCH calls):
+     - `alb.ingress.kubernetes.io/inbound-cidrs=<15 CIDRs>` (10 chart + 1 home ISP + 4 office VPN)
+     - `alb.ingress.kubernetes.io/load-balancer-attributes=idle_timeout.timeout_seconds=900`
+   - `kubectl patch configmap office-convert-config --type=merge -p '{"data":{"OFFICE_CONVERT_MAX_JOBS":"2","OFFICE_CONVERT_PARALLEL":"4"}}'`
+   - `kubectl rollout restart deploy/office-convert` — ConfigMap reads happen at pod start; restart is mandatory. ~35s roll.
+5. **18:40** — DNS lag: Route 53 had records; Cloudflare 1.1.1.1 resolved them; 8.8.8.8 and operator's home resolver lagged ~5 min. `curl --resolve` to ALB IP `34.252.233.148` returned `HTTP 200` immediately on both endpoints. `/etc/hosts` is the documented immediate workaround per [[feedback-dns-nxdomain-cache-trap]].
+
+**Image digests in ECR (tag `616c58d`, account 537462380503, region eu-west-1)**:
+- API: `sha256:d2ced290af1d8be950e5ba7c898f210df266b0b2a39495fdb27061ecbb211075`
+- UI:  `sha256:4252c5089b102df185c864066842209e68faff4ece33a5862aa8cba37a84c897`
+
+**Post-redeploy chart-vs-live drift inventory** (same 4 items as before, fresh baseline):
+1. `values.yaml ingress.inboundCidrs` has 10; live has 15.
+2. `values.yaml config.maxJobs: 1, config.parallel: 2`; live has `2, 4`.
+3. `values.yaml ingress.idleTimeoutSeconds: 300`; live has `900`.
+4. Helm rev 1 has `image.tag: 616c58d` — matches live image; this drift dimension is currently zero (and remains so unless a subsequent image-only roll diverges it again).
+
+**SSA conflict status**: the kubectl-annotate field manager is back on the Ingresses' `inbound-cidrs` and `load-balancer-attributes` annotations. Any future `helm upgrade` that touches those fields will hit the same SSA conflict and fail. Posture going forward (unchanged): image-only rolls via `kubectl set image`; chart changes require full undeploy+deploy cycle (which is what we just did to clean up).
+
+**Outcome relative to pre-redeploy state**:
+- ✅ UI pod restart-flap gone (fresh pod, 0 restarts).
+- ✅ Helm release is clean (rev 1 deployed only, no failed rev 2).
+- ✅ Image matches main HEAD (was lagging the CSV-branch PR before).
+- ✅ Operator has full reachability after live-patches (after ~5 min DNS propagation).
+- ⚠️ Same SSA conflict will reappear on any next `helm upgrade` because the operator-needed live patches re-introduce kubectl-annotate field ownership.

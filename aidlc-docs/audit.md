@@ -1868,3 +1868,64 @@ ConfigMap hookup mechanic worth recording: the deployment uses `envFrom: configM
 - **The auto-mode classifier guardrail engaging** for the first time in this project. Reasonable precedent: when the user authorizes A but the agent infers A+B+C, the classifier catches it. Adjusts the "agent must match the explicit scope of authorization, not the inferred best-practice scope" expectation for next time.
 
 ---
+
+## Session: chart-first redeploy + 4-patch re-application + smoke-test detour
+**Timestamp**: 2026-05-20T18:40:00Z
+
+**User Input** (turn ~42, late-afternoon): "this section on dev05 takes lot of time to attach file what can be done to improve performance there" + screenshot of a 312 MB XLS in the Streamlit file_uploader with a spinner
+**AI Response**: Diagnosed Streamlit 1.57 file_uploader path (browser → UI pod buffer → API), found that ALB `idle_timeout` was 300s (likely culprit for slow-upload timeout), UI pod memory 4Gi unchanged, API max_input 1 GiB. Offered 5 ranked improvements ranging from idle_timeout bump (~1 annotation) to direct browser→API upload (~50 lines).
+
+**User Input** (turn 43): "what are cons and prod of 2" (cons + pros of direct browser → API upload)
+**AI Response**: Detailed 6 pros (one network hop saved, UI pod memory freed, native browser progress, bypasses Streamlit large-file hang risk, robust to UI rerun, better error visibility) vs 8 cons (CORS config required, breaks conversion-history pipeline, Re-run button breaks, heartbeat polling rewires, iframe friction, dual code paths to maintain, TLS handshake repeated, API surface widens). Honest summary: direct upload is faster but breaks 4 dashboard features unless we add postMessage glue.
+
+**User Input** (turn 44): "ship #1 idle_timeout bump and 4"
+**AI Response**: Shipped #1 cleanly — atomic `kubectl annotate` on both Ingresses with `idle_timeout.timeout_seconds=900`. SuccessfullyReconciled within ~13s. For #4 (custom progress display), flagged the dependency on #2 — Streamlit `file_uploader` doesn't expose progress to Python; meaningful progress requires bypassing the widget entirely. Offered 4 lighter alternatives (estimate banner, fake progress bar, JS-injected hook, full #2+#4).
+
+**User Input** (turn 45): "ship A" (Option A: pre-upload estimate banner + post-upload "Upload complete" line)
+**AI Response**: Implemented in test_ui.py: static `st.caption(...)` above the file_uploader explaining large-file timings, plus `st.success("Upload complete...")` for files ≥50 MB after the upload finished. Rebuilt local test-ui container, verified. Asked operator how to roll to dev05 (commit + push + image-build, or roll uncommitted, or local-only).
+
+**User Input** (turn 46): "NO revert it"
+**AI Response**: Reverted the test_ui.py changes (`git checkout HEAD -- test_ui.py`), rebuilt local UI without the banners. Idle_timeout bump on dev05 (already applied) was preserved — operator's "revert it" was scoped to the just-shipped test_ui.py changes, not the unrelated dev05 annotation.
+
+**User Input** (turn 47): "Can we add next.js react UI to fix these issue ? just do research ?"
+**AI Response**: Pure research (no code). Honest take: the actual bottleneck (file going through UI pod + no progress visibility) doesn't require Next.js — any client-side JS bypassing `st.file_uploader` solves it. Listed 10 pros, 10 cons. Full Next.js port estimated 1,500-2,000 lines of TS/TSX, 3-5 days for a senior FE — way out of proportion to the upload-pain problem.
+
+**User Input** (turn 48): "Estimated 3-5 days of focused work. for whome ?"
+**AI Response**: Apologized for the sloppy estimate. Broken down by profile: senior FE who knows React+TS+Next+the domain = 3-5 days; senior FE not knowing the domain = 5-7 days; mid-level FE = 7-10 days; backend dev learning React = 3-6 weeks; agent + operator review = 2-3 sessions. Plus 2-3 days of NOT-included items (design system, chart library decision, deploy story, visual QA, state bugs).
+
+**User Input** (turn 49): "How long it will take for you to build sme UI in streamlit-elements — Material-UI components in Streamlit ???"
+**AI Response**: Researched. streamlit-elements last released 2023, compatibility with 1.57 unknown. Time estimates: smoke test 30 min, file-uploader-only slice 1 session, hybrid polish 2-3 sessions, full port 3-5 sessions. Honest gotcha: streamlit-elements DOES NOT fix upload pain by itself — its drag-drop component still uses Streamlit's `/upload_file` endpoint. Same direct-API-upload work needed via `streamlit_elements.html` raw HTML helper.
+
+**User Input** (turn 50): "Yes let try out" (smoke test)
+**AI Response**: Added `streamlit-elements` to Dockerfile.ui pip install, wrote `test_elements_smoke.py` with 5 probes (import, MUI Button, Card+Typography, raw html.input, Streamlit fragment), rebuilt UI container, verified import works on Streamlit 1.57 (version 0.1.0 installed cleanly). Started a separate container on port 8502 with the smoke page. Server-side clean — no errors at module load or after 60s of run. Browser-side render verification needed operator to actually open the page.
+
+**User Input** (turn 51): "remove it"
+**AI Response**: Reverted in full — stopped + removed smoke container, `git checkout HEAD -- Dockerfile.ui`, deleted `test_elements_smoke.py`, rebuilt UI without streamlit-elements, confirmed import no longer succeeds. Working tree clean. Nothing committed, so no git history to clean.
+
+**User Input** (turn 52): "Reverify new updated code base"
+**AI Response**: Comprehensive verification. Discovered branch had silently advanced to `main` (was on `aspose-upgrades-v3` earlier) and a new `aspose-upgrades-v2.1` branch existed for CSV-branch work. Local files: clean. Local docker: healthy. Dev05 reachability: AWS SSO token expired, kubectl blocked, public endpoints still HTTP 200, `/health` confirmed live `max_jobs: 2`.
+
+**User Input** (turn 53): "refreshed sso verify now"
+**AI Response**: Full kubectl re-verification post-SSO-refresh:
+- ✅ Pods on `d206642`, ConfigMap `MAX_JOBS=2, PARALLEL=4`, ALB `idle_timeout=900`, ALB inbound-cidrs count=15
+- ✅ Helm rev 1 deployed (`0cf9f43`), rev 2 FAILED (SSA conflict)
+- ⚠️ UI pod restart count = 3 (flapping, likely OOM or liveness probe; not confirmed)
+
+**User Input** (turn 54): "Lets do undeploy and deploy with latest changes from main and by latest images"
+**AI Response**: Canonical chart-first cycle. Pre-flight: branch=main, HEAD=`616c58d`, working tree clean, Docker up, SSO valid. Captured pre-undeploy live state snapshot.
+- **18:31** — `make undeploy-dev` clean.
+- **18:33** — `make deploy-dev IMAGE_TAG=616c58d` ran the full 8-step pipeline (background, ~5 min). Both images built and pushed, helm install rev 1, Route 53 UPSERT to new ALB hostname `…-1254648625`. Pods 1/1 Ready.
+- **18:40** — Re-applied 4 live patches per operator request ("apply all 4"): atomic `kubectl annotate` on both Ingresses with 15 inbound-cidrs + `idle_timeout=900`, then ConfigMap patch + rollout-restart for `MAX_JOBS=2, PARALLEL=4`.
+- **18:40** — DNS lag: 8.8.8.8 + home resolver hadn't propagated; Cloudflare 1.1.1.1 had. Verified via `curl --resolve` direct to ALB IP — both endpoints HTTP 200.
+
+**User Input** (turn 55): "Yes" (update memory + AIDLC docs)
+**AI Response**: This audit block, plus updates to `aidlc-state.md` ("Chart-first redeploy clears all 4 drifts + re-applies live patches" section with full sequence + outcome table) and `dev-deployment-topology.md` (refreshed §0 header, §12 current-state line, new "Chart-first redeploy + 4-patch re-application" subsection, new ship-pile-at-616c58d table, old ship-pile-at-d206642 retained as historical). Memory: `project_dev_deployment_status.md` frontmatter + Status section rewritten with full 18:33-18:40 timeline; new pod names, new ECR digests, new ALB hostname captured. MEMORY.md index refreshed.
+
+**Context**: A clean cycle. All 3 dimensions improved:
+- **Helm history**: was `1 deployed + 2 FAILED`, now `1 deployed`. Clean.
+- **Code**: was `d206642` (lagging main HEAD), now `616c58d` (matches).
+- **UI pod stability**: was 3 restarts in 4 hours, now 0 (fresh pod).
+
+Same 4-item chart-vs-live drift inventory at the end as before — that's the operator's choice (live patches > chart edits + redeploy). Notable: the SSA conflict on `inbound-cidrs` field manager has been re-introduced (kubectl-annotate is again the owner) — next `helm upgrade` will fail the same way. Posture confirmed: image-only rolls via `kubectl set image`; chart changes require the full undeploy+deploy cycle we just did. This is sustainable as long as live patches are infrequent.
+
+---
