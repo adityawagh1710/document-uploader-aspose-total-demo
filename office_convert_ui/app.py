@@ -36,6 +36,14 @@ HEARTBEATS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/heartbeats
 PROGRESS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/progress
 TIMINGS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/timings
 
+# Shared HTTP session for all API calls. Fragments fire every 1-4 seconds
+# and each tick makes multiple calls (/health, /stats, /workers,
+# /jobs/.../heartbeats, /jobs/.../timings, /jobs/.../progress); without
+# a session, every call opens a fresh TCP+TLS connection, adding ~50-200 ms
+# of handshake latency per call. urllib3's HTTPAdapter under Session
+# reuses the connection pool across calls.
+_SESSION = requests.Session()
+
 # Distinct, high-saturation per-worker palette so up to 8 pool workers stay
 # visually separable in the live charts.
 WORKER_COLORS = [
@@ -858,7 +866,7 @@ def _state() -> dict:
 
 def get_health():
     try:
-        return requests.get(HEALTH_URL, timeout=3).json()
+        return _SESSION.get(HEALTH_URL, timeout=3).json()
     except Exception as e:
         return {"error": str(e)}
 
@@ -898,7 +906,7 @@ def _docker_monitor() -> dict:
         while True:
             new_stats = dict(_DEFAULT_DOCKER_STATS)
             try:
-                r = requests.get(f"{API_URL}/stats", timeout=2)
+                r = _SESSION.get(f"{API_URL}/stats", timeout=2)
                 if r.ok:
                     s = r.json()
                     cur_usec = int(s["cpu_usage_usec"])
@@ -931,7 +939,7 @@ def _docker_monitor() -> dict:
 
             new_workers: list[dict] = []
             try:
-                r = requests.get(f"{API_URL}/workers", timeout=2)
+                r = _SESSION.get(f"{API_URL}/workers", timeout=2)
                 if r.ok:
                     fresh_workers = r.json().get("workers", [])
                     current_pids: set[int] = set()
@@ -991,7 +999,7 @@ def get_worker_processes() -> list[str]:
 def get_heartbeats(request_id: str) -> list[dict]:
     """Fetch the heartbeat trail for an in-flight (or recently-completed) request."""
     try:
-        resp = requests.get(f"{HEARTBEATS_URL}/{request_id}/heartbeats", timeout=2)
+        resp = _SESSION.get(f"{HEARTBEATS_URL}/{request_id}/heartbeats", timeout=2)
         if resp.status_code != 200:
             return []
         return resp.json().get("heartbeats", []) or []
@@ -1002,7 +1010,7 @@ def get_heartbeats(request_id: str) -> list[dict]:
 def get_timings(request_id: str) -> list[dict]:
     """Fetch the stage-timing trail (load / paginate / save events per worker)."""
     try:
-        resp = requests.get(f"{TIMINGS_URL}/{request_id}/timings", timeout=2)
+        resp = _SESSION.get(f"{TIMINGS_URL}/{request_id}/timings", timeout=2)
         if resp.status_code != 200:
             return []
         return resp.json().get("timings", []) or []
@@ -1013,7 +1021,7 @@ def get_timings(request_id: str) -> list[dict]:
 def get_progress(request_id: str) -> dict:
     """Fetch weighted progress for an in-flight request."""
     try:
-        resp = requests.get(f"{PROGRESS_URL}/{request_id}/progress", timeout=2)
+        resp = _SESSION.get(f"{PROGRESS_URL}/{request_id}/progress", timeout=2)
         if resp.status_code != 200:
             return {}
         return resp.json() or {}
@@ -1025,7 +1033,7 @@ def do_conversion(file_name, file_bytes, request_id):
     """Blocking conversion. Returns (data, elapsed, error)."""
     start = time.time()
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             CONVERT_URL,
             files={"file": (file_name, file_bytes)},
             headers={"X-Request-ID": request_id},
@@ -2373,7 +2381,7 @@ if st.session_state.history:
         use_container_width=True,
     ):
         try:
-            resp = requests.delete(f"{API_URL}/cache", timeout=10).json()
+            resp = _SESSION.delete(f"{API_URL}/cache", timeout=10).json()
             if not resp.get("enabled"):
                 st.toast("Cache is disabled on this deployment.", icon="ℹ️")
             else:

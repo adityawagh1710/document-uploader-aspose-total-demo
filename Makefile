@@ -115,20 +115,20 @@ check-vendor-words:
 test: build-test ## TEST run unit + property + integration suites
 	@printf "$(GREEN)Running tests in $(IMAGE_TEST)...$(RESET)\n"
 	docker run --rm $(IMAGE_TEST) \
-		pytest tests/unit tests/property tests/integration -v
+		pytest -n auto tests/unit tests/property tests/integration -v
 
 test-unit: build-test ## TEST run unit tests only
-	docker run --rm $(IMAGE_TEST) pytest tests/unit -v
+	docker run --rm $(IMAGE_TEST) pytest -n auto tests/unit -v
 
 test-property: build-test ## TEST run property-based tests only (Hypothesis)
-	docker run --rm $(IMAGE_TEST) pytest tests/property -v
+	docker run --rm $(IMAGE_TEST) pytest -n auto tests/property -v
 
 test-integration: build-test ## TEST run in-process integration tests
-	docker run --rm $(IMAGE_TEST) pytest tests/integration -v
+	docker run --rm $(IMAGE_TEST) pytest -n auto tests/integration -v
 
 test-coverage: build-test ## TEST run all tests with 80% coverage gate
 	docker run --rm $(IMAGE_TEST) \
-		pytest --cov=office_convert --cov-fail-under=80 \
+		pytest -n auto --cov=office_convert --cov-fail-under=80 \
 		--cov-report=term-missing tests/unit tests/property tests/integration
 
 test-e2e: build build-test check-license ## TEST run Testcontainers e2e suite (needs running Docker + license)
