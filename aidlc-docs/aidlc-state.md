@@ -672,3 +672,41 @@ After the chart-first redeploy stabilized, deleted 4 unused image tags from both
 Reclaimed ~2.2 GB / ~$0.22/mo ECR storage. ECR now holds exactly one tag per repo = `616c58d` (live on dev05). Rollback to `0cf9f43` or `d206642` now requires rebuilding from git history — source is preserved through the squash-merge chain on `main`, build is ~2-5 min including the C++ compile.
 
 Heuristic for future cleanups: ECR pruning is safe to run whenever the chart-vs-live image dimension is at zero (`helm get values` `image.tag` matches `kubectl get pods` image). At that moment, no in-flight operation needs older tags. The redeploy we just did is a natural cleanup checkpoint.
+
+### UI code reorganized into `office_convert_ui/` package (2026-05-20T20:05 IST)
+
+Operator requested moving "UI related things in office_convert_ui" — relocate the orphan root-level `test_ui.py` into a named Python package alongside `office_convert/`. Done as a low-risk pure refactor with the existing `make qa` + docker build + UI smoke as the safety net.
+
+**Why now**: `test_ui.py` had grown to ~2,500 lines and was the only top-level Python file at the project root. Putting it in a `office_convert_ui/` package mirrors the `office_convert/` API package, lines up with the `office-convert-ui` ECR repo name, and sets up incremental future splits (style.py / render.py / fragments.py / state.py) as low-risk follow-ups.
+
+**Why the move was safe**: `test_ui.py` had ZERO Python imports from `office_convert.*` — the UI talks to the API via HTTP (`API_URL` env var), not in-process. So the relocation had no module-resolution effects; only path references needed updating.
+
+**Structure chosen**: `office_convert_ui/__init__.py` (package docstring only) + `office_convert_ui/app.py` (the dashboard, renamed from `test_ui.py` during the move). Reasons for renaming during the move:
+- The "test_ui" name was historical baggage from the project's first commit ("doc uploader aspose total demo"). It's the actual UI, not a test.
+- `app.py` matches Streamlit / FastAPI conventions.
+- The package name `office_convert_ui` matches the ECR repo name `office-convert-ui`.
+- Zero extra cost vs. keeping the old name — `git mv` already records a rename either way.
+
+**Files changed**:
+
+| Kind | Path | Change |
+|---|---|---|
+| Code (rename) | `test_ui.py` → `office_convert_ui/app.py` | `git mv`, 100% similarity (content unchanged), blame preserved |
+| New | `office_convert_ui/__init__.py` | Package docstring only |
+| Build | `Dockerfile.ui` | `COPY office_convert_ui/ /app/office_convert_ui/` + `CMD ["streamlit", "run", "office_convert_ui/app.py", ...]` |
+| Doc | `deploy/README.md` | 1 line |
+| Chart | `deploy/helm/office-convert/values.yaml` | 2 comment lines |
+| Doc | `aidlc-docs/operations/dev-deployment-topology.md` | 2 lines (topology diagram + workload label) |
+| Code (comment) | `office_convert/container_stats.py` | 1 docstring line |
+
+**Intentionally NOT updated**: historical references in `aidlc-docs/aidlc-state.md` (earlier sections) and `aidlc-docs/audit.md` (earlier session blocks) that say things like "changed X in `test_ui.py` on 2026-05-13". Rewriting those would falsify the historical record — they correctly document what the file was named at the time.
+
+**Verification**: `make qa` → 119 passed, 1 skipped (no regressions from the refactor — file content is unchanged, only paths moved). `docker compose up -d --build test-ui` → clean rebuild, UI process line in container is now `streamlit run office_convert_ui/app.py`, `/_stcore/health` returns 200, no errors in container logs.
+
+**Future incremental work this sets up**: splitting `app.py` into focused modules under `office_convert_ui/` is now a series of small `git mv`-style operations rather than a heavy file restructure. Candidate targets (each its own future PR or commit, all with the same verification loop):
+- `style.py` — extract the ~400-line CSS block from the `st.markdown('<style>...</style>')` call at the top of `app.py`. Lowest-risk split, biggest readability win.
+- `render.py` — extract `_render_tile`, `_render_util_card`, `_render_sparkline`, `_render_chart_skeleton`, `_render_format_perf`, `_format_icon`, `_human_bytes`. Pure functions, easy to unit-test once moved.
+- `fragments.py` — extract `live_stats`, `live_charts`, `live_events`, `conversion_status`, `toast_renderer`. Some care needed around Streamlit's `@st.fragment` decorator + slot variable scoping; should still be straightforward.
+- `state.py` — extract `_state()` + the module-level `_metric_hist` ring buffer + the toast tracking helpers.
+
+Together those would reduce `app.py` to ~500-700 lines (a thin entry point + page assembly), with focused 200-500-line companion modules. Not on the critical path; can land whenever there's appetite.
