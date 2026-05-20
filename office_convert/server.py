@@ -26,6 +26,7 @@ from office_convert import logging as oc_logging
 from office_convert import orchestrator
 from office_convert.cache import CacheManager
 from office_convert.config import Settings, get_settings
+from office_convert.csv_input import csv_bytes_to_xlsx_bytes, is_csv_filename
 from office_convert.errors import (
     BusyError,
     ConversionError,
@@ -207,6 +208,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await dest.write(block)
             if size == 0:
                 raise MissingFileError("file is empty")
+
+            # CSV has no magic bytes; the workers only speak XLSX/DOCX/PPTX/PDF.
+            # Rewrite the buffered body in-place as XLSX so the rest of the
+            # pipeline (detect → probe → workers) sees a normal spreadsheet.
+            # Done in a thread to keep the event loop responsive on big CSVs.
+            if is_csv_filename(file.filename):
+                csv_bytes = await asyncio.to_thread(input_path_tmp.read_bytes)
+                xlsx_bytes = await asyncio.to_thread(csv_bytes_to_xlsx_bytes, csv_bytes)
+                if len(xlsx_bytes) > s.max_input_bytes:
+                    raise InputTooLargeError(len(xlsx_bytes), s.max_input_bytes)
+                await asyncio.to_thread(input_path_tmp.write_bytes, xlsx_bytes)
+                size = len(xlsx_bytes)
 
             # Detect format from the buffered file: read a small head for the
             # magic-byte check, and pass the path so OOXML disambiguation can

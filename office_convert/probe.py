@@ -30,7 +30,9 @@ ACCEPTED_FORMATS: tuple[FormatName, ...] = ("docx", "pptx", "xlsx", "pdf")
 # What the user is allowed to upload. The orchestrator maps legacy
 # (.doc/.xls/.ppt) to the modern format names internally — Aspose's
 # Document/Workbook/Presentation constructors detect OLE2 vs OOXML from
-# content. Exposed to the user only via the UnsupportedFormatError detail.
+# content. CSV is normalized to XLSX in the server handler before this
+# detection runs (see office_convert.csv_input). Exposed to the user only
+# via the UnsupportedFormatError detail.
 ACCEPTED_UPLOAD_FORMATS: tuple[str, ...] = (
     "docx",
     "pptx",
@@ -39,6 +41,7 @@ ACCEPTED_UPLOAD_FORMATS: tuple[str, ...] = (
     "doc",
     "xls",
     "ppt",
+    "csv",
 )
 
 PDF_MAGIC = b"%PDF-"
