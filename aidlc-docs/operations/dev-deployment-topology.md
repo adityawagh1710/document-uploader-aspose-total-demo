@@ -6,7 +6,7 @@
 
 **Namespace**: `office-convert-dev`. Helm release: `office-convert`.
 
-**Last update**: 2026-05-19.
+**Last update**: 2026-05-20. Reconciliation pass over 2026-05-19 ship pile + 2026-05-20T10:30 redeploy. **Current state: DEPLOYED** on image `0cf9f43` — see §12 for redeploy timeline.
 
 ---
 
@@ -50,8 +50,9 @@ This file is the source of truth for that reality.
 │      • Talks to API via in-cluster DNS:                                       │
 │        http://office-convert.office-convert-dev.svc.cluster.local             │
 │      • UI runs as root (Dockerfile.ui has no USER); TODO in values.yaml.      │
-│      • resources: 0.1-0.5 CPU, 512Mi-1.5Gi memory (bumped from 512Mi after    │
-│        OOMKills on 2026-05-18).                                               │
+│      • resources: 0.1-0.5 CPU, 1.5Gi-4Gi memory (bumped from 512Mi-1.5Gi      │
+│        after a 398 MiB XLSX upload OOMKilled the pod on 2026-05-19,           │
+│        commit fd5b595; earlier 512Mi→1.5Gi bump was 2026-05-18).              │
 │                                                                               │
 │  Aspose license: K8s Secret `aspose-license` (created manually, not via Helm).│
 │    Mounted at /aspose/license.lic on the API pod.                             │
@@ -84,7 +85,7 @@ Both `scheme: internal` → VPC-only. Reachable from inside the VPC; unreachable
 
 ## 4. Target topology (as-built 2026-05-19 — was forward-plan when this section was authored 2026-05-18)
 
-**Decision converged 2026-05-18, implemented 2026-05-19**: ALB Ingress mirroring argocd's pattern, **two Ingresses sharing one ALB** via `alb.ingress.kubernetes.io/group.name: office-convert`, **subdomain routing**. Currently coexists with the dormant internal NLBs (commit A "alongside NLBs"); the dormant NLB drop is local commit `33ba4c6`, unpushed.
+**Decision converged 2026-05-18, fully implemented 2026-05-19**: ALB Ingress mirroring argocd's pattern, **two Ingresses sharing one ALB** via `alb.ingress.kubernetes.io/group.name: office-convert`, **subdomain routing**. Cutover is fully shipped (commits `37f01c0` step A + `33ba4c6` step B + `3cbc332` doc alignment). Both Services are `ClusterIP`; NLBs are gone; ALB is the sole ingress surface.
 
 ```
 Browser ──HTTPS──▶ <hostname>.dev05.k8s.opus2dev.com
@@ -136,18 +137,18 @@ Both single-label under `dev05.k8s.opus2dev.com` so the existing wildcard cert c
 
 ---
 
-## 6. As-built change set (commit A — `37f01c0`, 2026-05-19)
+## 6. As-built change set (commits `37f01c0` + `33ba4c6` + `3cbc332`, 2026-05-19)
 
-The plan in this section has been executed. Commit A landed the ALB Ingress **alongside the dormant NLBs** (both still provisioned per request — full cutover is the unmerged local commit `33ba4c6` "step B").
+The plan in this section has been executed end-to-end. Commit `37f01c0` (step A) landed the ALB Ingress alongside dormant NLBs; commit `33ba4c6` (step B) flipped both Services `LoadBalancer → ClusterIP`, deprovisioning the NLBs within ~60s of `helm upgrade`; commit `3cbc332` aligned Makefile printouts + `deploy/README.md` + this doc with the as-built pipeline.
 
-**Helm chart, as-shipped at `37f01c0`** (`deploy/helm/office-convert/`):
+**Helm chart, final state** (`deploy/helm/office-convert/`):
 
-| File | State at commit A | Cutover (commit B, local-only) |
-|---|---|---|
-| `templates/api-service.yaml` | Unchanged — `type: LoadBalancer` + internal-NLB annotations (NLB still provisioned alongside ALB). | Switch to `type: ClusterIP`, drop NLB annotations. |
-| `templates/ui-service.yaml` | Unchanged — `type: LoadBalancer` + internal-NLB annotations. | Switch to `type: ClusterIP`, drop NLB annotations. |
-| `templates/ingress.yaml` | **NEW**. Two `Ingress` resources sharing `group.name: office-convert`, each `host:`-routed. SSL-redirect action wired on port 80. Per-Ingress `healthcheck-path` (UI: `/_stcore/health`, API: `/health`). | No change. |
-| `values.yaml` | New `ingress:` block: `enabled: true`, `uiHost`, `apiHost`, `certificateArn`, `inboundCidrs` (10-CIDR argocd-lineage), `groupName: office-convert`, `sslPolicy`, `idleTimeoutSeconds: 300`, healthcheck paths. Service `type:` left at `LoadBalancer`. | Service `type:` flipped to `ClusterIP`, NLB annotations removed. |
+| File | Final state (post-`33ba4c6`) |
+|---|---|
+| `templates/api-service.yaml` | `type: ClusterIP`, NLB annotations removed. |
+| `templates/ui-service.yaml` | `type: ClusterIP`, NLB annotations removed. |
+| `templates/ingress.yaml` | Two `Ingress` resources sharing `group.name: office-convert`, each `host:`-routed. SSL-redirect action wired on port 80. Per-Ingress `healthcheck-path` (UI: `/_stcore/health`, API: `/health`). |
+| `values.yaml` | `ingress:` block: `enabled: true`, `uiHost`, `apiHost`, `certificateArn`, `inboundCidrs` (10-CIDR argocd-lineage corp allowlist only — office/personal CIDRs deliberately NOT in chart per `9345f30` revert), `groupName: office-convert`, `sslPolicy`, `idleTimeoutSeconds: 300`, healthcheck paths. |
 
 **Route 53 automation** — added 2026-05-19 alongside the chart:
 
@@ -219,11 +220,11 @@ The Streamlit idle-timeout and healthcheck-paths from the original pre-deploy li
 
 ---
 
-## 11. As-deployed state (2026-05-19)
+## 11. As-deployed state (peak of 2026-05-19, pre-undeploy)
 
-The plan in §6 has been executed. Live state on `DEV05-EKS-CLUSTER`:
+The plan in §6 has been executed. State on `DEV05-EKS-CLUSTER` at the peak of 2026-05-19 (before the 2026-05-19T23:04 undeploy — see §12 for current state):
 
-**Image**: `office-convert:37f01c0` (digest `sha256:b5910a7…`). Helm release `office-convert`, rev 1 at this image tag.
+**Image**: `office-convert:0cf9f43`. Helm release `office-convert`.
 
 **Routes provisioned cluster-wide** (only 3 public hostnames in the entire cluster):
 
@@ -233,13 +234,13 @@ The plan in §6 has been executed. Live state on `DEV05-EKS-CLUSTER`:
 | `office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com` | `office-convert-dev/office-convert-ui` | shared ALB `k8s-officeconvert-921b81ff67-…` |
 | `office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com` | `office-convert-dev/office-convert` | (same ALB ↑, group.name shared) |
 
-**Live `inbound-cidrs` allowlist** (15 CIDRs on both Ingresses):
+**Live `inbound-cidrs` allowlist** (15 CIDRs on both Ingresses at peak of 2026-05-19):
 
 | Origin | CIDRs | Persistence |
 |---|---|---|
 | Chart values (argocd-snapshot lineage) | `213.210.23.82/32, 213.210.23.84/32, 31.121.79.58/32, 31.121.79.60/32, 18.133.115.188/32, 54.91.4.210/32, 18.168.253.57/32, 52.74.117.130/32, 165.65.37.128/29, 136.40.11.230/32` | committed in chart — survives redeploy |
-| Office VPN egress (added live 2026-05-19) | `114.143.153.146/32, 114.143.153.147/32, 103.68.11.58/32, 103.68.11.59/32` | **NOT in chart** — lost on next redeploy until committed |
-| Aditya's local ISP egress (added live 2026-05-19) | `103.53.234.52/32` | **NOT in chart** — intentionally ephemeral; will rotate |
+| Office VPN egress (added live 2026-05-19, briefly committed in `05bcbe2` then reverted in `9345f30`) | `114.143.153.146/32, 114.143.153.147/32, 103.68.11.58/32, 103.68.11.59/32` | **NOT in chart** — committed-and-reverted on 2026-05-19; live-patch via `kubectl annotate` or use a `values-dev.yaml` overlay |
+| Aditya's local ISP egress (added live 2026-05-19) | `103.53.234.52/32` | **NOT in chart** — intentionally ephemeral; will rotate with DHCP |
 
 > **Note re. the original argocd snapshot**: the 10-CIDR list inherited into the chart corresponds to an **earlier** state of argocd's annotation. As of 2026-05-19, argocd's live `inbound-cidrs` is **5 CIDRs** only (`213.210.23.82, 31.121.79.58, 18.133.115.188, 54.91.4.210, 18.168.253.57`). The chart preserved the broader original set on purpose; argocd's narrower live list is informational.
 
@@ -270,14 +271,61 @@ kubectl annotate --overwrite ingress -n office-convert-dev \
 
 **Outstanding follow-ups**:
 
-1. **Persist the 4 office CIDRs in the chart** — `deploy/helm/office-convert/values.yaml` `ingress.inboundCidrs:`. The personal `103.53.234.52/32` must NOT be committed (it will rotate with the ISP's DHCP).
-2. **Ask corp IT** to confirm the canonical list of office egress public IPs (in case more than 4 exist) and whether `*.dev05.k8s.opus2dev.com` is covered by their server-side outbound allowlist (relevant only for full-tunnel routing — see §3).
-3. **Decide on the open-vs-allowlist long-term posture** — `0.0.0.0/0` + WAF rate-limit, vs keep CIDR allowlist + IT extends FortiClient routes for future operators, vs add Cognito/OIDC at the ALB. Currently default-deny with per-CIDR exceptions; not committed to a long-term shape.
-4. **Drop the dormant NLBs** — `office-convert` + `office-convert-ui` Services are still `type: LoadBalancer` with internal NLB hostnames, alongside the ALB. Local commit `33ba4c6` cuts them over to `ClusterIP`. Safe to deploy now that the ALB is verified.
+1. ~~Persist the 4 office CIDRs in the chart.~~ **REVERSED** 2026-05-19 (`9345f30` reverted `05bcbe2`). Office and personal CIDRs are NOT chart artifacts. Use live `kubectl annotate` or a `values-dev.yaml` overlay.
+2. **Ask corp IT** to confirm the canonical list of office egress public IPs (in case more than 4 exist) and whether `*.dev05.k8s.opus2dev.com` is covered by their server-side outbound allowlist (relevant only for full-tunnel routing — see §3). Still open.
+3. **Decide on the open-vs-allowlist long-term posture** — `0.0.0.0/0` + WAF rate-limit, vs keep CIDR allowlist + IT extends FortiClient routes for future operators, vs add Cognito/OIDC at the ALB. Currently default-deny with per-CIDR exceptions; not committed to a long-term shape. Still open.
+4. ~~Drop the dormant NLBs.~~ **DONE** in `33ba4c6` (step B): both Services flipped `LoadBalancer → ClusterIP`, NLBs deprovisioned by AWS LBC within ~60 s.
 
 ---
 
-## 12. Cross-references
+## 12. Lifecycle: undeploy 2026-05-19T23:04 → redeploy 2026-05-20T10:30
+
+**Current state**: DEPLOYED on image `0cf9f43`, Helm rev 1 (fresh install). ALB `k8s-officeconvert-921b81ff67-1648401858.eu-west-1.elb.amazonaws.com`. Both endpoints verified `HTTP 200` from operator's laptop. Live allowlist = 15 CIDRs (10 chart corp + 1 home ISP `36.255.185.84/32` + 4 office VPN `114.143.153.146/.147, 103.68.11.58/.59`); the 5 non-chart CIDRs are live-patched only and will be lost on the next undeploy/redeploy cycle.
+
+### Undeploy 2026-05-19T23:04
+
+`make undeploy-dev` ran cleanly to save ALB cost while the cluster wasn't being actively dogfooded:
+
+- `route53-delete.sh` removed both A-aliases (~60 s propagation).
+- `helm uninstall office-convert -n office-convert-dev` deprovisioned the ALB (~60 s) and tore down the namespace + license `Secret`.
+- ECR image `0cf9f43` retained intentionally (cost ~$0.10/mo).
+- Cost saved: ~$18/mo (the ALB was the entire dev-deployment cost line).
+
+### Redeploy 2026-05-20T10:30 (path B — helm + route53 only, build skipped)
+
+Operator-side Docker Desktop was down, so `make deploy-dev` couldn't run steps 3-4 (build + push). Since ECR image `0cf9f43` was already present from the 2026-05-19 push, the build is wasted work anyway. Ran Makefile steps 5-8 directly:
+
+1. `kubectl create namespace office-convert-dev` + license Secret apply (dry-run-then-apply pattern).
+2. `helm upgrade --install office-convert ./deploy/helm/office-convert --namespace office-convert-dev --set image.tag=0cf9f43 --set ui.image.tag=0cf9f43 --wait --timeout 5m` → completed in ~30 s (well under timeout). Helm rev 1 because the prior undeploy cleared release history.
+3. `./deploy/scripts/route53-upsert.sh` → polled for ALB hostname (ready in ~30 s), UPSERT'd both A-aliases. Change ID `/change/C053553214DQ5801DCTFA`.
+4. Post-deploy verification: both pods 1/1 Ready, both Ingresses sharing the same ALB, end-to-end curl from laptop returned `200 OK` after live-patching `36.255.185.84/32` (current home ISP) onto both Ingresses atomically. Subsequently added the 4 office VPN CIDRs the same way.
+
+**Redeploy command for next time** (assuming Docker is up):
+
+```bash
+IMAGE_TAG=0cf9f43 make deploy-dev
+```
+
+Image digests in ECR (account 537462380503, region eu-west-1, tag `0cf9f43`):
+- API: `sha256:6e50b9b666958cb02c8af4bcf312255ff84a21a47c974017b6234f74ef6c5acb`
+- UI:  `sha256:d12f06d89ae7de6d148c03d99d71d8aa5ecf6e5b4ee46287c2209d0788080423`
+
+**2026-05-19 ship pile that landed before the undeploy** (full detail in `aidlc-state.md`):
+
+| Commit | Theme |
+|---|---|
+| `37f01c0`, `33ba4c6`, `3cbc332` | ALB Ingress cutover (step A + step B + docs) |
+| `05bcbe2`, `9345f30` | Office VPN CIDR commit-then-revert |
+| `897dc1e`, `fd5b595` | Upload-cap 200 MB → 1 GiB; UI memory 1.5Gi → 4Gi |
+| `f56481b` | Cross-env CPU/RAM tiles via cgroup-backed `/stats` |
+| `3db61fa` | Bounded history, delete button, faster size, chart skeletons |
+| `ffb86d9` | Pool mode forced default + format-aware empty placeholders |
+| `77781df` | DOCX/PPTX/PDF `pool_load`/`pool_render` timing events |
+| `0cf9f43` | `apt-get upgrade` clears ~54-58% of base-image CVEs |
+
+---
+
+## 13. Cross-references
 
 - Production target topology: `aidlc-docs/operations/eks-production-topology.md`.
 - Hard constraints, SKU pivots, fork-after-load history: `aidlc-docs/aidlc-state.md` (Hard Constraints + Post-AI-DLC sections).

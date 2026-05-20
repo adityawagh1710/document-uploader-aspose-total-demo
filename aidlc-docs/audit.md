@@ -1675,3 +1675,82 @@ Updated `MEMORY.md` index to point at the new memory and updated existing entrie
 **AI Response**: This audit block. Plus the post-AI-DLC sections added below to `aidlc-state.md` and the new `aidlc-docs/operations/dev-deployment-topology.md` file. Production-target topology in `aidlc-docs/operations/eks-production-topology.md` remains unchanged because that document captures the **queue-driven (Q5=D)** production design, which is intentionally different from the **HTTP-fronted dev deployment** we're iterating on now. Cross-reference added in `eks-production-topology.md` §8.2 pointing at the new dev-deployment doc.
 
 ---
+
+## Session: 2026-05-19 retrospective + 2026-05-20 doc reconciliation
+**Timestamp**: 2026-05-20T10:00:00Z
+**User Input** (turn 1, 2026-05-20): "load previous session"
+**AI Response**: Summarized 2026-05-19 ship pile from git history (audit log was last updated 2026-05-18T19:00:00Z, so 12 commits and one undeploy were undocumented). Surfaced current UNDEPLOYED state (since 2026-05-19T23:04) and open threads.
+
+**User Input** (turn 2, 2026-05-20): "update the aidlc docs"
+**AI Response**: Pure documentation reconciliation pass — no code, chart, or runtime changes.
+
+**2026-05-19 ship pile (commit order, full bodies in `git log`)**:
+
+1. **`37f01c0`** feat: add ALB Ingress alongside NLBs (dormant cutover, step A). Two `Ingress` resources sharing `group.name: office-convert`, wildcard cert `fab42f33`, 10-CIDR corp allowlist, 300s idle timeout, per-Ingress healthcheck. `deploy/scripts/route53-{upsert,delete}.sh` wired into `Makefile` deploy step 7/8 + undeploy step 1/4.
+2. **`33ba4c6`** feat: cut over to ALB Ingress, drop NLB Services (step B). Both Services `LoadBalancer → ClusterIP`. AWS LBC deprovisioned the NLBs within ~60s. ALB is now the sole ingress surface.
+3. **`3cbc332`** docs: align deploy/undeploy docs + Makefile with as-built ALB state.
+4. **`05bcbe2`** feat(deploy): persist office VPN egress CIDRs in chart allowlist (4 CIDRs).
+5. **`9345f30`** Revert `05bcbe2` — per operator preference, personal/office IPs are not chart artifacts; use live `kubectl annotate` or a future `values-dev.yaml` overlay instead.
+6. **`897dc1e`** feat(chart): raise UI upload cap 200 MB → 1 GiB to match API ceiling. `STREAMLIT_SERVER_MAX_UPLOAD_SIZE=1024` plumbed through `values.yaml`.
+7. **`f56481b`** feat(ui): cross-env CPU/RAM tiles via cgroup-backed `/stats` endpoint. New `office_convert/container_stats.py` (cgroup v1+v2 auto-detect + `/proc` walker) + `GET /stats` + `GET /workers`. Replaces UI's `docker stats`/`docker top` subprocess path. Works on compose AND EKS for the first time.
+8. **`3db61fa`** feat(ui): bounded history (`MAX_RECENT_RESULTS=20`), per-row 🗑️ delete, `uploaded_file.size` (no byte copy), `_build_empty_chart()` skeletons matching live-chart theme.
+9. **`ffb86d9`** feat: force pool mode by default (`pool_min_chunks: 2 → 1` in Pydantic + compose + chart). Single-chunk conversions now emit heartbeats. Format-aware empty-state messages on Time/Gantt charts so non-XLSX conversions aren't mystery-empty.
+10. **`77781df`** feat(timing): emit `pool_load`/`pool_render` stages for all 4 format workers. New shared `worker_cpp/timing_util.h`. Fixed Python-side parser gap: `ForkedPoolLeader._handle_stderr_line` gained missing `{"type":"timing"}` branch (gotcha — timing parsing is now split across `ForkedPoolLeader` and `WorkerPool`).
+11. **`fd5b595`** feat(chart): bump UI memory limit `1.5Gi → 4Gi` for ~1 GiB upload handling. Fixed verified `exitCode 137` OOMKill on 398 MiB XLSX upload (Streamlit's ~3× peak-memory profile during multipart parse + base64 transport).
+12. **`0cf9f43`** fix(security): `apt-get upgrade -y` in all three apt stages (Dockerfile builder + Dockerfile runtime + Dockerfile.ui). Cleared ~54-58% of ECR scan findings inherited from `python:3.12-slim-bookworm` / `debian:bookworm`.
+
+**2026-05-19T23:04** — `make undeploy-dev` ran cleanly: `route53-delete.sh` removed both A-aliases, `helm uninstall` deprovisioned the ALB, license Secret + namespace deleted. ECR image `0cf9f43` retained. Saves ~$18/mo ALB cost. Redeploy via `IMAGE_TAG=0cf9f43 make deploy-dev`.
+
+**Doc changes this session**:
+- This audit block (new).
+- `aidlc-state.md` — 9 new sections appended after "Port-forward wrapper verified clean (2026-05-18)" covering each ship-pile theme above + the undeploy.
+- `aidlc-docs/operations/dev-deployment-topology.md` — §2 UI memory limit refreshed; §4 + §6 + §11 cutover wording aligned with as-built state; image tag `37f01c0 → 0cf9f43`; CIDR composition reflects the revert; outstanding follow-ups closed where shipped; new "current undeployed state" subsection added.
+
+**Context**: Pure doc reconciliation. No runtime behavior change.
+
+---
+
+## Session: 2026-05-20 dev cluster redeploy + allowlist patches
+**Timestamp**: 2026-05-20T10:30:00Z
+**User Input** (turn 3): "Can we deploy ?"
+**AI Response**: Confirmed redeploy prerequisites (ECR image `0cf9f43` retained; helm chart + AWS LBC + ACM + Route 53 all present). Surfaced three caveats: corp VPN must be up for kubectl, AWS SSO session must be current on `opus2-dev`, home-ISP IP needs post-deploy allowlist patch (rotates with DHCP, not in chart by design).
+
+**User Input** (turn 4): "yes go ahead"
+**AI Response**: Pre-flight check uncovered Docker Desktop daemon unreachable (`Internal Server Error` on the socket). The Makefile's `_deploy-dev-impl` target unconditionally calls `make build` at step 3 (no skip-if-tag-exists branch), so `make deploy-dev` would have failed there. Offered two paths: (A) fix Docker + run as-is (~10 min rebuild for identical layers), or (B) bypass build and run only the post-build steps directly against the existing ECR image.
+
+**User Input** (turn 5): "go with B"
+**AI Response**: Executed Makefile steps 5-8 manually:
+- Step 5: `kubectl create namespace office-convert-dev` + license `Secret` via dry-run-then-apply.
+- Step 6: `helm upgrade --install office-convert ./deploy/helm/office-convert --namespace office-convert-dev --set image.repository=$ECR_REPO --set image.tag=0cf9f43 --set ui.image.repository=$ECR_REPO_UI --set ui.image.tag=0cf9f43 --wait --timeout 5m` → completed ~30 s, Helm rev 1 (prior undeploy cleared release history).
+- Step 7: `./deploy/scripts/route53-upsert.sh` → ALB hostname `k8s-officeconvert-921b81ff67-1648401858.eu-west-1.elb.amazonaws.com` populated within ~30 s; both A-aliases UPSERT'd (Route 53 change ID `/change/C053553214DQ5801DCTFA`).
+- Step 8: Both pods 1/1 Ready, both Ingresses sharing the same ALB hostname via `group.name: office-convert`.
+
+Logged to `deploy/logs/deploy-pathB-20260520-103011.log`.
+
+**User Input** (turn 6): "but i want to access it via vpn and vpn ips are there so what should i do ?"
+**AI Response**: Explained that FortiClient is split-tunnel: even with VPN connected, traffic to PUBLIC AWS endpoints (like the newly-provisioned ALB) goes via local ISP, not corp NAT — so the 10 corp CIDRs in the allowlist don't match laptop traffic. `curl ifconfig.me` returning `36.255.185.84` (local ISP, not a corp egress) is proof. Surfaced three options: (A) allowlist local ISP IP, (B) force-tunnel the 3 ALB IPs via FortiClient (brittle — ALB IPs rotate), (C) kubectl port-forward fallback. Recommended A.
+
+**User Input** (turn 7): "FortiClient is connected please check once"
+**AI Response**: Re-verified routing. FortiClient was indeed connected (interface `fctvpn184dd436` — the suffix rotates per session, was `fctvpndc0b79cc` yesterday; scripts must NOT hardcode it). 38 routes pushed via tunnel (corp LAN + a curated list of ~37 individual AWS `/32`s like `15.188.29.12`, `20.207.105.72`, etc. — corp's pre-approved set). The 3 ALB public IPs (`34.255.138.245`, `52.208.35.24`, `99.80.38.211`) are NOT in that pre-approved set; all 3 still route via `wlp0s20f3` (wifi). Confirmed split-tunnel reality. Recommendation A unchanged.
+
+**User Input** (turn 8): "yes run A but remove old ip which was added"
+**AI Response**: Clarified that the redeploy already reset the allowlist to the 10 corp CIDRs only — yesterday's `103.53.234.52/32` is already gone, no removal needed. Atomic-annotated both Ingresses with `36.255.185.84/32` appended (single `kubectl annotate` covering both ingress names per the documented recipe). Brief `FailedBuildModel  conflicting inbound-cidrs` warning during the ~50ms PATCH gap, superseded by `SuccessfullyReconciled` 2 s later. End-to-end verified: `GET /_stcore/health` → 200 OK (734ms), `GET /health` → 200 OK + ready=true (760ms).
+
+**User Input** (turn 9): "Have you added my corp VPN ip ranges right ?"
+**AI Response**: Showed the full live allowlist (11 CIDRs at this point) and broke down origin: 10 corp/argocd-lineage from chart + 1 home ISP live-patch. Flagged the office VPN CIDRs (4 of them, `114.143.153.146/.147, 103.68.11.58/.59`) as NOT in the allowlist — they were intentionally reverted from the chart in `9345f30` per [[feedback-office-ips-not-in-chart]]. Also re-emphasized the split-tunnel caveat: even with corp CIDRs in the allowlist, they don't match laptop traffic to the ALB because of FortiClient's split-tunnel routing. Offered to live-patch the 4 office VPN CIDRs too.
+
+**User Input** (turn 10): "yes add them"
+**AI Response**: Atomic-annotated both Ingresses with the 4 office VPN CIDRs appended (final allowlist = 15 CIDRs). Same transient `FailedBuildModel` → `SuccessfullyReconciled` pattern. Flagged that all 5 non-chart CIDRs will be lost on next undeploy/redeploy cycle.
+
+**User Input** (turn 11): "YES save memory"
+**AI Response**: Updated three memory files:
+- `project_dev_deployment_status.md`: frontmatter description flipped UNDEPLOYED → DEPLOYED; new "Status as of 2026-05-20T10:30 IST" section at top with pod names, ALB hostname, ECR digests, full 15-CIDR allowlist table, and the split-tunnel caveat. Older 2026-05-19 content retained as "Historical context".
+- `MEMORY.md`: index entry one-liner rewritten to match.
+- `reference_corp_vpn_constraints.md`: ISP rotation cadence corrected from "sticky for days" to "<24 h"; FortiClient interface discovery one-liner added.
+
+**User Input** (turn 12): "Commit and push"
+**AI Response**: This entry, plus the corresponding aidlc-state.md "Dev cluster redeployed (2026-05-20T10:30 IST)" section and dev-deployment-topology.md §12 rewrite (lifecycle: undeploy + redeploy) so the doc no longer claims UNDEPLOYED. About to commit + push `aspose-upgrades-v2`.
+
+**Context**: Live operational session — the cluster IS up and verified end-to-end. All resources documented in the new state.md + topology.md sections above this entry.
+
+---
