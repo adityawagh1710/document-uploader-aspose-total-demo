@@ -710,3 +710,46 @@ Operator requested moving "UI related things in office_convert_ui" — relocate 
 - `state.py` — extract `_state()` + the module-level `_metric_hist` ring buffer + the toast tracking helpers.
 
 Together those would reduce `app.py` to ~500-700 lines (a thin entry point + page assembly), with focused 200-500-line companion modules. Not on the critical path; can land whenever there's appetite.
+
+### Tier 1 "free wins" perf pass (2026-05-20T20:20 IST)
+
+Three independent low-risk improvements bundled into a single commit (`b76c404`):
+
+1. **Shared `requests.Session` in the UI** (`office_convert_ui/app.py`). 8 raw `requests.get/post/delete` call sites were each opening a fresh TCP+TLS connection per Streamlit fragment tick. Fragments fire every 1-4s and several calls land per tick (`/health`, `/stats`, `/workers`, `/jobs/.../heartbeats`, `/jobs/.../timings`, `/jobs/.../progress`). A module-level `_SESSION = requests.Session()` shares urllib3's connection pool — saves ~50-200ms per call after the first. Switch was pure replacement; all existing explicit `timeout=` values preserved.
+
+2. **Pin UI deps in `Dockerfile.ui`** to `==X.Y.*` (`streamlit==1.57.*`, `requests==2.34.*`, `plotly==6.7.*`, `pandas==3.0.*`). Previously unpinned — a fresh UI image rebuild could pick up a surprise minor version that breaks behavior. Matches `pyproject.toml`'s API + dev deps convention. Security patches still land within those floors.
+
+3. **`pytest-xdist` parallelism** for `make qa` (`Dockerfile.test` + `Makefile` + `pyproject.toml`). Added `pytest-xdist==3.6.*` to dev deps and `-n auto` to all `pytest` invocations in the Makefile (`test`, `test-unit`, `test-property`, `test-integration`, `test-coverage`). Pytest wall time dropped 80 s → 67 s (~16%) on the dev machine (7 parallel workers). Hypothesis + pytest-asyncio compose cleanly with xdist — all property + async tests pass under parallel execution. `test-e2e` kept sequential because testcontainers share a Docker daemon (parallelism causes container-name collisions).
+
+**Open follow-up flagged in the commit message**: `Dockerfile.test` has a hardcoded dependency list that duplicates `pyproject.toml [project.optional-dependencies.dev]`. Adding `pytest-xdist` required edits to both files. A small follow-up PR could replace the hardcoded list with `uv pip install --system --no-cache -e .[dev,e2e]` to eliminate the duplication risk.
+
+### XLSX local pool-size cap raised 2 → 4 (2026-05-20T20:25 IST, `afe7c0e`)
+
+Operator asked "why doesn't XLSX use 4 workers locally?". Diagnosis: an XLSX-specific cap (`xlsx_max_pool_size`) overrides `OFFICE_CONVERT_PARALLEL=4` for XLSX format because Aspose.Cells is fork-unsafe (per the 2026-05-15 carve-out — see [[reference-xlsx-fork-experiment]] for the Cleanup()+Startup() experiment that would fix this properly). Without copy-on-write, each XLSX worker independently loads the workbook → 4 workers × multi-GB workbook can exceed pod memory.
+
+The code default in `config.py` is `xlsx_max_pool_size=4`, but `compose.yaml` had `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE=2` as a defensive override (the original tuning from the 98 MB / 23,637-page incident, `req_e11ad522` 2026-05-15). The compose env always wins.
+
+**Resolution**: raised compose default 2 → 4 to match `OFFICE_CONVERT_PARALLEL=4`. Safe locally because compose has a 6 GiB swap cushion (memswap_limit=6g + worker_ram_bytes=6 GiB sized to match): RAM spikes beyond 4 GiB page to NVMe rather than OOM-killing the worker. Trade for big workbooks (>50 MB): slower via swap rather than dead via OOM.
+
+**EKS chart deliberately keeps `xlsx_max_pool_size=2`** because dev05 has NO swap (K8s `failSwapOn: true` by default). A size-aware cap in the orchestrator is the proper fix and is the documented TODO in `config.py` near line 117-120:
+
+> "For that class [98 MB / 23k-page], override OFFICE_CONVERT_XLSX_MAX_POOL_SIZE=2 via env, OR add a size-aware cap in the orchestrator (TODO)."
+
+Sketch of the size-aware cap (option C from the menu offered to operator):
+
+```python
+# office_convert/orchestrator.py around line 192
+if format == "xlsx":
+    xlsx_cap = settings.xlsx_max_pool_size
+    if input_size_bytes > settings.xlsx_size_aware_cap_threshold_bytes:
+        xlsx_cap = settings.xlsx_max_pool_size_for_large
+    pool_size = min(pool_size, xlsx_cap)
+```
+
+Plus 2 new config settings (`xlsx_size_aware_cap_threshold_bytes` defaulting to 50 MiB, `xlsx_max_pool_size_for_large` defaulting to 2). Once that lands, the EKS chart can also raise `xlsx_max_pool_size=4` because the threshold automatically falls back to 2 for big workbooks. ~15 lines + 2 unit tests. Not on this PR's scope — separate ship when there's appetite.
+
+**Verification trace** for the compose change (couldn't exercise 4-worker spawn because the test corpus is tiny — single_sheet.xlsx is 11 KB / 3 pages → 1 chunk → `min(parallel, chunks) = 1` worker spawned regardless of the cap):
+- `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE=4` confirmed inside container after `force-recreate`.
+- `/health` returns 200.
+- Conversion log: `dispatch_mode mode=pool workers=4` (the SETTING reaches the code path).
+- Actual `pool_worker_spawn` count: 1 (correct — single-chunk file). To exercise the multi-worker spawn empirically we'd need a multi-chunk XLSX (≥800 pages at the 200-page floor). Code path was traced through `orchestrator.py:192` + `config.py:120` instead.

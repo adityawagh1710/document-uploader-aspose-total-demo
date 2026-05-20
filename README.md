@@ -408,7 +408,8 @@ All runtime config via `OFFICE_CONVERT_*` environment variables:
 | Variable | Default | Notes |
 | -------- | ------- | ----- |
 | `OFFICE_CONVERT_MAX_JOBS` | `1` | Concurrent HTTP requests served. Excess → 503 busy. |
-| `OFFICE_CONVERT_PARALLEL` | `2` | Concurrent chunk renders inside one request. Peak Aspose RAM ≈ `max_jobs × parallel × 2 GB`. |
+| `OFFICE_CONVERT_PARALLEL` | `4` | Concurrent chunk renders inside one request (DOCX/PPTX/PDF use fork-after-load, so peak RAM ≈ 1× loaded doc; XLSX legacy pool independently loads per worker — see `XLSX_MAX_POOL_SIZE` row). |
+| `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE` | `4` | Per-format cap on workers for XLSX. Aspose.Cells is fork-unsafe, so each XLSX worker independently loads the workbook — large files (>50 MB) can OOM with `parallel=4` on a 4 GiB pod. Cap to `2` on swap-less environments (EKS chart default). |
 | `OFFICE_CONVERT_CACHE_DIR` | (unset) | If set, enables content-addressable filesystem cache. Bind-mount a directory. |
 | `OFFICE_CONVERT_LICENSE_PATH` | `/aspose/license.lic` | Path inside the container. Bind-mount the operator's `.lic` here. |
 | `OFFICE_CONVERT_SCRATCH_DIR` | `/tmp/office-convert` | Per-request scratch directory. tmpfs recommended. |
@@ -503,7 +504,7 @@ Aspose render time itself is unchanged — that's still the dominant cost.
 | `/health` 503 with `license_expired` | License past expiry date | Renew the temp license |
 | All `/convert` requests return 500 `render_failed` with "SDK not linked" | Real Aspose calls still commented out in `worker_cpp/formats/*.cpp` | Uncomment the real Aspose API calls per the inline comment blocks; rebuild |
 | 500 `subdivision_floor_exceeded` | A single page exceeds 2 GB RAM (e.g. PPTX with huge embedded media) | Reduce input complexity; documented v1 limitation |
-| 503 `busy` on every request | `max_jobs` exhausted | Raise `OFFICE_CONVERT_MAX_JOBS` (mind host RAM headroom: peak ≈ `max_jobs × parallel × 2 GB`) |
+| 503 `busy` on every request | `max_jobs` exhausted | Raise `OFFICE_CONVERT_MAX_JOBS` (mind host RAM headroom; XLSX is fork-unsafe so each worker independently loads the workbook — see `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE` cap) |
 | HTTP client times out at ~30 s on large conversions | Default client timeout too short | Set client timeout to ≥ 15 minutes |
 
 ---
