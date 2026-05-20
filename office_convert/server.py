@@ -280,8 +280,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 format=fmt,
             )
 
-            # Rename to the format-specific extension.
-            input_path = scratch_dir / f"input.{fmt}"
+            # ODF/RTF files are routed to docx/xlsx/pptx workers, but Aspose's
+            # loaders use the file extension as a format hint — renaming an ODT
+            # to .docx makes Aspose.Words try to parse it as OOXML and fail with
+            # FileCorruptedException. Preserve the original extension for these.
+            ext_hint_formats = {"odt", "ods", "odp", "rtf"}
+            suffix = fmt
+            if file.filename and "." in file.filename:
+                orig_ext = file.filename.rsplit(".", 1)[-1].lower()
+                if orig_ext in ext_hint_formats:
+                    suffix = orig_ext
+            input_path = scratch_dir / f"input.{suffix}"
             input_path_tmp.rename(input_path)
 
             # Hand off to orchestrator; build the streaming response
