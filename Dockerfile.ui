@@ -14,9 +14,9 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir streamlit requests plotly pandas
 
-COPY test_ui.py /app/test_ui.py
+COPY office_convert_ui/ /app/office_convert_ui/
 WORKDIR /app
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "test_ui.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--browser.gatherUsageStats", "false"]
+CMD ["streamlit", "run", "office_convert_ui/app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--browser.gatherUsageStats", "false"]

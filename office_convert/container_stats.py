@@ -10,8 +10,9 @@ Reads only the container's own cgroup + /proc view, so the same code works on:
 No docker socket, no kubectl, no metrics-server dependency.
 
 The exposed counters are deliberately cumulative + timestamped. CPU% requires
-two samples; the caller (test_ui.py) computes the delta between consecutive
-fetches. This keeps the endpoints stateless and lets the UI control the cadence.
+two samples; the caller (office_convert_ui/app.py) computes the delta between
+consecutive fetches. This keeps the endpoints stateless and lets the UI control
+the cadence.
 """
 
 from __future__ import annotations
