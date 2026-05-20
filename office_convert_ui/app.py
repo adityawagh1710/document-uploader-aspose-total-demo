@@ -262,11 +262,20 @@ st.markdown(
         font-size: 10.5px; color: #94a3b8;
         text-transform: uppercase; letter-spacing: 0.08em;
         font-weight: 600;
+        /* Prevent mid-word break ("CPU UTILIZATIO" \n "N") at narrow
+           viewport widths. Truncate with ellipsis if the card is too
+           narrow even for nowrap content. */
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .util-card .value {
         font-size: 36px; font-weight: 700; color: #e2e8f0;
         font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
         line-height: 1;
+        /* Prevent breaking "11.8%" at the decimal point — narrow
+           viewports were rendering it as "11." \n "8%". Browsers
+           treat letter-spaced periods as wrap opportunities; nowrap
+           keeps the number atomic. */
+        white-space: nowrap;
       }
       .util-card .bar {
         height: 10px; background: rgba(148,163,184,0.12);
@@ -284,6 +293,9 @@ st.markdown(
         font-size: 10.5px; color: #64748b;
         font-variant-numeric: tabular-nums;
         display: flex; justify-content: space-between;
+        /* Same nowrap protection as label/value above — the "0% 100%"
+           markers were prone to wrap on narrow viewports. */
+        white-space: nowrap; overflow: hidden;
       }
       /* Sparkline mini-chart of last N polls. Inline SVG with no fill,
          drawn behind the big number for a Grafana-style trend reveal.
