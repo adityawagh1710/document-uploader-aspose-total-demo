@@ -46,7 +46,7 @@ This file is the source of truth for that reality.
 │                                                                               │
 │  Service: office-convert-ui (LoadBalancer, scheme=internal NLB)               │
 │    → Pod: office-convert-ui-* (Streamlit dashboard, :8501)                    │
-│      • streamlit run test_ui.py                                               │
+│      • streamlit run office_convert_ui/app.py                                 │
 │      • Talks to API via in-cluster DNS:                                       │
 │        http://office-convert.office-convert-dev.svc.cluster.local             │
 │      • UI runs as root (Dockerfile.ui has no USER); TODO in values.yaml.      │
@@ -111,7 +111,7 @@ Browser ──HTTPS──▶ <hostname>.dev05.k8s.opus2dev.com
        Service: office-convert-ui (ClusterIP, :8501)         Service: office-convert (ClusterIP, :80 → :8080)
                 │                                                              │
                 ▼                                                              ▼
-       Streamlit pod (test_ui.py)                            FastAPI orchestrator pod
+       Streamlit pod (office_convert_ui/app.py)              FastAPI orchestrator pod
 ```
 
 **Final hostnames**:

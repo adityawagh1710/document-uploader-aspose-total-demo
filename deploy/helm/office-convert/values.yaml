@@ -149,12 +149,12 @@ ingress:
 # ============================================================
 # UI (Streamlit test dashboard)
 # ============================================================
-# The UI is a Streamlit app (test_ui.py) that drives the API for manual QA.
-# It runs as a separate Deployment+Service in the same namespace and talks
-# to the API via in-cluster DNS (so port-forward and NLB access give the
-# same UI experience).
+# The UI is a Streamlit app (office_convert_ui/app.py) that drives the API
+# for manual QA. It runs as a separate Deployment+Service in the same
+# namespace and talks to the API via in-cluster DNS (so port-forward and
+# NLB access give the same UI experience).
 #
-# Three docker-socket-backed widgets in test_ui.py degrade silently to
+# Three docker-socket-backed widgets in office_convert_ui/app.py degrade silently to
 # empty values on EKS (no /var/run/docker.sock): the CPU/RAM tiles, the
 # worker process table, and the events feed. Core conversion + timing
 # charts + heartbeats + progress all work because they come from the API.
