@@ -1929,3 +1929,28 @@ ConfigMap hookup mechanic worth recording: the deployment uses `envFrom: configM
 Same 4-item chart-vs-live drift inventory at the end as before — that's the operator's choice (live patches > chart edits + redeploy). Notable: the SSA conflict on `inbound-cidrs` field manager has been re-introduced (kubectl-annotate is again the owner) — next `helm upgrade` will fail the same way. Posture confirmed: image-only rolls via `kubectl set image`; chart changes require the full undeploy+deploy cycle we just did. This is sustainable as long as live patches are infrequent.
 
 ---
+
+## Session: ECR cleanup + branch-protection discussion
+**Timestamp**: 2026-05-20T19:10:00Z
+
+**User Input**: "how to make main branch not able delete"
+**AI Response**: Walked through GitHub branch protection options. Recommended classic branch protection rule via web UI: pattern `main`, tick "Require a pull request before merging", "Do not allow bypassing the above settings", and LEAVE "Allow deletions" UNCHECKED (the load-bearing flag). Also offered the modern Rulesets path and the REST-API path. Noted that classic + "Restrict deletions" + "Require PR" is the sweet spot for solo dev / PR-merge workflow. User showed a screenshot of the "Add classic branch protection rule" page; provided field-by-field guidance. Configuration step itself is up to the operator (admin action on GitHub repo, not runnable from CLI in this session).
+
+**User Input**: "Remove unwanted images from dov05"
+**AI Response**: Inventoried ECR — 3 tags per repo (`0cf9f43`, `d206642`, `616c58d`); only `616c58d` was live on dev05. Proposed deleting the 4 unused tags (saves ~2.2 GB / ~$0.22/mo). Offered conservative alternative (keep `d206642` as rollback target). User authorized full deletion.
+
+Executed `aws ecr batch-delete-image` for both repos:
+- office-convert: `0cf9f43` (digest `6e50b9b6…`) + `d206642` (digest `eece6348…`) deleted
+- office-convert-ui: `0cf9f43` (digest `d12f06d8…`) + `d206642` (digest `3d50dfc5…`) deleted
+
+Verified post-state: each repo holds exactly one tag = `616c58d`. Live endpoints HTTP 200 (live image untouched). Documented the heuristic going forward: ECR pruning is safe whenever the chart-vs-live image drift dimension is zero — natural checkpoint after a chart-first redeploy like the 18:33 one earlier.
+
+**User Input**: "Save memory + update any aidlc docs + readme if needed"
+**AI Response**: README + deploy/README.md inspected — they use `IMAGE_TAG=$(git rev-parse --short HEAD)` dynamically, no stale tag references; no README update needed. Memory `project_dev_deployment_status.md` updated with ECR cleanup subsection + heuristic. AIDLC docs `aidlc-state.md` + `dev-deployment-topology.md` updated with the ECR-cleanup detail in the redeploy section. This audit block. All updates committed onto branch `aspose-upgrades-v5` (the same PR branch from the chart-first redeploy doc reconciliation earlier this session).
+
+**Context**: Quick housekeeping after the chart-first redeploy stabilized. Three artifacts of interest:
+- The ECR cleanup heuristic — "drift dimension zero" — is a generalizable test for "when is it safe to prune image tags". Worth referencing on next cleanup cycle.
+- Branch protection: discussion only, not yet configured. Worth setting up once operator does the GitHub UI step. The "Restrict deletions" + "Require PR" + "Do not allow bypassing" trio is the minimal viable protection for the established PR-merge workflow.
+- Doc-only changes batched onto the existing `aspose-upgrades-v5` PR branch rather than creating a new PR — both sets of changes are doc reconciliation for the same operational session.
+
+---

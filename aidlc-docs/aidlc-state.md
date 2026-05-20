@@ -657,3 +657,18 @@ Operator triggered the canonical undeploy+deploy cycle to reset state. Outcome: 
 - ✅ Image matches main HEAD (was lagging the CSV-branch PR before).
 - ✅ Operator has full reachability after live-patches (after ~5 min DNS propagation).
 - ⚠️ Same SSA conflict will reappear on any next `helm upgrade` because the operator-needed live patches re-introduce kubectl-annotate field ownership.
+
+### ECR cleanup (2026-05-20T19:10 IST)
+
+After the chart-first redeploy stabilized, deleted 4 unused image tags from both ECR repos via `aws ecr batch-delete-image`:
+
+| Repo | Tag deleted | Size |
+|---|---|---|
+| office-convert | `0cf9f43` | 910 MB |
+| office-convert | `d206642` | 900 MB |
+| office-convert-ui | `0cf9f43` | 204 MB |
+| office-convert-ui | `d206642` | 194 MB |
+
+Reclaimed ~2.2 GB / ~$0.22/mo ECR storage. ECR now holds exactly one tag per repo = `616c58d` (live on dev05). Rollback to `0cf9f43` or `d206642` now requires rebuilding from git history — source is preserved through the squash-merge chain on `main`, build is ~2-5 min including the C++ compile.
+
+Heuristic for future cleanups: ECR pruning is safe to run whenever the chart-vs-live image dimension is at zero (`helm get values` `image.tag` matches `kubectl get pods` image). At that moment, no in-flight operation needs older tags. The redeploy we just did is a natural cleanup checkpoint.
