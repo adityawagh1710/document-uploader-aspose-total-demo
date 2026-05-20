@@ -441,6 +441,8 @@ Canonical undeploy+deploy cycle. Resets all chart-vs-live drift to a fresh basel
 - API: `sha256:d2ced290af1d8be950e5ba7c898f210df266b0b2a39495fdb27061ecbb211075`
 - UI:  `sha256:4252c5089b102df185c864066842209e68faff4ece33a5862aa8cba37a84c897`
 
+**ECR cleanup (2026-05-20T19:10 IST)**: deleted unused tags `0cf9f43` + `d206642` from both repos via `aws ecr batch-delete-image`. Reclaimed ~2.2 GB / ~$0.22/mo. Each repo now holds exactly one tag = `616c58d` (live). Rollback to deleted tags requires rebuild from git (~2-5 min). Safe to run this cleanup whenever the chart-vs-live image drift is zero — natural checkpoint after a chart-first redeploy.
+
 **Outcome relative to pre-redeploy**:
 
 | | Before (15:45 IST) | After (18:40 IST) |
