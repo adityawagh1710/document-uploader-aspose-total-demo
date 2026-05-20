@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "office-convert.fullname" . }}-config
+  labels:
+    {{- include "office-convert.labels" . | nindent 4 }}
+data:
+  OFFICE_CONVERT_LOG_FORMAT: {{ .Values.config.log_format | quote }}
+  OFFICE_CONVERT_LOG_LEVEL: {{ .Values.config.log_level | quote }}
+  OFFICE_CONVERT_MAX_JOBS: {{ .Values.config.max_jobs | quote }}
+  OFFICE_CONVERT_PARALLEL: {{ .Values.config.parallel | quote }}
+  OFFICE_CONVERT_WORKER_RAM_BYTES: {{ .Values.config.worker_ram_bytes | quote }}
+  OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS: {{ .Values.config.chunk_timeout_seconds | quote }}
+  OFFICE_CONVERT_SCRATCH_DIR: {{ .Values.config.scratch_dir | quote }}
+  OFFICE_CONVERT_LICENSE_PATH: {{ .Values.config.license_path | quote }}
+  OFFICE_CONVERT_MAX_INPUT_BYTES: {{ .Values.config.max_input_bytes | quote }}
+  OFFICE_CONVERT_POOL_MIN_CHUNKS: {{ .Values.config.pool_min_chunks | quote }}

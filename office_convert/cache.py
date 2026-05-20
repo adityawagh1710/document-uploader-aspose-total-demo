@@ -66,12 +66,53 @@ class CacheManager:
         """Return a temp path for tee-to-cache during streaming merge.
 
         Caller writes to this path while streaming; caller then calls
-        `finalize_final` on success. None if cache disabled.
+        `finalize_final` on success. None if cache disabled. The parent
+        directory is ensured-existing here so qpdf.concat_streaming can
+        open the returned path for write without a FileNotFoundError —
+        matches the contract that atomic_write() already enforces for
+        chunk writes at line ~101.
         """
         if not self.enabled():
             return None
         target = self._final_path(source_sha256)
+        target.parent.mkdir(parents=True, exist_ok=True)
         return target.with_suffix(target.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex}")
+
+    def clear(self) -> dict:
+        """Wipe the cache directory's contents and report what was freed.
+
+        Returns a dict with `enabled` (False when no cache_dir configured —
+        a no-op success), `files_deleted`, and `bytes_freed`. Errors during
+        individual unlink calls are swallowed and counted so a partial wipe
+        still completes — the caller can compare the two counts to detect.
+        """
+        if not self.enabled():
+            return {"enabled": False, "files_deleted": 0, "bytes_freed": 0}
+        assert self.cache_dir is not None
+        files_deleted = 0
+        bytes_freed = 0
+        errors = 0
+        # Walk the tree once for sizing + unlink, then prune empty dirs in
+        # a second pass (rmdir can't run while files still live inside).
+        for root, _dirs, files in os.walk(self.cache_dir):
+            for name in files:
+                p = Path(root) / name
+                try:
+                    bytes_freed += p.stat().st_size
+                    p.unlink()
+                    files_deleted += 1
+                except OSError:
+                    errors += 1
+        for root, dirs, _files in os.walk(self.cache_dir, topdown=False):
+            for d in dirs:
+                with suppress(OSError):
+                    (Path(root) / d).rmdir()
+        return {
+            "enabled": True,
+            "files_deleted": files_deleted,
+            "bytes_freed": bytes_freed,
+            "errors": errors,
+        }
 
     def finalize_final(self, source_sha256: str, temp_path: Path) -> None:
         """Atomically rename a successfully-written temp file into the cache."""

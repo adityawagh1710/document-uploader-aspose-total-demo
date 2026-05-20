@@ -12,6 +12,7 @@ Run: docker compose up -d
 Open: http://localhost:8501
 """
 
+import collections
 import datetime
 import os
 import re
@@ -97,6 +98,42 @@ st.markdown(
         50% { opacity: 0.55; transform: scale(1.15); }
       }
 
+      /* 3-bar equalizer. CSS-only so the Streamlit script never blocks
+         (which is what st.spinner did). Negative animation-delay on bars
+         2 + 3 staggers them through the cycle so they look out of phase
+         from frame zero. Used in two places:
+           - Conversion callout (blue, while a job is running)
+           - Dashboard header next to LIVE (green, always animating)
+         Color is overridden per-context via the --bar-color custom prop. */
+      .eq-bars {
+        --bar-color: rgba(0,120,255,0.85);
+        display: inline-flex;
+        align-items: flex-end;
+        gap: 2px;
+        height: 14px;
+        margin-right: 6px;
+        vertical-align: -3px;
+      }
+      .eq-bars span {
+        display: inline-block;
+        width: 3px;
+        background: var(--bar-color);
+        border-radius: 1px;
+        animation: eq-bar 0.9s ease-in-out infinite;
+      }
+      .eq-bars span:nth-child(2) { animation-delay: -0.3s; }
+      .eq-bars span:nth-child(3) { animation-delay: -0.6s; }
+      @keyframes eq-bar {
+        0%,100% { height: 3px;  opacity: 0.55; }
+        50%     { height: 14px; opacity: 1; }
+      }
+      /* Header instance: green to match the LIVE semantic + the
+         deprecated .live-dot pulse it replaces. */
+      .dash-header .eq-bars {
+        --bar-color: rgba(34,197,94,0.9);
+        margin-right: 4px;
+      }
+
       /* KPI tile row (horizontal — legacy fallback) */
       .tile-row { display: flex; gap: 12px; margin-bottom: 16px; }
       /* KPI tile stack (vertical — packs 5 tiles into the left column of
@@ -165,6 +202,21 @@ st.markdown(
         color: #cbd5e1; font-variant-numeric: tabular-nums;
       }
       .dash-table tbody tr:hover td { background: rgba(56,189,248,0.04); }
+      /* Worker-active pulse: when a worker pid shows non-trivial CPU%,
+         its row gently pulses cyan to draw the eye to live activity.
+         Animate <td> not <tr> — table layout context blocks background
+         transitions on <tr> in some browsers. Inset box-shadow on the
+         first cell adds a left-accent stripe synchronized to the pulse. */
+      @keyframes worker-active-pulse {
+        0%,100% { background: rgba(34,211,238,0.04); }
+        50%     { background: rgba(34,211,238,0.11); }
+      }
+      .dash-table tr.worker-active td {
+        animation: worker-active-pulse 1.8s ease-in-out infinite;
+      }
+      .dash-table tr.worker-active td:first-child {
+        box-shadow: inset 2px 0 0 rgba(34,211,238,0.75);
+      }
 
       /* Bar cells inside tables */
       .bar-cell {
@@ -225,6 +277,238 @@ st.markdown(
         font-variant-numeric: tabular-nums;
         display: flex; justify-content: space-between;
       }
+      /* Sparkline mini-chart of last N polls. Inline SVG with no fill,
+         drawn behind the big number for a Grafana-style trend reveal.
+         Width stretches to the card; preserveAspectRatio=none gives us
+         that. ~30 samples at 4s cadence = ~2 min of history. */
+      .util-card .sparkline {
+        display: block;
+        width: 100%;
+        height: 28px;
+        margin-top: -4px;
+      }
+      .util-card .sparkline polyline {
+        fill: none;
+        stroke-width: 1.4;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        vector-effect: non-scaling-stroke;
+      }
+      .util-card .sparkline.cpu  polyline { stroke: rgba(34,211,238,0.85); }
+      .util-card .sparkline.mem  polyline { stroke: rgba(132,204,22,0.85); }
+      .util-card .sparkline.warn polyline { stroke: rgba(251,191,36,0.95); }
+      .util-card .sparkline.crit polyline { stroke: rgba(248,113,113,0.95); }
+      /* Faint area under the line for visual weight */
+      .util-card .sparkline polygon {
+        opacity: 0.18;
+        stroke: none;
+      }
+      .util-card .sparkline.cpu  polygon { fill: #22d3ee; }
+      .util-card .sparkline.mem  polygon { fill: #84cc16; }
+      .util-card .sparkline.warn polygon { fill: #fbbf24; }
+      .util-card .sparkline.crit polygon { fill: #f87171; }
+
+      /* Empty chart skeleton with shimmer sweep. Replaces the static Plotly
+         "Awaiting conversion data" annotation when the chart truly has no
+         data — Plotly's canvas can't host a CSS animation, so we render
+         a pure-HTML skeleton instead and switch back to Plotly when data
+         arrives. Matches the dark gradient + dimensions of the live chart
+         so the Mega Row's rhythm stays constant. */
+      .chart-skeleton {
+        background: linear-gradient(180deg, rgba(30,41,59,0.55), rgba(15,23,42,0.5));
+        border: 1px solid rgba(148,163,184,0.12);
+        border-radius: 8px;
+        padding: 12px 14px;
+        height: 210px;
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .chart-skeleton .title {
+        font-size: 12px;
+        color: #94a3b8;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .chart-skeleton .message {
+        font-size: 11px;
+        color: rgba(148,163,184,0.7);
+        margin: auto;
+        z-index: 1;
+        position: relative;
+      }
+      /* Sweep gradient moving left → right (~2.4 s loop). 60% width
+         narrow band keeps the effect subtle — Grafana-style "data is
+         loading" rather than carnival. */
+      .chart-skeleton::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: -150%;
+        width: 60%;
+        height: 100%;
+        background: linear-gradient(90deg,
+          transparent,
+          rgba(148,163,184,0.05),
+          rgba(148,163,184,0.10),
+          rgba(148,163,184,0.05),
+          transparent);
+        animation: chart-shimmer 2.4s linear infinite;
+        pointer-events: none;
+      }
+      @keyframes chart-shimmer {
+        0%   { left: -150%; }
+        100% { left: 250%; }
+      }
+
+      /* Hover affordances — kpi-tile lifts subtly, pill gets a glow.
+         Keeps the interactivity discoverable without being noisy. */
+      .kpi-tile {
+        transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1),
+                    border-color 180ms cubic-bezier(0.4, 0, 0.2, 1),
+                    box-shadow   180ms cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .kpi-tile:hover {
+        transform: translateY(-1px);
+        border-color: rgba(148,163,184,0.30);
+        box-shadow: 0 6px 18px rgba(0,0,0,0.28);
+      }
+      .pill {
+        transition: box-shadow 200ms ease, filter 200ms ease;
+      }
+      .pill:hover {
+        box-shadow: 0 0 10px currentColor;
+        filter: brightness(1.12);
+      }
+
+      /* Mini progress bar inside a KPI tile — used by the License tile
+         to visualize the days-remaining ratio. Color tracks the tile's
+         status class (ok / warn / crit) for consistency. */
+      .kpi-tile .tile-bar {
+        height: 4px;
+        background: rgba(148,163,184,0.12);
+        border-radius: 2px;
+        overflow: hidden;
+        margin-top: 6px;
+      }
+      .kpi-tile .tile-bar-fill {
+        height: 100%;
+        border-radius: 2px;
+        transition: width 600ms cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .kpi-tile.ok   .tile-bar-fill { background: linear-gradient(90deg, #22c55e, #4ade80); }
+      .kpi-tile.warn .tile-bar-fill { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+      .kpi-tile.crit .tile-bar-fill { background: linear-gradient(90deg, #ef4444, #f87171); }
+      .kpi-tile.info .tile-bar-fill { background: linear-gradient(90deg, #0ea5e9, #38bdf8); }
+      .kpi-tile.dim  .tile-bar-fill { background: linear-gradient(90deg, #64748b, #94a3b8); }
+
+      /* Per-format performance summary panel — 4 cells (docx/pptx/xlsx/pdf),
+         each showing count + avg + p95. Color-coded left border matches
+         the format icon emoji's tonal vibe so it reads at a glance. */
+      .format-perf {
+        background: linear-gradient(180deg, rgba(30,41,59,0.55), rgba(15,23,42,0.5));
+        border: 1px solid rgba(148,163,184,0.12);
+        border-radius: 8px;
+        padding: 10px 14px 12px 14px;
+        margin-top: 10px;
+      }
+      .format-perf .title {
+        font-size: 10.5px;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+      .format-perf .title .total {
+        color: #64748b;
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 11px;
+      }
+      .format-perf .grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+      }
+      .format-perf .cell {
+        background: rgba(148,163,184,0.06);
+        border: 1px solid rgba(148,163,184,0.08);
+        border-left-width: 3px;
+        border-radius: 5px;
+        padding: 8px 10px;
+        transition: background 180ms ease, border-color 180ms ease;
+      }
+      .format-perf .cell:hover {
+        background: rgba(148,163,184,0.10);
+      }
+      .format-perf .cell.docx { border-left-color: #38bdf8; }
+      .format-perf .cell.pptx { border-left-color: #f87171; }
+      .format-perf .cell.xlsx { border-left-color: #4ade80; }
+      .format-perf .cell.pdf  { border-left-color: #fbbf24; }
+      .format-perf .cell.dim  { border-left-color: rgba(148,163,184,0.3); opacity: 0.55; }
+      .format-perf .cell .row1 {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .format-perf .cell .icon { font-size: 15px; line-height: 1; }
+      .format-perf .cell .fmt  { font-size: 9.5px; color: #94a3b8; letter-spacing: 0.06em; font-weight: 700; text-transform: uppercase; }
+      .format-perf .cell .count { font-size: 20px; font-weight: 700; color: #e2e8f0; font-variant-numeric: tabular-nums; line-height: 1.1; margin-left: auto; }
+      .format-perf .cell .stats { font-size: 10.5px; color: #94a3b8; font-variant-numeric: tabular-nums; margin-top: 4px; display: flex; justify-content: space-between; }
+      .format-perf .cell .stats .label { color: #64748b; letter-spacing: 0.04em; }
+
+      /* Toast notification (success/error on conversion completion).
+         position:fixed pins to viewport edge regardless of where the
+         element ends up in the DOM. translateX(110%) starts off-screen
+         right; slide-in then fade-out animation runs once via `forwards`
+         to leave the toast invisible past 5 s. */
+      .toast-container {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        z-index: 9999;
+        pointer-events: none;
+      }
+      .toast {
+        background: linear-gradient(180deg, rgba(30,41,59,0.95), rgba(15,23,42,0.92));
+        border: 1px solid rgba(148,163,184,0.22);
+        border-left-width: 4px;
+        border-radius: 6px;
+        padding: 10px 14px;
+        min-width: 260px;
+        max-width: 360px;
+        font-size: 12.5px;
+        color: #e2e8f0;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        backdrop-filter: blur(8px);
+        animation: toast-life 5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      .toast .toast-title {
+        font-weight: 600;
+        font-size: 13px;
+        margin-bottom: 2px;
+        font-variant-numeric: tabular-nums;
+      }
+      .toast .toast-body {
+        color: #94a3b8;
+        font-variant-numeric: tabular-nums;
+      }
+      .toast.ok  { border-left-color: rgba(34,197,94,0.85); }
+      .toast.ok  .toast-title { color: #4ade80; }
+      .toast.err { border-left-color: rgba(239,68,68,0.85); }
+      .toast.err .toast-title { color: #f87171; }
+      @keyframes toast-life {
+        0%   { transform: translateX(110%); opacity: 0; }
+        8%   { transform: translateX(0);    opacity: 1; }
+        85%  { transform: translateX(0);    opacity: 1; }
+        100% { transform: translateX(110%); opacity: 0; }
+      }
 
       /* Section header */
       .section-hdr {
@@ -251,14 +535,154 @@ st.markdown(
 # ============================================================
 # Dashboard helpers — tiles, gauges, pills, bars
 # ============================================================
-def _render_tile(label: str, value: str, status: str = "info", sub: str = "") -> str:
+def _render_tile(
+    label: str,
+    value: str,
+    status: str = "info",
+    sub: str = "",
+    bar_pct: float | None = None,
+) -> str:
+    """KPI tile: label + big value + optional sub-text + optional mini bar.
+
+    `bar_pct` (0..100) adds a slim progress bar below the sub line — used by
+    the License tile to visualize days-remaining/365. Bar color matches the
+    tile's `status` class via the .kpi-tile.{ok,warn,crit,info,dim} CSS
+    selectors defined in the page-level <style> block.
+    """
     sub_html = f'<div class="sub">{sub}</div>' if sub else ""
+    if bar_pct is not None:
+        p = max(0.0, min(100.0, float(bar_pct)))
+        bar_html = (
+            f'<div class="tile-bar">'
+            f'<div class="tile-bar-fill" style="width:{p:.1f}%"></div>'
+            f'</div>'
+        )
+    else:
+        bar_html = ""
     return (
         f'<div class="kpi-tile {status}">'
         f'<div class="label">{label}</div>'
         f'<div class="value">{value}</div>'
         f"{sub_html}"
+        f"{bar_html}"
         f"</div>"
+    )
+
+
+def _format_key(filename: str) -> str:
+    """Canonical format key for stat aggregation. Maps OOXML + legacy
+    binary extensions onto the 4 worker buckets, with `other` for the
+    edge case where the file's extension doesn't match any known set.
+    Kept in lock-step with _format_icon's branches."""
+    ext = Path(filename).suffix.lower().lstrip(".")
+    if ext in {"docx", "doc", "dot", "dotx", "dotm", "docm"}:
+        return "docx"
+    if ext in {"pptx", "ppt", "pot", "pps", "ppsx", "potx", "pptm"}:
+        return "pptx"
+    if ext in {"xlsx", "xls", "xlsm", "xlt", "xltx", "xlsb"}:
+        return "xlsx"
+    if ext == "pdf":
+        return "pdf"
+    return "other"
+
+
+_FORMAT_ICONS = {"docx": "📄", "pptx": "📊", "xlsx": "📈", "pdf": "📕", "other": "📦"}
+
+
+def _format_icon(filename: str) -> str:
+    """Emoji per Office format, derived from filename extension."""
+    return _FORMAT_ICONS[_format_key(filename)]
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Cheap nearest-rank percentile. For len ≤ 1 returns the value /
+    0.0; otherwise sorts (in-place on a copy) and indexes at floor(N*pct)
+    clamped to len-1. Good enough for the 4-cell perf panel — no scipy."""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    idx = min(int(len(s) * pct), len(s) - 1)
+    return s[idx]
+
+
+def _human_bytes(n: float) -> str:
+    """Compact bytes-to-string for the Lifetime tile sub-text. Switches
+    units at the 1024 boundary so "1.2 GB" stays under 8 chars even at
+    multi-TB scale."""
+    val = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if val < 1024.0:
+            return f"{val:.1f} {unit}" if unit != "B" else f"{int(val)} B"
+        val /= 1024.0
+    return f"{val:.1f} TB"
+
+
+def _render_format_perf(stats: dict) -> str:
+    """4-cell perf panel (docx/pptx/xlsx/pdf): icon + count + avg + p95.
+
+    `stats` is `_state()["per_format_stats"]` — a dict keyed by format
+    with `count` (int) + `times` (deque[float] of recent wall-times).
+    Cells with `count==0` render as dimmed placeholders so the row
+    layout stays stable from cold start through populated use.
+    """
+    cells_html = []
+    total = 0
+    for fmt in ("docx", "pptx", "xlsx", "pdf"):
+        bucket = stats.get(fmt, {"count": 0, "times": []})
+        count = bucket.get("count", 0)
+        times = list(bucket.get("times") or [])
+        total += count
+        if count == 0:
+            cells_html.append(
+                f'<div class="cell {fmt} dim">'
+                f'<div class="row1">'
+                f'<span class="icon">{_FORMAT_ICONS[fmt]}</span>'
+                f'<span class="fmt">{fmt}</span>'
+                f'<span class="count">—</span>'
+                f'</div>'
+                f'<div class="stats">'
+                f'<span><span class="label">avg</span> —</span>'
+                f'<span><span class="label">p95</span> —</span>'
+                f'</div>'
+                f'</div>'
+            )
+        else:
+            avg = sum(times) / len(times) if times else 0.0
+            p95 = _percentile(times, 0.95)
+            cells_html.append(
+                f'<div class="cell {fmt}">'
+                f'<div class="row1">'
+                f'<span class="icon">{_FORMAT_ICONS[fmt]}</span>'
+                f'<span class="fmt">{fmt}</span>'
+                f'<span class="count">{count:,}</span>'
+                f'</div>'
+                f'<div class="stats">'
+                f'<span><span class="label">avg</span> {avg:.1f}s</span>'
+                f'<span><span class="label">p95</span> {p95:.1f}s</span>'
+                f'</div>'
+                f'</div>'
+            )
+    return (
+        '<div class="format-perf">'
+        '<div class="title">Per-format performance'
+        f'<span class="total">{total:,} total</span>'
+        '</div>'
+        '<div class="grid">'
+        f'{"".join(cells_html)}'
+        '</div>'
+        '</div>'
+    )
+
+
+def _render_chart_skeleton(title: str, message: str = "Awaiting conversion data") -> str:
+    """HTML skeleton (with CSS shimmer sweep) shown in place of a Plotly
+    figure when the chart has no data. Plotly's canvas can't host a CSS
+    animation, so we switch render mode entirely until data arrives."""
+    return (
+        f'<div class="chart-skeleton">'
+        f'<div class="title">{title}</div>'
+        f'<div class="message">{message}</div>'
+        f'</div>'
     )
 
 
@@ -272,12 +696,55 @@ def _render_tile_row(tiles: list[str], *, stacked: bool = False) -> str:
     return f'<div class="{cls}">' + "".join(tiles) + "</div>"
 
 
+# Process-wide ring buffers of recent metric samples. Maintained at module
+# scope so they survive Streamlit's per-rerun script execution. Each `live_stats`
+# fragment tick appends one sample. 30 samples × ~4 s cadence = ~2 min of trend
+# in the sparkline.
+_METRIC_HIST_LEN = 30
+_metric_hist: dict[str, collections.deque[float]] = {
+    "cpu": collections.deque(maxlen=_METRIC_HIST_LEN),
+    "mem": collections.deque(maxlen=_METRIC_HIST_LEN),
+}
+
+
+def _record_metric(name: str, value: float) -> None:
+    buf = _metric_hist.get(name)
+    if buf is not None:
+        buf.append(float(value))
+
+
+def _render_sparkline(values: list[float], css_class: str) -> str:
+    """Inline SVG sparkline. Y-axis pinned to 0..100 because both CPU% and
+    Mem% live in that range — pinning means a flatlined gauge stays
+    visually flat instead of auto-scaling to noise. polyline = line,
+    polygon = faint shaded area below it for a small visual weight bump."""
+    if len(values) < 2:
+        return ""
+    width = 100  # arbitrary viewBox width; CSS stretches to card width
+    height = 28
+    n = len(values)
+    x_step = width / (n - 1)
+    pts = [
+        (i * x_step, height - max(0.0, min(100.0, v)) / 100.0 * height)
+        for i, v in enumerate(values)
+    ]
+    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    area = f"0,{height} {line} {width},{height}"
+    return (
+        f'<svg class="sparkline {css_class}" '
+        f'viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
+        f'<polygon points="{area}" />'
+        f'<polyline points="{line}" />'
+        f'</svg>'
+    )
+
+
 def _render_util_card(label: str, pct: float, base_class: str = "cpu", sub: str = "") -> str:
-    """Big number + colored progress bar, replaces the tiny plotly donut.
+    """Big number + colored progress bar + sparkline of recent samples.
 
     Bar colour shifts to warn / crit when utilisation crosses 70 / 90 %.
-    Works at any width — the donut needed >150 px to look right; this
-    looks identical at 80 px or 400 px.
+    Sparkline below the bar shows ~last 2 min of history (30 samples at
+    ~4 s cadence). Y-axis pinned to 0..100 so a flatline reads flat.
     """
     p = max(0.0, min(100.0, float(pct)))
     if p >= 90:
@@ -288,12 +755,14 @@ def _render_util_card(label: str, pct: float, base_class: str = "cpu", sub: str 
         fill_class = base_class
     sub_html = f'<div class="meta"><span>0%</span><span>{sub}</span><span>100%</span></div>' if sub else \
                '<div class="meta"><span>0%</span><span>100%</span></div>'
+    spark_html = _render_sparkline(list(_metric_hist.get(base_class, [])), fill_class)
     return (
         f'<div class="util-card">'
         f'<div class="label">{label}</div>'
         f'<div class="value">{p:.1f}%</div>'
         f'<div class="bar"><div class="bar-fill {fill_class}" style="width:{p}%"></div></div>'
         f'{sub_html}'
+        f'{spark_html}'
         f'</div>'
     )
 
@@ -371,6 +840,19 @@ def _state() -> dict:
         "active": None,  # {id, holder, thread, start_time, input_name, input_size_mb}
         "results": [],  # successful results, newest first
         "last_error": None,  # {"msg": str, "ts": float}
+        # Cumulative since process start (NOT bounded by MAX_RECENT_RESULTS).
+        # Drives the Lifetime KPI tile.
+        "total_conversions": 0,
+        "total_input_bytes": 0.0,
+        "total_output_bytes": 0.0,
+        # Per-format performance stats. Each value is a dict with `count`
+        # (lifetime) and `times` (bounded deque of last 100 wall-times in
+        # seconds for p95/p50 percentile rendering). Drives the per-format
+        # performance summary panel under the Mega Row.
+        "per_format_stats": {
+            fmt: {"count": 0, "times": collections.deque(maxlen=100)}
+            for fmt in ("docx", "pptx", "xlsx", "pdf", "other")
+        },
     }
 
 
@@ -386,12 +868,17 @@ _DEFAULT_DOCKER_STATS = {"cpu": "N/A", "mem_usage": "N/A", "mem_pct": "N/A", "pi
 
 @st.cache_resource
 def _docker_monitor() -> dict:
-    """Background-thread cache of `docker stats` + `docker top`.
+    """Background-thread cache of container stats from the API's /stats + /workers.
 
-    `docker stats --no-stream` takes ~1–2s per call. If we ran it inside the
-    fragment, every tick would block for that long and updates would arrive in
-    big bunches, amplifying visible flicker. Instead a daemon thread refreshes
-    the cache on its own cadence; the fragment just reads the dict — O(µs).
+    Replaces the original `docker stats` / `docker top` subprocess path so the
+    same UI works on:
+      - Docker compose locally (cgroup v1)
+      - EKS dev05 pods (cgroup v2; no docker socket, but /sys/fs/cgroup works)
+      - any other container runtime that exposes cgroup files (always the case)
+
+    The API exposes raw cumulative counters via GET /stats and GET /workers
+    (see office_convert/container_stats.py). This loop fetches both ~every
+    second and computes CPU% from the delta between consecutive samples.
     """
     state: dict = {
         "lock": threading.Lock(),
@@ -399,50 +886,82 @@ def _docker_monitor() -> dict:
         "workers": [],
     }
 
+    def _fmt_bytes_mib(n: int) -> str:
+        return f"{n / 1024 / 1024:.2f}MiB"
+
     def _refresh_loop() -> None:
+        # Cumulative-counter state for CPU% delta computation.
+        prev_cpu_usec: int | None = None
+        prev_at: float | None = None
+        prev_workers: dict[int, tuple[int, float]] = {}  # pid -> (cpu_usec, sampled_at)
+
         while True:
             new_stats = dict(_DEFAULT_DOCKER_STATS)
             try:
-                result = subprocess.run(
-                    [
-                        "docker",
-                        "stats",
-                        "office-convert",
-                        "--no-stream",
-                        "--format",
-                        "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    parts = result.stdout.strip().split("\t")
+                r = requests.get(f"{API_URL}/stats", timeout=2)
+                if r.ok:
+                    s = r.json()
+                    cur_usec = int(s["cpu_usage_usec"])
+                    cur_at = float(s["sampled_at"])
+                    if prev_cpu_usec is not None and prev_at is not None and cur_at > prev_at:
+                        d_usec = max(0, cur_usec - prev_cpu_usec)
+                        d_t = cur_at - prev_at
+                        cpu_pct = (d_usec / 1_000_000.0) / d_t * 100.0
+                    else:
+                        cpu_pct = 0.0
+                    prev_cpu_usec = cur_usec
+                    prev_at = cur_at
+
+                    mem_bytes = int(s["mem_bytes"])
+                    mem_max = int(s["mem_max_bytes"])
+                    mem_pct = (mem_bytes / mem_max * 100.0) if mem_max > 0 else 0.0
+                    mem_usage_str = (
+                        f"{_fmt_bytes_mib(mem_bytes)} / {_fmt_bytes_mib(mem_max)}"
+                        if mem_max > 0
+                        else _fmt_bytes_mib(mem_bytes)
+                    )
                     new_stats = {
-                        "cpu": parts[0],
-                        "mem_usage": parts[1],
-                        "mem_pct": parts[2],
-                        "pids": parts[3],
+                        "cpu": f"{cpu_pct:.2f}%",
+                        "mem_usage": mem_usage_str,
+                        "mem_pct": f"{mem_pct:.2f}%",
+                        "pids": str(int(s["pids_current"])),
                     }
             except Exception:
                 pass
 
-            new_workers: list[str] = []
+            new_workers: list[dict] = []
             try:
-                result = subprocess.run(
-                    ["docker", "top", "office-convert", "-o", "pid,pcpu,pmem,time,args"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                if result.returncode == 0:
-                    new_workers = [
-                        line
-                        for line in result.stdout.strip().split("\n")
-                        if "office-convert-worker" in line
-                    ]
+                r = requests.get(f"{API_URL}/workers", timeout=2)
+                if r.ok:
+                    fresh_workers = r.json().get("workers", [])
+                    current_pids: set[int] = set()
+                    for w in fresh_workers:
+                        pid = int(w["pid"])
+                        cur_usec = int(w["cpu_usage_usec"])
+                        cur_at = float(w["sampled_at"])
+                        current_pids.add(pid)
+                        prev = prev_workers.get(pid)
+                        if prev is not None and cur_at > prev[1]:
+                            d_usec = max(0, cur_usec - prev[0])
+                            d_t = cur_at - prev[1]
+                            cpu_pct_w = (d_usec / 1_000_000.0) / d_t * 100.0
+                        else:
+                            cpu_pct_w = 0.0
+                        prev_workers[pid] = (cur_usec, cur_at)
+                        new_workers.append(
+                            {
+                                "pid": pid,
+                                "cpu_pct": cpu_pct_w,
+                                "rss_bytes": int(w.get("rss_bytes", 0)),
+                                "cmdline": w.get("cmdline", ""),
+                                "etime_sec": float(w.get("etime_sec", 0.0)),
+                            }
+                        )
+                    # Drop sample state for PIDs that have exited so the dict
+                    # doesn't grow unbounded across a long Streamlit session.
+                    for stale_pid in list(prev_workers.keys()):
+                        if stale_pid not in current_pids:
+                            del prev_workers[stale_pid]
             except Exception:
                 pass
 
@@ -450,7 +969,7 @@ def _docker_monitor() -> dict:
                 state["stats"] = new_stats
                 state["workers"] = new_workers
 
-            time.sleep(1.5)  # docker stats itself takes ~1.5s, so this is "as fast as possible"
+            time.sleep(1.0)
 
     thread = threading.Thread(target=_refresh_loop, daemon=True)
     thread.start()
@@ -569,6 +1088,11 @@ def _start_conversion(file_name: str, file_bytes: bytes) -> bool:
             "start_time": time.time(),
             "input_name": file_name,
             "input_size_mb": len(file_bytes) / 1024 / 1024,
+            # Preserved so the Re-run button can rerun the SAME bytes
+            # without the user re-uploading. Migrates to the result entry
+            # on completion (only the latest result holds them — older
+            # entries get them popped to keep memory bounded).
+            "input_bytes": file_bytes,
         }
         thread.start()
         return True
@@ -597,6 +1121,13 @@ def _collect_if_finished() -> bool:
         else:
             data = holder.get("data")
             out_name = Path(input_name).stem + ".pdf"
+            # Migrate input bytes from s["active"] to the result entry for
+            # one-click Re-run, but ONLY on the new latest result — strip
+            # them from older entries first to bound memory (inputs can
+            # be up to 1 GiB per OFFICE_CONVERT_MAX_INPUT_BYTES).
+            input_bytes_for_rerun = s["active"].get("input_bytes")
+            for old in s["results"]:
+                old.pop("input_data", None)
             s["results"].insert(
                 0,
                 {
@@ -608,9 +1139,21 @@ def _collect_if_finished() -> bool:
                     "in_mb": input_size_mb,
                     "time": elapsed,
                     "ts": time.strftime("%H:%M:%S"),
+                    "input_data": input_bytes_for_rerun,
                 },
             )
             del s["results"][MAX_RECENT_RESULTS:]
+            # Lifetime counters survive the rolling history cap above.
+            s["total_conversions"] = s.get("total_conversions", 0) + 1
+            s["total_input_bytes"] = s.get("total_input_bytes", 0.0) + input_size_mb * 1024 * 1024
+            s["total_output_bytes"] = s.get("total_output_bytes", 0.0) + len(data)
+            # Per-format aggregate for the perf summary panel.
+            _fk = _format_key(input_name)
+            _bucket = s.setdefault("per_format_stats", {}).setdefault(
+                _fk, {"count": 0, "times": collections.deque(maxlen=100)}
+            )
+            _bucket["count"] += 1
+            _bucket["times"].append(float(elapsed))
         s["active"] = None
         return True
 
@@ -643,6 +1186,12 @@ for r in reversed(_snap_results):
         st.session_state.history.insert(0, r)
         st.session_state.seen_result_ids.add(r["id"])
 
+# Bound session-state memory growth: each history item holds the full output
+# PDF bytes (`item["data"]`) and a Streamlit download_button blob, so an
+# unbounded list quickly pushes the UI pod past its 1.5Gi limit. Cap to the
+# same ceiling the process-wide store uses.
+del st.session_state.history[MAX_RECENT_RESULTS:]
+
 # ============================================================
 # LIVE STATS (auto-refresh every 2s — now actually live during conversion)
 #
@@ -658,10 +1207,15 @@ st.markdown(
     '<h1>📄 Office-Convert</h1>'
     '<span class="crumb">Monitor &nbsp;›&nbsp; Conversion service</span>'
     '<span class="crumb" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;">'
-    '<span class="live-dot"></span>LIVE</span>'
+    '<span class="eq-bars" aria-label="Live"><span></span><span></span><span></span></span>LIVE</span>'
     '</div>',
     unsafe_allow_html=True,
 )
+
+# Floating slot for the conversion-complete toast. position:fixed in CSS
+# means the DOM location is irrelevant; we put the slot up top so it
+# renders early in the page lifecycle.
+_slot_toast = st.empty()
 
 # Row 1: 5 KPI status tiles laid out horizontally across the full width.
 _slot_tiles = st.empty()
@@ -679,6 +1233,11 @@ _slot_chart_mem = _gcol4.empty()
 _slot_chart_tim = _gcol5.empty()
 _slot_chart_gantt = _gcol6.empty()
 
+# Full-width per-format performance summary panel (docx/pptx/xlsx/pdf).
+# Lives just under the Mega Row so it pairs visually with the Lifetime
+# tile while taking its own row's vertical space for legibility.
+_slot_format_perf = st.empty()
+
 
 @st.fragment(run_every=4)
 def live_stats():
@@ -695,6 +1254,22 @@ def live_stats():
     jobs_status = "ok" if (max_jobs and active_jobs < max_jobs) else "warn"
     worker_count = len(workers)
     worker_status = "info" if worker_count > 0 else "dim"
+
+    # Lifetime counters + per-format aggregates live in the process-wide
+    # state dict (survive the rolling MAX_RECENT_RESULTS cap on s["results"]).
+    # Snapshot under the lock then drop it — the renderer doesn't need it.
+    _s = _state()
+    with _s["lock"]:
+        total_conv = _s.get("total_conversions", 0)
+        total_in_bytes = _s.get("total_input_bytes", 0.0)
+        total_out_bytes = _s.get("total_output_bytes", 0.0)
+        per_fmt_snapshot = {
+            fmt: {
+                "count": bucket.get("count", 0),
+                "times": list(bucket.get("times") or []),
+            }
+            for fmt, bucket in (_s.get("per_format_stats") or {}).items()
+        }
 
     tiles_html = _render_tile_row([
         _render_tile(
@@ -714,6 +1289,9 @@ def live_stats():
             f"{license_days} days",
             license_status,
             sub="Aspose.Total — auto-renews on rebuild",
+            # 365 d == 100% bar; clamped in _render_tile. Visualizes the
+            # countdown so the days-remaining number isn't the only signal.
+            bar_pct=(license_days / 365.0) * 100.0,
         ),
         _render_tile(
             "API Health",
@@ -726,6 +1304,12 @@ def live_stats():
             f"{active_jobs} / {max_jobs}" if max_jobs else "—",
             jobs_status,
             sub=f"{worker_count} worker PIDs alive",
+        ),
+        _render_tile(
+            "Lifetime",
+            f"{total_conv:,}",
+            "info" if total_conv > 0 else "dim",
+            sub=f"{_human_bytes(total_in_bytes)} in · {_human_bytes(total_out_bytes)} out",
         ),
     ])
     _slot_tiles.markdown(tiles_html, unsafe_allow_html=True)
@@ -741,6 +1325,8 @@ def live_stats():
         mem_pct = float(mem_pct_str)
     except ValueError:
         mem_pct = 0.0
+    _record_metric("cpu", cpu_pct)
+    _record_metric("mem", mem_pct)
 
     _slot_cpu_gauge.markdown(
         _render_util_card("CPU Utilization", cpu_pct, "cpu"),
@@ -761,26 +1347,27 @@ def live_stats():
     if workers:
         rows = []
         for w in workers:
-            parts = w.split()
-            if len(parts) < 2:
-                continue
-            pid = parts[0]
-            cpu_str = parts[1]
+            pid = w.get("pid", "")
+            cpu_val = float(w.get("cpu_pct", 0.0))
+            cmdline = w.get("cmdline", "")
             fmt = (
-                "docx" if "docx" in w
-                else "pptx" if "pptx" in w
-                else "xlsx" if "xlsx" in w
-                else "pdf" if "pdf" in w
+                "docx" if "docx" in cmdline
+                else "pptx" if "pptx" in cmdline
+                else "xlsx" if "xlsx" in cmdline
+                else "pdf" if "pdf" in cmdline
                 else "—"
             )
-            mode = "pool" if "pool" in w else "render" if "render" in w else "probe"
-            try:
-                cpu_val = float(cpu_str.rstrip("%"))
-            except ValueError:
-                cpu_val = 0.0
+            mode = (
+                "pool" if "pool" in cmdline
+                else "render" if "render" in cmdline
+                else "probe"
+            )
             cpu_pct_w = max(0.0, min(100.0, cpu_val))
+            # Threshold > 0.5% avoids pulsing on float-rounding noise from
+            # workers that report 0.1% jitter when idle.
+            row_class = "worker-active" if cpu_val > 0.5 else ""
             rows.append(
-                f'<tr>'
+                f'<tr class="{row_class}">'
                 f'<td><span class="pill info">{fmt}</span></td>'
                 f'<td><span class="pill dim">{mode}</span></td>'
                 f'<td>{pid}</td>'
@@ -817,6 +1404,13 @@ def live_stats():
             '</div></div>'
         )
         _slot_proc_panel.markdown(idle_html, unsafe_allow_html=True)
+
+    # Per-format performance summary — rendered after the Mega Row so the
+    # tile/util-card density stays compact above and this larger 4-cell
+    # panel anchors the section below.
+    _slot_format_perf.markdown(
+        _render_format_perf(per_fmt_snapshot), unsafe_allow_html=True
+    )
 
 
 def _render_heartbeats(request_id: str, wall_now: float) -> str:
@@ -914,6 +1508,57 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
 # ============================================================
 # Live Plotly charts
 # ============================================================
+def _build_empty_chart(title: str, message: str = "Awaiting conversion data") -> go.Figure:
+    """Empty styled placeholder chart for the "no data yet" state.
+
+    Matches the dark grid + dimensions of the live charts so the Mega Row's
+    rhythm is stable from page-load (pre-first-conversion) through live runs.
+    Centered annotation reads as "instrument ready" rather than "feature
+    missing". `message` overrides the default text — used by the timing /
+    Gantt slots to call out that those charts only populate for XLSX inputs
+    today (worker_cpp/formats/{docx,pptx,pdf}.cpp don't yet emit timing
+    events; only xlsx.cpp does).
+    """
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        font=dict(size=11, color="rgba(148,163,184,0.7)"),
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=title, font=dict(size=12)),
+        xaxis=dict(
+            title=None,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zerolinecolor="rgba(255,255,255,0.18)",
+            tickfont=dict(size=9),
+            showticklabels=False,
+            range=[0, 1],
+        ),
+        yaxis=dict(
+            title=None,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zerolinecolor="rgba(255,255,255,0.18)",
+            tickfont=dict(size=9),
+            showticklabels=False,
+            range=[0, 1],
+        ),
+        height=210,
+        margin=dict(l=8, r=14, t=36, b=24),
+        plot_bgcolor="rgba(15,23,42,0.7)",
+        paper_bgcolor="rgba(15,23,42,0)",
+        showlegend=False,
+    )
+    return fig
+
+
 def _build_memory_chart(request_id: str) -> go.Figure | None:
     """Multi-line chart: RSS (solid) + Swap (dotted) per pool worker over time.
 
@@ -1360,6 +2005,63 @@ def _render_progress_html(p: dict) -> str:
 
 
 @st.fragment(run_every=1)
+def toast_renderer():
+    """Slide-in toast in the top-right when a conversion completes.
+
+    State machine:
+      - `toast_shown_ids` (session) tracks result ids we've already toasted
+        so the toast doesn't re-fire on every fragment tick after completion.
+      - `toast_active` (session) holds the in-flight toast + an `expires_at`
+        wall-clock so we can clear the slot after the 5 s CSS animation.
+
+    The CSS animation runs once on the slot's first render (Streamlit's diff
+    won't re-render identical HTML on subsequent ticks), then we explicitly
+    `.empty()` the slot at expiry to clean up the DOM.
+    """
+    now = time.time()
+    pending = st.session_state.get("toast_active")
+    if pending is not None and now >= pending.get("expires_at", 0):
+        _slot_toast.empty()
+        st.session_state["toast_active"] = None
+        pending = None
+
+    if pending is None:
+        # Look for a brand-new completion to toast.
+        _active, results, err = _snapshot()
+        shown = st.session_state.setdefault("toast_shown_ids", set())
+        candidate = None
+        if results:
+            r = results[0]
+            if r["id"] not in shown:
+                candidate = ("ok", r["id"], r["name"], r.get("time", 0.0), r.get("out_mb", 0.0))
+        if candidate is None and err:
+            err_id = f"err_{err.get('ts')}"
+            if err_id not in shown:
+                candidate = ("err", err_id, err.get("msg", "Conversion failed"), 0.0, 0.0)
+        if candidate is None:
+            return
+        kind, cid, title, secs, out_mb = candidate
+        shown.add(cid)
+        if kind == "ok":
+            html = (
+                '<div class="toast-container"><div class="toast ok">'
+                f'<div class="toast-title">✓ {title}</div>'
+                f'<div class="toast-body">'
+                f'{secs:.1f}s &middot; {out_mb:.2f} MB output'
+                f'</div></div></div>'
+            )
+        else:
+            html = (
+                '<div class="toast-container"><div class="toast err">'
+                f'<div class="toast-title">✖ Conversion failed</div>'
+                f'<div class="toast-body">{title}</div>'
+                f'</div></div>'
+            )
+        _slot_toast.markdown(html, unsafe_allow_html=True)
+        st.session_state["toast_active"] = {"id": cid, "expires_at": now + 5.0}
+
+
+@st.fragment(run_every=1)
 def conversion_status():
     active, _results, _err = _snapshot()
     if active is None:
@@ -1379,7 +2081,9 @@ def conversion_status():
             'border-left:4px solid rgba(0,120,255,0.6);'
             'padding:0.6rem 1rem;border-radius:0.4rem;'
             'font-size:0.95rem;">'
-            f'⏳ Converting <b>{active["input_name"]}</b> '
+            f'<span class="eq-bars" aria-label="Converting">'
+            f'<span></span><span></span><span></span></span>'
+            f'Converting <b>{active["input_name"]}</b> '
             f'({active["input_size_mb"]:.2f} MB) — '
             f'<span style="font-variant-numeric:tabular-nums;">'
             f'{elapsed}s</span> elapsed. Stats refresh live above ⬆️'
@@ -1510,21 +2214,47 @@ def live_charts():
         last = _results[0]
         rid = last.get("id")
         if not rid:
-            return
-        label = (
-            f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
-            f'margin-bottom:-0.3rem;">📊 Last completed · '
-            f'<code style="font-size:0.8rem;">{rid}</code> · '
-            f'{last["input"]} · {last["time"]:.1f}s · '
-            f'<span style="opacity:0.6;">data kept for 30 min</span></div>'
-        )
+            rid = None
+            label = (
+                '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
+                'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
+                'charts will populate live</div>'
+            )
+        else:
+            label = (
+                f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
+                f'margin-bottom:-0.3rem;">📊 Last completed · '
+                f'<code style="font-size:0.8rem;">{rid}</code> · '
+                f'{last["input"]} · {last["time"]:.1f}s · '
+                f'<span style="opacity:0.6;">data kept for 30 min</span></div>'
+            )
     else:
-        return
+        rid = None
+        label = (
+            '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
+            'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
+            'charts will populate live</div>'
+        )
 
     _slot_chart_label.markdown(label, unsafe_allow_html=True)
 
-    fig_mem = _build_memory_chart(rid)
-    if fig_mem is not None:
+    # Empty-state message for the timing + Gantt slots. All four format
+    # workers (docx/pptx/pdf/xlsx) now emit `pool_load.*` + `pool_render.*`
+    # timing events via the shared worker_cpp/timing_util.h helper, so the
+    # only reason these charts stay empty is "no in-flight or recent run"
+    # — same as the Memory chart.
+    timing_msg = "Awaiting timing data"
+
+    # For each chart: real Plotly figure when data exists, shimmer-animated
+    # HTML skeleton when empty. The skeleton replaces the Plotly empty-state
+    # because Plotly's canvas can't host a CSS animation.
+    fig_mem = _build_memory_chart(rid) if rid else None
+    if fig_mem is None:
+        _slot_chart_mem.markdown(
+            _render_chart_skeleton("💾 Memory over time"),
+            unsafe_allow_html=True,
+        )
+    else:
         fig_mem.update_layout(uirevision="mem-chart")
         _slot_chart_mem.plotly_chart(
             fig_mem,
@@ -1533,8 +2263,13 @@ def live_charts():
             config={"displayModeBar": False},
         )
 
-    fig_tim = _build_timing_chart(rid)
-    if fig_tim is not None:
+    fig_tim = _build_timing_chart(rid) if rid else None
+    if fig_tim is None:
+        _slot_chart_tim.markdown(
+            _render_chart_skeleton("⏱️ Time per stage", message=timing_msg),
+            unsafe_allow_html=True,
+        )
+    else:
         fig_tim.update_layout(uirevision="tim-chart")
         _slot_chart_tim.plotly_chart(
             fig_tim,
@@ -1543,8 +2278,13 @@ def live_charts():
             config={"displayModeBar": False},
         )
 
-    fig_gantt = _build_chunk_gantt(rid)
-    if fig_gantt is not None:
+    fig_gantt = _build_chunk_gantt(rid) if rid else None
+    if fig_gantt is None:
+        _slot_chart_gantt.markdown(
+            _render_chart_skeleton("📊 Chunk Gantt", message=timing_msg),
+            unsafe_allow_html=True,
+        )
+    else:
         fig_gantt.update_layout(uirevision="gantt-chart")
         _slot_chart_gantt.plotly_chart(
             fig_gantt,
@@ -1554,16 +2294,23 @@ def live_charts():
         )
 
 
+# Toast watcher — fires the slide-in notification when a conversion
+# completes. Always runs (regardless of whether one is in flight) so it
+# can catch completions that happen between page renders.
+toast_renderer()
+
 # Stats display — drives the slots that live in the top section. Called
 # from here so the fragment definitions earlier in the file are in scope.
+# live_charts() handles three states internally:
+#   - active conversion → real-time data
+#   - completed results → last conversion's recap
+#   - neither → 3 "Awaiting conversion data" skeletons
+# Without this unconditional call, a fresh container start (no history yet)
+# leaves the Mega Row right side blank — defeats the skeleton design from
+# commit 3db61fa.
 if _snap_active is not None:
     conversion_status()
-    live_charts()
-elif _snap_results:
-    # No live conversion, but a recent one finished — show its charts.
-    # The backend retains heartbeats + timings for 30 minutes after
-    # completion, so the user can review what just happened.
-    live_charts()
+live_charts()
 
 # Action block — only the upload/start UI lives below the file picker.
 # Stats display above is independent of upload state.
@@ -1573,7 +2320,11 @@ if uploaded_file:
             "⏳ A conversion is already running — submit another after it finishes."
         )
     else:
-        size_mb = len(uploaded_file.getvalue()) / 1024 / 1024
+        # `.size` reads the size from Streamlit's UploadedFile metadata
+        # without materializing the bytes. `getvalue()` would copy the full
+        # buffer just to call len() on it — wasted O(file_size) work on
+        # every script rerun until the user clicks Start Conversion.
+        size_mb = uploaded_file.size / 1024 / 1024
         st.info(f"📁 **{uploaded_file.name}** — {size_mb:.2f} MB")
 
         if st.button("▶️ Start Conversion", type="primary"):
@@ -1589,18 +2340,106 @@ if uploaded_file:
 # ============================================================
 if st.session_state.history:
     st.divider()
-    st.header("📦 Conversion History")
+    _hdr_col, _clear_col, _cache_col = st.columns([5, 1, 1], vertical_alignment="center")
+    _hdr_col.header("📦 Conversion History")
+    # "Clear all" is broader than the per-row 🗑️: it wipes both this
+    # session's view AND the process-wide s["results"] store, so other
+    # browser tabs / refreshes also see an empty history. Toast tracking
+    # is reset too, otherwise re-converted files wouldn't re-toast.
+    if _clear_col.button(
+        "🧹 Clear all",
+        key="clear_history_all",
+        help="Wipe this session's history AND the server-side history store",
+        use_container_width=True,
+    ):
+        s = _state()
+        with s["lock"]:
+            s["results"] = []
+            s["last_error"] = None
+        st.session_state.history = []
+        st.session_state.seen_result_ids = set()
+        st.session_state.toast_shown_ids = set()
+        st.session_state.toast_active = None
+        st.rerun()
+    # "Clear cache" hits the API's DELETE /cache endpoint to wipe the
+    # on-disk conversion cache (chunks + final PDFs). Independent of
+    # the history wipe above. No-op success on EKS because the chart
+    # doesn't set OFFICE_CONVERT_CACHE_DIR — the API returns
+    # {"enabled": False} and we report that as "Cache is disabled".
+    if _cache_col.button(
+        "🗑️ Clear cache",
+        key="clear_server_cache",
+        help="Wipe the API's on-disk conversion cache (chunks + final PDFs)",
+        use_container_width=True,
+    ):
+        try:
+            resp = requests.delete(f"{API_URL}/cache", timeout=10).json()
+            if not resp.get("enabled"):
+                st.toast("Cache is disabled on this deployment.", icon="ℹ️")
+            else:
+                freed_mb = resp.get("bytes_freed", 0) / 1024 / 1024
+                st.toast(
+                    f"Cleared {resp.get('files_deleted', 0)} files "
+                    f"({freed_mb:.1f} MB freed)",
+                    icon="✅",
+                )
+        except Exception as e:
+            st.toast(f"Cache clear failed: {e}", icon="❌")
 
-    latest = st.session_state.history[0]
-    st.success(
-        f"🎉 **{latest['input']}** → {latest['name']} | ⏱️ **{latest['time']:.1f}s** | {latest['out_mb']:.1f} MB"
+    # Filter input — case-insensitive substring on the input filename.
+    # `latest` (the green success banner) and the per-row list both derive
+    # from the filtered view; if no matches, we show an info line instead
+    # of the banner so users don't see "latest" entries that don't match.
+    filter_term = st.text_input(
+        "Filter history",
+        value=st.session_state.get("history_filter", ""),
+        placeholder="🔍 Filter by filename (e.g. 'report', '.xlsx')…",
+        key="history_filter",
+        label_visibility="collapsed",
     )
+    needle = (filter_term or "").strip().lower()
+    if needle:
+        filtered = [h for h in st.session_state.history if needle in h.get("input", "").lower()]
+        st.caption(
+            f"Showing **{len(filtered)}** of **{len(st.session_state.history)}** entries · "
+            f"filter: `{filter_term}`"
+        )
+    else:
+        filtered = st.session_state.history
 
-    for i, item in enumerate(st.session_state.history[:10]):
+    if not filtered:
+        st.info(f"No history entries match `{filter_term}`.")
+        latest = None
+    else:
+        latest = filtered[0]
+        # Two-column row: success banner on the left, optional Re-run button
+        # on the right. Re-run is only enabled when the input bytes were
+        # preserved (true for the most recent entry; older entries had their
+        # input_data popped to bound memory).
+        _msg_col, _rerun_col = st.columns([5, 1], vertical_alignment="center")
+        with _msg_col:
+            st.success(
+                f"{_format_icon(latest['input'])} **{latest['input']}** → {latest['name']} | "
+                f"⏱️ **{latest['time']:.1f}s** | {latest['out_mb']:.1f} MB"
+            )
+        with _rerun_col:
+            if latest.get("input_data"):
+                if st.button(
+                    "🔄 Re-run",
+                    key="rerun_latest",
+                    help="Re-convert the same input file with no re-upload",
+                    use_container_width=True,
+                ):
+                    ok = _start_conversion(latest["input"], latest["input_data"])
+                    if not ok:
+                        st.warning("A conversion is already running.")
+                    st.rerun()
+
+    for i, item in enumerate(filtered[:10]):
         col1, col2, col3 = st.columns([4, 1, 1])
         with col1:
             st.markdown(
-                f"**{item['input']}** → `{item['name']}`  \n"
+                f"{_format_icon(item['input'])} **{item['input']}** → `{item['name']}`  \n"
                 f"⏱️ {item['time']:.1f}s | 📥 {item['in_mb']:.1f} MB → 📤 {item['out_mb']:.1f} MB | 🕐 {item['ts']}"
             )
         with col2:
@@ -1612,7 +2451,22 @@ if st.session_state.history:
                 key=f"dl_{i}_{item['ts']}",
             )
         with col3:
-            st.text(f"{item['time']:.1f}s")
+            # Per-session remove: drops just this entry from
+            # st.session_state.history. The process-wide s["results"] store
+            # (capped at MAX_RECENT_RESULTS) is untouched, so other sessions
+            # / full page refreshes still see the entry until process rotation
+            # ages it out. seen_result_ids retains the id so the deleted
+            # entry doesn't reappear on the next script rerun in THIS session.
+            del_id = item.get("id")
+            if st.button(
+                "🗑️",
+                key=f"del_{del_id or i}_{item['ts']}",
+                help="Remove from this session's history",
+            ):
+                st.session_state.history = [
+                    h for h in st.session_state.history if h.get("id") != del_id
+                ]
+                st.rerun()
 
 # ============================================================
 # LIVE EVENTS FEED — Kubernetes "Cluster problems"-style panel at the

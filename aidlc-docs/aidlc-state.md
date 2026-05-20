@@ -403,3 +403,176 @@ XLSX automatically falls back to the legacy `WorkerPool` (N independent subproce
 - **Pre-probe**: size-based probe estimate was off by 83× on `sample_100mb.docx` (estimated 5345 pages, real 64). Re-plan after load corrects the chunk count, but pool size is already sized for the bad estimate. A pre-probe in a single worker before sizing the pool would let small-page-count documents take the single-worker path.
 - **PDF fork verification**: PDF still in the fork-allowed set but never tested under fork. First PDF crash with `worker stdout EOF` should trigger adding `"pdf"` to `_FORK_UNSAFE_FORMATS`.
 - **XLSX-under-fork investigation**: see above — would require post-fork Cells re-init. Currently deferred; XLSX uses legacy pool.
+
+### Dev cluster deployment + ingress decision (2026-05-18)
+
+Live deployment on `DEV05-EKS-CLUSTER`, namespace `office-convert-dev`, helm release `office-convert`. Both API + UI pods Running. NLB hostnames provisioned via `aws-load-balancer-scheme: internal` (VPC-only). Image tag `be4ac93-uifix1` (after the 2026-05-18 UI OOM fix bundle: limits 512Mi → 1.5Gi, docker-socket-guarded `_docker_monitor`, removed `curl get.docker.com` from `Dockerfile.ui`).
+
+**Reachability constraint, confirmed permanent (2026-05-18)**: NLB private IPs in `10.35.0.0/16` are unreachable from the operator's laptop. The corp FortiClient VPN gives `/32` routes for the EKS API endpoint (kubectl works) but does NOT tunnel VPC data-plane CIDRs. Verified by `ip route add 10.35.0.0/16 via 192.168.8.24 dev fctvpndc0b79cc` probe — packets enter the tunnel, hit corp HQ, get dropped because corp's server-side routing has no path to the VPC. **Server-side VPC peering does not exist**; the "add route" workaround is permanently dead.
+
+**Decision: ALB Ingress + ACM TLS** (mirrors `argocd/argocd-http-ingress`'s shape — only proven external-ingress precedent in this cluster). Path 1: **two Ingresses sharing one ALB** via `alb.ingress.kubernetes.io/group.name: office-convert`, **subdomain routing** (over path-routed, because Streamlit-behind-prefix is painful). Final hostnames:
+
+- **UI**: `office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com`
+- **API**: `office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com`
+
+Both single-label under the existing wildcard cert `*.dev05.k8s.opus2dev.com` (`arn:aws:acm:eu-west-1:537462380503:certificate/fab42f33-7d67-4ecf-b200-38af584485b0`, ISSUED). Route 53 zone `dev05.k8s.opus2dev.com.` is `Z045669519R5D9D8CKC79`. No external-dns installed — DNS records will be created manually post-Helm-deploy.
+
+**Rejected alternatives**: (B) Istio Ambient + Ingress Gateway — adds machinery no other app in cluster uses, doesn't fix reachability any better; (C) NLB scheme flip to `internet-facing` + `loadBalancerSourceRanges` — fastest but plaintext HTTP, new hostnames every redeploy, no app-layer surface for future Cognito/OIDC; (Path 2 one-Ingress path-routed) — Streamlit `STREAMLIT_SERVER_BASE_URL_PATH` + websocket idle_timeout + static asset rewrites; (multi-label hostnames) — would need a new ACM cert.
+
+**Implementation deferred to next session**. Helm chart change list, pre/post-deploy verifications, and reversibility notes captured in `aidlc-docs/operations/dev-deployment-topology.md`. Operator-memory landing pad: `reference_alb_ingress_plan.md` in the auto-memory store.
+
+**Gotcha for the next operator**: argocd's own Ingress references an **expired** cert ARN (`213a9222-0466-4e0f-9ca2-87e92c92944c`). Do not copy that ARN when cloning argocd's annotation shape. Use the wildcard `fab42f33`.
+
+**Argocd's corp inbound-cidrs snapshot 2026-05-18** (10 entries; verify with network admin before reusing): `213.210.23.82/32, 213.210.23.84/32, 31.121.79.58/32, 31.121.79.60/32, 18.133.115.188/32, 54.91.4.210/32, 18.168.253.57/32, 52.74.117.130/32, 165.65.37.128/29, 136.40.11.230/32`.
+
+### Port-forward wrapper verified clean (2026-05-18)
+
+`deploy/scripts/portforward.sh` re-tested end-to-end on 2026-05-18 from clean state. Both API (18080) and UI (8501) port-forwards bound on base ports, `/health` and `/_stcore/health` returned 200, kubectl processes stayed alive. The prior session's "UI didn't bind 8502 within 5s" failure did NOT reproduce — forensic read on `deploy/logs/portforward-ui.log` shows kubectl had actually printed `Forwarding from 127.0.0.1:8502 -> 8501` (port WAS bound); the prior failure was a VPN flap that killed kubectl's upstream tunnel after a successful bind, and `start_one()`'s "didn't bind in 5s" tail-log path emitted the misleading error.
+
+**Latent script bug** (deferred, not blocking): `start_one()` conflates "never bound" with "bound then upstream died" — both report "didn't bind within 5s". Fix would track whether `ss -tlnH` ever showed the port up inside the wait loop and emit a distinct error like "bound but kubectl process died — VPN/RBAC?" when it had. Low priority because the actionable cause (check VPN) is the same.
+
+### ALB Ingress cutover complete (2026-05-19)
+
+The forward plan in `dev-deployment-topology.md` §6 landed end-to-end on 2026-05-19 in three commits:
+
+- **`37f01c0`** — added `templates/ingress.yaml` (two Ingresses sharing `group.name: office-convert`), `values.yaml` `ingress:` block, plus `deploy/scripts/route53-{upsert,delete}.sh` wired into `Makefile` deploy step 7/8 and undeploy step 1/4. ALB provisioned alongside the dormant NLBs — zero-impact additive step. Wildcard cert `fab42f33` (`*.dev05.k8s.opus2dev.com`), 10-CIDR corp allowlist, 300s idle timeout for Streamlit websocket, per-Ingress healthcheck paths (`/_stcore/health` UI, `/health` API).
+- **`33ba4c6`** — both `Service` resources flipped `LoadBalancer → ClusterIP`. AWS LBC deprovisioned the NLBs within ~60s of `helm upgrade`. ALB is now the sole ingress surface. `git revert` brings NLBs back without disturbing the ALB.
+- **`3cbc332`** — docs alignment: Makefile step counters + ALB URLs in post-deploy block, `deploy/README.md`, and `dev-deployment-topology.md` updated to match the as-built 8-step deploy / 4-step undeploy pipeline.
+
+**As-built final hostnames** (single-label under the existing wildcard cert):
+- UI: `office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com`
+- API: `office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com`
+
+**Verification matrix** (live 2026-05-19, pre-undeploy): DNS resolves to 3 ALB IPs; valid TLS chain on wildcard cert; `GET /_stcore/health` → `200 OK "ok"` (~620 ms); `GET /health` → `200 OK {"ready":true,"license_days_remaining":354,...}` (~630 ms); curl from non-allowlisted IP TCP-times-out after 8 s (SG drop confirmed).
+
+### Office VPN CIDR commit-then-revert (2026-05-19)
+
+Aditya's 4 office VPN egress CIDRs (`114.143.153.146/32`, `114.143.153.147/32`, `103.68.11.58/32`, `103.68.11.59/32`) were live-patched onto the running ALB Ingresses via `kubectl annotate`. Commit `05bcbe2` then persisted them into `values.yaml` `ingress.inboundCidrs` so they'd survive `make deploy-dev` redeploys. Reverted the same day in `9345f30` per operator preference: personal/office IPs are NOT chart artifacts. Use the live `kubectl annotate` pattern (or a future `values-dev.yaml` overlay) instead. The personal home-ISP CIDR (`103.53.234.52/32`) was never committed — rotates with DHCP. Only the 10-CIDR argocd-lineage corp allowlist lives in the chart.
+
+### Upload-cap + UI memory hardening (2026-05-19)
+
+Two coordinated bumps so the UI handles inputs up to the API ceiling:
+
+- **`897dc1e`** — `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` raised 200 MiB → 1024 MiB to match the API's `OFFICE_CONVERT_MAX_INPUT_BYTES=1 GiB`. Both plumbed through `values.yaml`. Streamlit's 200 MiB default was silently rejecting large files before they reached the API. Pydantic `Field(le=1*1024*1024*1024)` caps any env-var override at 1 GiB.
+- **`fd5b595`** — UI pod memory limit `1.5Gi → 4Gi` (request `512Mi → 1.5Gi`). Verified OOMKill (`exitCode 137`) on a 398 MiB XLSX upload caused by Streamlit's ~3× peak-memory profile during multipart parse + base64 transport. Node capacity verified before bump (c5ad.2xlarge nodes ~15 GiB allocatable, ~43% committed). API pod resources unchanged — inputs > ~250 MiB may still OOM mid-conversion on the API side (no swap on K8s).
+
+### Cross-env CPU/RAM tiles via cgroup-backed /stats (2026-05-19, `f56481b`)
+
+Replaced the UI's `docker stats` / `docker top` subprocess path with HTTP `GET /stats` + `GET /workers` against the API. API reads `/sys/fs/cgroup` (cgroup v1+v2 auto-detect) and `/proc/[pid]/cmdline` inside its own container — works identically on Docker compose and EKS pods. The `/var/run/docker.sock`-exists gate is gone, so CPU/RAM tiles populate on EKS for the first time (K8s pods use CRI runtimes, not Docker, and mounting the host socket into a pod is a security non-starter).
+
+New module: `office_convert/container_stats.py`. New routes in `server.py`. UI's `_docker_monitor` rewritten to consume HTTP JSON; CPU% computed from cumulative-usec deltas. Loop cadence 1.5 s → 1 s (HTTP GET is no longer the bottleneck).
+
+Compose-side companion: added `STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false` + `STREAMLIT_SERVER_ENABLE_CORS=false` to mirror the EKS chart — newer Streamlit versions enforce XSRF strictly and were silently 403-ing the `/upload_file` endpoint locally, making the file_uploader appear broken.
+
+### Pool mode forced ON by default + format-aware skeleton placeholders (2026-05-19, `ffb86d9`)
+
+`Settings.pool_min_chunks` default flipped `2 → 1` in three places (Pydantic, `compose.yaml`, chart `values.yaml` + `api-configmap.yaml`). Single-chunk conversions now take the pool dispatch path that emits heartbeats. Previously the default left small files on the one-shot path with no telemetry, and the dashboard Memory chart stayed empty even for valid conversions. Cost: ~1-2 s fork+load overhead per conversion — acceptable for the dev cluster.
+
+`test_ui.py`'s Time-per-stage + Chunk Gantt charts now show format-aware empty-state messages instead of silently-stuck-empty mystery space when the active conversion is a format that doesn't emit timing events (at this commit only XLSX did; `77781df` later closed that gap).
+
+### UI dashboard polish: bounded history, delete button, skeletons (2026-05-19, `3db61fa`)
+
+- `st.session_state.history` capped at `MAX_RECENT_RESULTS=20` (matches the process-wide store ceiling). Each entry holds the full output PDF in `item["data"]`; without the cap, 50× 50 MB conversions would push the UI pod past its memory limit.
+- Per-history-row 🗑️ delete button replaces the redundant col3 timestamp (time already in col1). Per-session delete only — process-wide `s["results"]` store untouched so other sessions still see the entry until rotation ages it out. `seen_result_ids` retains the deleted id to suppress re-display on script rerun.
+- `uploaded_file.size` swapped for `len(uploaded_file.getvalue())` — the old call copied the full byte buffer just to compute the size string, O(file_size) work on every script rerun between drop and click-Start.
+- `_build_empty_chart()` helper renders a dark-grid Plotly figure with centered "Awaiting conversion data" annotation matching the live-chart theme (`height=210`). `live_charts()` no longer early-returns when there's no active job; pre-first-conversion the Mega Row shows 3 chart skeletons matching the Kubernetes-dashboard "instrument ready, awaiting telemetry" aesthetic. Per-chart graceful degradation: after a conversion, if one builder returns None (e.g., timing data missing), only that chart stays as the placeholder while the others show data.
+
+### Per-format pool_load/pool_render timing events (2026-05-19, `77781df`)
+
+Three changes that together populate the dashboard's Time-per-stage + Chunk Gantt charts for DOCX/PPTX/PDF (previously XLSX-only):
+
+1. New `worker_cpp/timing_util.h` — shared `emit_timing_ms()` + `emit_render_summary()` helpers. `xlsx.cpp` keeps its own anonymous-namespace copy untouched (zero-risk; identical body); a future de-dup pass is deferred.
+2. `docx.cpp` / `pptx.cpp` / `pdf.cpp` `pool_load` + `pool_render` now wrap their load + pagination + render stages with `emit_timing_ms()` plus a summary event mirroring xlsx.cpp's shape. PDF gets an extra `pool_render.delete_pages` stage because its render path mutates pages per chunk.
+3. `office_convert/worker_pool.py::ForkedPoolLeader._handle_stderr_line` gained the missing `{"type":"timing"}` branch — the legacy `WorkerPool` always had this; the forked variant didn't. Without this, the new C++ events were emitted correctly but Python dropped them on the floor for DOCX/PPTX/PDF. **Gotcha**: timing JSON parsing is now split across `ForkedPoolLeader` (DOCX/PPTX/PDF — fork-after-load path) and `WorkerPool` (XLSX — legacy pool path). New event types need branches in BOTH parsers.
+
+Verified per-format event counts: docx 4 (`document_load`, `pagination`, `save`, `summary`); pptx 4 (`presentation_load`, `slide_count`, `save`, `summary`); pdf 5 (`probe`, `document_load`, `delete_pages`, `save`, `summary`); xlsx 5 (regression check — still works).
+
+### Dockerfile CVE patch (2026-05-19, `0cf9f43`)
+
+ECR BASIC scan on tag `77781df` flagged 26 OS-level CVEs per image (2 CRITICAL, 14 HIGH, 8 MEDIUM, 2 LOW). All inherited from `python:3.12-slim-bookworm` / `debian:bookworm` base layers — gnutls28, glibc, systemd, dpkg, krb5, libcap2, expat, libxml2, libgcrypt20, sed — none of which we install directly. Base images never get patched after their tag is published.
+
+Added `apt-get upgrade -y` between `apt-get update` and `apt-get install` in all three apt stages (`Dockerfile` builder, `Dockerfile` runtime, `Dockerfile.ui`). Picks up the latest Debian Bookworm point-release fixes for everything in the base layer. Cost: +20–40 s build time + ~30–100 MB image size per stage. Cleared ~54-58% of the CVE list. Remaining are upstream-unfixed (gnutls28, expat, libxml2).
+
+Python-dep CVEs (pandas/plotly/streamlit on UI; aiofiles/fastapi/etc. on API) not covered — would require ECR scan flipped from BASIC to ENHANCED (Inspector v2). Deferred.
+
+### Dev cluster undeployed for cost (2026-05-19T23:04)
+
+`make undeploy-dev` ran cleanly: `route53-delete.sh` removed both A-aliases (~60 s propagation), `helm uninstall` deprovisioned the ALB (~60 s), license `Secret` + namespace deleted. ECR image `0cf9f43` retained (cost ~$0.10/mo). Saves ~$18/mo ALB cost while the cluster isn't being actively dogfooded. Redeploy:
+
+```bash
+IMAGE_TAG=0cf9f43 make deploy-dev
+```
+
+Current dev state: **UNDEPLOYED** at the end of 2026-05-19. Cluster credentials, Helm chart, ECR image, and operator memory all intact for fast redeploy.
+
+### Dev cluster redeployed (2026-05-20T10:30 IST)
+
+Brought the cluster back up on the same image `0cf9f43`. Operator-side Docker Desktop was unavailable, so the canonical `make deploy-dev` path couldn't execute its build+push steps (3-4). Since the ECR image was already present from the 2026-05-19 push (digests: API `sha256:6e50b9b6…`, UI `sha256:d12f06d8…`), the build is wasted work — ran Makefile steps 5-8 directly:
+
+1. `kubectl create namespace office-convert-dev` + license Secret apply.
+2. `helm upgrade --install ... --wait --timeout 5m` → completed in ~30 s, Helm rev 1 (prior undeploy cleared release history).
+3. `./deploy/scripts/route53-upsert.sh` → ALB hostname `k8s-officeconvert-921b81ff67-1648401858.eu-west-1.elb.amazonaws.com` populated in ~30 s, both A-aliases UPSERT'd (Route 53 change `/change/C053553214DQ5801DCTFA`).
+4. Post-deploy: both pods 1/1 Ready, end-to-end curl from laptop returned `200 OK` on both `/health` and `/_stcore/health` after live-patching `36.255.185.84/32` (current home ISP — rotated from `103.53.234.52/32` within <24 h) onto both Ingresses atomically. Subsequently added the 4 office VPN CIDRs (`114.143.153.146/32`, `114.143.153.147/32`, `103.68.11.58/32`, `103.68.11.59/32`) the same way.
+
+**Final live allowlist**: 15 CIDRs (10 chart corp + 1 home ISP + 4 office VPN). The 5 non-chart CIDRs are live-patched only — lost on next undeploy/redeploy cycle.
+
+**Confirmed via routing probe**: FortiClient was connected (interface `fctvpn184dd436` today; the suffix rotates per session, so scripts must NOT hardcode it). Even so, all 3 ALB public IPs (`34.255.138.245`, `52.208.35.24`, `99.80.38.211`) routed via wifi (`192.168.31.1 dev wlp0s20f3`), not the tunnel — split-tunnel as documented. The 10 corp CIDRs in the allowlist do NOT match Aditya's laptop traffic to the ALB; the entry that made `curl` work is `36.255.185.84/32`.
+
+### UI polish ship pile (2026-05-20 mid-afternoon, 3 commits)
+
+After the morning's redeploy and live-patches stabilized the deployment, the rest of the session focused on UI improvements driven by an enumerated menu of 12 items. 10 shipped, 2 declined.
+
+Three commits on `aspose-upgrades-v2` (pushed to origin):
+
+- **`a3f006f`** fix: cache mkdir on demand + always render chart skeletons. Two latent bugs: (a) `Cache.final_temp_path()` returned a Path without ensuring parent dir exists — qpdf crashed `FileNotFoundError` mid-stream when cache vol was empty (local only; dev05 has cache disabled so unaffected). (b) `live_charts()` call site still gated on `_snap_active or _snap_results`, defeating commit `3db61fa`'s "skeletons always render" intent — dropped the `elif` so `live_charts()` always runs.
+- **`d0ca782`** feat: `DELETE /cache` endpoint + `CacheManager.clear()`. Wipes the on-disk conversion cache. Returns `{enabled, files_deleted, bytes_freed, errors}`. On EKS the response is `{enabled: false}` because the chart doesn't set `OFFICE_CONVERT_CACHE_DIR`. Verified locally end-to-end: cleared 289 files / 7.15 GB.
+- **`d206642`** feat(ui): dashboard polish + cache/history controls. 15 features added to `test_ui.py` (+758 lines): equalizer bars replacing static `⏳` + LIVE dot, sparklines in CPU/RAM util-cards (30-sample ring buffer, y-axis pinned 0..100), worker-row cyan pulse when CPU > 0.5%, slide-in toast on completion (state machine with `toast_shown_ids` + `toast_active.expires_at`), 🧹 Clear-all history button, 🔍 history filter, 🔄 Re-run latest (preserves input bytes on s["results"][0] only), 🗑️ Clear-cache button (hits `DELETE /cache`), skeleton shimmer on empty Plotly slots (HTML fallback because Plotly canvas can't host CSS animations — see memory `reference_plotly_css_limit.md`), hover glow on KPI tiles + status pills, License countdown progress bar, format icons (📄/📊/📈/📕) in history rows, Lifetime KPI tile (cumulative count + bytes_in/out since process start), per-format performance summary panel (count + avg + p95 per format).
+
+Items declined from the menu: **#12 cancel in-flight conversion** (heaviest, needs backend cooperation — signal handling for pool workers + new `DELETE /jobs/{request_id}` endpoint).
+
+### Image swap to `d206642` on dev05 via `kubectl set image` (2026-05-20T14:55 IST)
+
+**Method**: image-only roll via `kubectl set image` rather than the canonical `make undeploy-dev && make deploy-dev`. Rationale: full undeploy resets the live ALB allowlist to the 10 chart CIDRs only, losing the 5 live-patched ones (`36.255.185.84/32` home + 4 office VPN). Image-swap preserves everything except the pod ReplicaSets.
+
+Sequence:
+1. ECR login (`aws ecr get-login-password | docker login`).
+2. `docker build -t office-convert:dev .` — fully cache-hit since local image was warm from the morning's rebuilds. ~5 s.
+3. `docker tag office-convert:dev <ECR>/office-convert:d206642` + `docker push`. ~10 s.
+4. `docker build -t office-convert:ui -f Dockerfile.ui .` — cache-hit. ~5 s.
+5. `docker tag office-convert:ui <ECR>/office-convert-ui:d206642` + `docker push`. ~5 s.
+6. `kubectl set image -n office-convert-dev deploy/office-convert office-convert=<ECR>/office-convert:d206642`
+7. `kubectl set image -n office-convert-dev deploy/office-convert-ui office-convert-ui=<ECR>/office-convert-ui:d206642`
+8. `kubectl rollout status` — both deploys successfully rolled out (~35 s API, ~32 s UI).
+
+Verification (from laptop, traffic via local ISP per split-tunnel):
+- API `GET /health` → 200, `{"ready":true,"license_days_remaining":353,...}`
+- UI `GET /_stcore/health` → 200
+- New `DELETE /cache` route reachable: returns `{"enabled":false,...}` on dev05 — confirms d206642 code is running AND that the cache is correctly disabled (no `OFFICE_CONVERT_CACHE_DIR` in chart).
+
+Image digests in ECR (tag `d206642`, account 537462380503, region eu-west-1):
+- API: `sha256:eece63482ea0fbe5624ad1921d68bcbe4b07be4aec2602da628ac68378074d46`
+- UI:  `sha256:3d50dfc572814210582de91cf43a166e7c17d5a26f09a703dde2b88e56ec8e91`
+
+### Helm release vs live state divergence (2026-05-20T14:55 IST)
+
+After the kubectl set image swap, attempted `helm upgrade --reuse-values --set image.tag=d206642 --set ui.image.tag=d206642` to record a Helm rev matching live state. **The upgrade FAILED** with a Server-Side-Apply field-manager conflict:
+
+```
+conflict with "kubectl-annotate" using networking.k8s.io/v1:
+  .metadata.annotations.alb.ingress.kubernetes.io/inbound-cidrs
+```
+
+Root cause: when the operator (earlier in this session) ran `kubectl annotate` to add the 5 non-chart CIDRs onto the Ingress, kubectl registered itself as the field manager for that annotation. Modern helm (3.13+) uses Server-Side Apply and refuses to overwrite fields owned by another manager — defense against accidental cross-controller stomping.
+
+Net state:
+- **Helm rev 1**: `deployed`, May 20 10:30, `image.tag: 0cf9f43` (initial values).
+- **Helm rev 2**: `failed`, May 20 14:45, SSA conflict during Ingress apply. BUT `helm get values` returns rev 2's values (`tag: d206642`), so the stored values dict IS updated despite the failed apply.
+- **Live state**: pods on `d206642` (from step 6-7 above), 15-CIDR allowlist intact, both endpoints HTTP 200.
+- **Ingress field managers**: `helm` (rev 1 ownership of chart-rendered fields), `controller` (AWS LBC reconciler, ×2 for HTTP/HTTPS listeners), `kubectl-annotate` (our 5 live-patches).
+
+**Gotcha shift**: the original "naked `helm upgrade` would silently downgrade to 0cf9f43" risk is RESOLVED (rev 2's stored values say d206642). A NEW failure mode took its place: any helm operation that re-applies the Ingress will hit the same SSA conflict and fail. **`make deploy-dev IMAGE_TAG=anything` is now blocked** at the `helm upgrade --install` step until field-manager ownership of `inbound-cidrs` is reconciled — only the full undeploy+deploy path (which deletes the Ingresses and clears all field managers) restores helm reconcilability.
+
+**Recommended posture going forward**:
+- **Image-only rolls** → `kubectl set image` (bypasses helm; preserves live allowlist).
+- **Chart changes** (env vars, resource limits, ingress shape) → `make undeploy-dev && make deploy-dev`, then re-annotate the 5 non-chart CIDRs (5 minutes of allowlist rebuild — same workflow as 2026-05-19T23:04 → 2026-05-20T10:30).
+- **Long-term fix** (still an open question, raised on 2026-05-19): a gitignored `values-dev.yaml` overlay containing the 4 office CIDRs, sourced via `helm install -f values-dev.yaml`. That would bake them back into the chart-render pass so only the personal home ISP needs live-patching post-deploy. Memory note: this just got more pressing because every chart-change deploy now triggers the SSA conflict path until field managers are reset.

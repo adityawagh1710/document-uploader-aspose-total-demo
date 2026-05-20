@@ -1,0 +1,210 @@
+# Default values for office-convert dev deploy.
+# Override at install time with --set or --values.
+
+image:
+  # Filled in at install time:
+  #   --set image.repository=<acct>.dkr.ecr.<region>.amazonaws.com/office-convert
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Single replica for dev cluster. max_jobs=1 means one conversion at a time
+# per pod; scale by replicas if you need parallel conversions.
+replicaCount: 1
+
+# Pod-level memory cap matches the original chart shape. No swap on
+# Kubernetes by default (see aidlc-docs/operations/eks-production-topology.md
+# for the swap-enabled node group design). Without swap, conversions of
+# inputs > ~250 MB may OOM mid-render — accepted trade-off for now.
+# UI pod is bumped to 4Gi separately (see ui.resources below) so the
+# Streamlit upload buffer can handle ~1 GiB files end-to-end even though
+# the API may not convert them successfully.
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "4"
+    memory: "4Gi"
+
+service:
+  # ClusterIP — Ingress (ALB) is the only ingress surface now. The previous
+  # internal NLB was unreachable from corp laptops because the VPN doesn't
+  # peer with the VPC; the ALB Ingress fronts traffic via DNS + corp CIDR
+  # allowlist instead. See deploy/helm/office-convert/templates/ingress.yaml.
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+# OFFICE_CONVERT_* env vars rendered into a ConfigMap. Pydantic
+# `env_prefix="OFFICE_CONVERT_"` (office_convert/config.py) consumes them.
+config:
+  log_format: "json"
+  log_level: "info"
+  max_jobs: 1
+  # 2 parallel workers fits comfortably in the 4Gi pod cap. The compose
+  # default of 4 assumes 6Gi RAM+swap; without swap we drop to 2 to give
+  # each worker meaningful headroom.
+  parallel: 2
+  # Per-worker RLIMIT_AS = 2 GiB. Two workers x 2 GiB = 4 GiB pod cap worst
+  # case. Aspose subdivision kicks in on OOM, so this is a safety floor
+  # rather than a hard target. Quoted to dodge Helm's int-to-scientific-
+  # notation conversion (values >= 2^31 render as "2.147e+09" otherwise).
+  worker_ram_bytes: "2147483648"
+  chunk_timeout_seconds: 600
+  scratch_dir: "/tmp/office-convert"
+  license_path: "/aspose/license.lic"
+  # Force pool mode on every conversion (default Pydantic value is 2 = pool
+  # only when >= 2 chunks). 1 means even single-chunk small files use the
+  # pool, which is what makes the dashboard's heartbeat/timing/Gantt charts
+  # populate. Trade-off: pool mode adds ~1-2s fork+load overhead per conv.
+  pool_min_chunks: 1
+  # Max accepted upload size on the /convert endpoint. Quoted to dodge
+  # Helm's int-to-scientific-notation conversion. 1 GiB matches Pydantic's
+  # `le=1*1024*1024*1024` upper bound in office_convert/config.py — to
+  # raise above 1 GiB you'd need to bump that Field constraint too.
+  # 500 MB is the comfortable working ceiling; >500 MB risks pod OOM
+  # because K8s deploys have no swap (compose deploys have a 2 GB swap
+  # cushion).
+  max_input_bytes: "1073741824"
+
+# Aspose license is mounted from a pre-existing Secret. The Secret is NOT
+# created by this chart — create it before `helm install`:
+#   kubectl create secret generic aspose-license \
+#     --from-file=license.lic=./Aspose.TotalforC++.lic \
+#     --namespace office-convert-dev
+license:
+  secretName: "aspose-license"
+  secretKey: "license.lic"
+
+# Health probes hit /health. The endpoint returns 503 with structured
+# `problems` when license is expired or worker binaries missing, so the
+# readiness probe naturally takes the pod out of rotation.
+probes:
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    failureThreshold: 3
+    timeoutSeconds: 3
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+    timeoutSeconds: 5
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ============================================================
+# Ingress (internet-facing ALB via AWS Load Balancer Controller)
+# ============================================================
+# Two Ingress resources share one ALB via `group.name`. The ALB is reachable
+# from the public internet but locked down by `inbound-cidrs` to corp egress
+# IPs. TLS terminates on the ALB using a wildcard ACM cert covering both
+# hostnames.
+#
+# Set `enabled: false` to skip Ingress creation entirely (the chart then
+# behaves like before this block existed — useful for local kind/minikube).
+#
+# Deploy-side companion: `deploy/scripts/route53-upsert.sh` runs after
+# `make deploy-dev` to create A-alias records pointing the UI/API hostnames
+# at whatever ALB hostname AWS LBC provisioned. `route53-delete.sh` cleans
+# them up before `make undeploy-dev` tears down the ALB.
+ingress:
+  enabled: true
+  # Single ALB shared by both UI and API Ingresses. AWS LBC merges
+  # Ingresses with the same group.name onto one ALB.
+  groupName: office-convert
+  uiHost: office-convert-dev-sandbox-v1.dev05.k8s.opus2dev.com
+  apiHost: office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com
+  # Wildcard cert covering *.dev05.k8s.opus2dev.com. Both hostnames are
+  # single-label under that suffix so this one cert is enough.
+  certificateArn: arn:aws:acm:eu-west-1:537462380503:certificate/fab42f33-7d67-4ecf-b200-38af584485b0
+  # Same TLS policy argocd uses. FS = forward secrecy, TLS 1.2 minimum.
+  sslPolicy: ELBSecurityPolicy-FS-1-2-Res-2019-08
+  # Corp egress IP allowlist — seeded from argocd's Ingress 2026-05-19.
+  # Refresh from `kubectl -n argocd get ingress argocd-http-ingress -o jsonpath='{.metadata.annotations.alb\.ingress\.kubernetes\.io/inbound-cidrs}'`
+  # before each deploy, or ask network admin if anything changed.
+  inboundCidrs: "213.210.23.82/32,213.210.23.84/32,31.121.79.58/32,31.121.79.60/32,18.133.115.188/32,54.91.4.210/32,18.168.253.57/32,52.74.117.130/32,165.65.37.128/29,136.40.11.230/32"
+  # ALB's default idle timeout is 60 s, which kills Streamlit's persistent
+  # websocket. 300 s matches Streamlit's own server.keepAlive default.
+  idleTimeoutSeconds: 300
+  apiHealthcheckPath: /health
+  uiHealthcheckPath: /_stcore/health
+
+# ============================================================
+# UI (Streamlit test dashboard)
+# ============================================================
+# The UI is a Streamlit app (test_ui.py) that drives the API for manual QA.
+# It runs as a separate Deployment+Service in the same namespace and talks
+# to the API via in-cluster DNS (so port-forward and NLB access give the
+# same UI experience).
+#
+# Three docker-socket-backed widgets in test_ui.py degrade silently to
+# empty values on EKS (no /var/run/docker.sock): the CPU/RAM tiles, the
+# worker process table, and the events feed. Core conversion + timing
+# charts + heartbeats + progress all work because they come from the API.
+ui:
+  enabled: true
+  image:
+    # Filled in at install time:
+    #   --set ui.image.repository=<acct>.dkr.ecr.<region>.amazonaws.com/office-convert-ui
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    # ClusterIP — ALB Ingress fronts the UI now. The previous internal NLB
+    # was VPC-only and unreachable from corp laptops without VPC peering.
+    # See deploy/helm/office-convert/templates/ingress.yaml for the
+    # subdomain-routed ALB shared with the API.
+    type: ClusterIP
+    port: 8501
+    annotations: {}
+  # 2026-05-19: limits bumped 1.5Gi → 4Gi to handle 1 GiB uploads.
+  # Streamlit's file_uploader needs ~3x file size in peak memory during a
+  # POST (raw bytes + Tornado buffer + base64 websocket payload), so a
+  # 1 GiB upload requires ~3 GiB pod headroom on top of Streamlit's
+  # 300 MiB cold-start baseline. Previous 1.5Gi limit was OOMKilling on
+  # 398 MiB uploads.
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "1.5Gi"
+    limits:
+      cpu: "500m"
+      memory: "4Gi"
+  # Streamlit server flags surfaced as env vars in the deployment.
+  # XSRF off because port-forward changes the request origin and Streamlit's
+  # default XSRF check rejects file uploads otherwise (the typical "AxiosError
+  # 403 on upload" failure). UI is internal-only with no auth in v1, so XSRF
+  # adds no real security here.
+  streamlit:
+    enableCORS: false
+    enableXsrfProtection: false
+    # Max file size Streamlit's file_uploader accepts (MiB; Streamlit
+    # multiplies by 1024*1024). Default is 200; raised to 1024 so the UI
+    # matches the API's 1 GiB `max_input_bytes` ceiling. 500 MB is the
+    # comfortable working ceiling; uploads >500 MB risk pod OOM on K8s
+    # (no swap), so the UI surfaces them but they may fail mid-conversion.
+    maxUploadSizeMb: 1024
+  # Dockerfile.ui doesn't set a USER, so the container runs as root. The
+  # shared podSecurityContext (runAsNonRoot: true) would block this pod from
+  # starting, so the UI gets its own empty securityContexts.
+  # TODO: harden Dockerfile.ui to run as non-root and remove these overrides.
+  podSecurityContext: {}
+  containerSecurityContext: {}
