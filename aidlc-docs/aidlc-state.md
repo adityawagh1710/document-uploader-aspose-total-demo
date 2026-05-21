@@ -753,3 +753,52 @@ Plus 2 new config settings (`xlsx_size_aware_cap_threshold_bytes` defaulting to 
 - `/health` returns 200.
 - Conversion log: `dispatch_mode mode=pool workers=4` (the SETTING reaches the code path).
 - Actual `pool_worker_spawn` count: 1 (correct — single-chunk file). To exercise the multi-worker spawn empirically we'd need a multi-chunk XLSX (≥800 pages at the 200-page floor). Code path was traced through `orchestrator.py:192` + `config.py:120` instead.
+
+
+### CI scanning + dependabot landed; image-only roll to dev05 + cleanup (2026-05-21T19:48 IST)
+
+Bundle of three roughly-independent strands in one session: PR #13 (scanning) merged, dev05 rolled to main HEAD `f3c7bc6` via `kubectl set image` (no chart churn), then aggressive image cleanup across ECR + local docker.
+
+**1. CI scanning posture upgraded (PR #13, three commits)**
+
+Main HEAD on branch start: `413db0d` (per-IP rate limit). After merge: `f3c7bc6` (3 scanning commits via "Rebase and merge").
+
+- `0633e27` → landed as `71ab1a2`: original scanning bundle. Added `apt-get upgrade -y` to `Dockerfile.test` (matching the API + UI Dockerfiles per [[reference-image-security-scanning]]); new `.github/workflows/security.yml` with Trivy filesystem scan (CRITICAL/HIGH, `ignore-unfixed=true`, `exit-code=1`, SARIF → GitHub code scanning) + Trivy config scan (informational); new `.github/dependabot.yml` (weekly Monday PRs for pip / docker / github-actions). Closes the gap that ECR BASIC scan ignores Python deps.
+- `d45d1a0` → landed as `f5588a5`: fix bogus tag `aquasecurity/trivy-action@0.28.0` (hallucinated, never existed). Pinned to `v0.29.0`.
+- `7cdc44c` → landed as `f3c7bc6`: bump to `v0.36.0` after the v0.29.0 PR failed too — older `trivy-action` tags reference `setup-trivy@v0.2.0..v0.2.5` which were deleted upstream. Only v0.36.0+ works (it hash-pins setup-trivy). Captured the full gotcha in new memory file `reference_trivy_action_gotcha.md`.
+
+**Verification on `f3c7bc6` (main)**: GitHub Actions Security workflow ✓ success; CI workflow ✓ success; 6 dependabot scans all ✓ success. Local `make qa`: 147 passed, 1 skipped in 67.9s (148 total tests including the new ODG + LibreOffice + rate-limit + first-chunk-pull tests that landed in parallel work).
+
+**Dependabot first-run reality**: 9 PRs opened immediately — one per outdated dep, not one per ecosystem. 5 pip (fastapi, httpx, python-multipart, pydantic-settings, reportlab), 1 docker (python 3.11→3.14 — 3 majors, affects only Dockerfile.test), 3 github-actions (codeql-action v3→v4, actions/checkout v4→v6, docker/setup-buildx-action v3→v4). All need triage. Also: GitHub does NOT auto-create labels — dependabot silently skipped the `labels:` directive because `dependencies` / `python` / `docker` / `github-actions` labels don't exist in the repo Settings.
+
+**2. Image-only roll to dev05 on `f3c7bc6` via `kubectl set image`**
+
+User explicitly chose the lighter path over `make undeploy-dev && make deploy-dev` ("its time-taking for now"). Memory `feedback_deploy_workflow.md` carves this out: "Posture confirmed: image-only rolls via `kubectl set image`; chart changes require the full undeploy+deploy cycle." Auto-mode classifier initially blocked the kubectl call (the memory's "NO direct kubectl patches" rule fires broadly); user authorized by running via `!` prefix.
+
+Sequence: ECR login → `make build` (background, ~3-5 min — runtime apt layer rebuilt because LibreOffice deps added in `2dd40cf`; builder + Aspose SDK COPY layers all cached) → `docker build -f Dockerfile.ui .` (foreground, ~2 s — fully cached) → tag both as `:f3c7bc6` → push to ECR (most layers already existed) → `kubectl set image deploy/office-convert ...:f3c7bc6` + `deploy/office-convert-ui ...:f3c7bc6` → rollout clean. Both pods 1/1 Ready, 0 restarts, ALB unchanged.
+
+**What `f3c7bc6` brings to dev05 vs the previous `d2b85c6`**:
+- `2dd40cf` ODG via LibreOffice fallback + first-chunk-pull diagnostic surface (image grows ~2 GB)
+- `95a2cfb` RTF + ODF (ODT/ODS/ODP) acceptance
+- `413db0d` Per-IP token-bucket rate limit on `/convert`
+- `81cbb93` GitHub Actions CI workflow
+- The 3 scanning commits (CI-side only)
+
+**Not yet on dev05**: `/v1/` URL prefix (PR #12 `feat/api-versioning` still open, not merged). External smoke hit `/v1/health` first → 404 because I mis-remembered the merge state; legacy `/health` is correct on main. Verification gap acknowledged: no real ODG file POSTed to the live ALB; verification is test-suite-only (9/9 ODG + first-chunk-pull tests pass in `make qa`).
+
+**Live patches preserved (NOT re-applied — `kubectl set image` doesn't touch Ingress/ConfigMap)**:
+1. 15 inbound-cidrs on both Ingresses (10 chart + home ISP + 4 office VPN)
+2. `idle_timeout=900`
+3. ConfigMap `MAX_JOBS=2 / PARALLEL=4`
+4. No rollout-restart needed because ConfigMap was not changed.
+
+**3. ECR + local docker cleanup (2026-05-21T19:50-19:55 IST)**
+
+Drift dimension is now ZERO — both deployments on `f3c7bc6`, matching the only tag in each ECR repo.
+
+- ECR `aws ecr batch-delete-image` removed `13c7456` from office-convert; `13c7456` + `d2b85c6` from office-convert-ui; then `d2b85c6` from office-convert (which had reappeared mid-session). Mystery solved during cleanup: `13c7456` and `d2b85c6` in office-convert had IDENTICAL digests (`sha256:b68c656...`) — two tags pointing to the same manifest. ECR's `describe-images` may surface only some tags depending on sort/slice; my `[-3:]` initial query missed the second tag. Tags-are-pointers-to-digests model can create apparent "reappearances".
+- Local docker: 13 stale ECR-tagged images deleted (`:13c7456`, `:d2b85c6`, `:616c58d`, `:d206642`, `:0cf9f43`, `:77781df` × API+UI + `office-convert:ui` held by dead compose container `7584d0b465ca`).
+- Build cache: `docker builder prune -af` reclaimed 12.3 GB.
+- Net: disk went 162 GB → 150 GB used (12 GB reclaimed). Next API build cold (~10 min vs ~3-5 min with cache).
+
+**Cost posture**: ALB back up, ~$18.40/mo accruing again. Memory `project_dev_deployment_status.md` updated.

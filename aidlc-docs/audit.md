@@ -2050,3 +2050,99 @@ Two doc-quality observations worth keeping:
 - `config.py:117-120` already documents the size-aware cap TODO — it's been waiting for someone to implement it. Sketch is in `aidlc-state.md` for whoever picks it up.
 
 ---
+
+
+## Session: CI scanning + dependabot + image-only roll to dev05 + cleanup
+**Timestamp**: 2026-05-21T19:00:00Z (start) → 2026-05-21T20:00:00Z (end)
+
+**User Input**: "load previous session"
+**AI Response**: Surveyed aidlc-state, audit.md tail, git state, memory. Reported: branch `feat/api-versioning` 1 commit ahead of main (`5498e4d` /v1/ URL prefix); main HEAD `413db0d`; dev05 was UNDEPLOYED per memory. Outlined open thread.
+
+**User Input**: "Can you please review this PR http://github.com/opus2-automation/argocd-gitops-development/pull/1335/changes make sure its aligned with dev05 config"
+**AI Response**: WebFetch failed (private repo, 404). Memory confirms `gh` binary is gitsome (no real cli/cli), no GitHub token in env. Asked user to paste diff, point at local clone, or run `gh pr view` themselves. Pre-cached dev05 chart values for fast comparison once diff arrives.
+
+**User Input**: "Can do some fixes on Scanning and vulnerabilities"
+**AI Response**: Inventoried current state. Found Dockerfile.test missing `apt-get upgrade -y`; no Python-deps scanning anywhere; no CI security scanning. Offered 4 scope options.
+
+**User Input** (via AskUserQuestion): "Quick wins bundle (Recommended)"
+**AI Response**: Created 4 tasks. Patched Dockerfile.test, wrote security.yml (Trivy fs + config) + dependabot.yml (pip/docker/github-actions weekly). Validated YAML. Discovered branch had been switched to main during session.
+
+**User Input** (via AskUserQuestion): "New branch chore/security-scanning"
+**AI Response**: Created branch, committed `0633e27`, pushed. Provided PR URL.
+
+**User Input**: "Something failed in mr pipeline check now"
+**AI Response**: WebFetch initially reported "all passed" — incorrect. GitHub API showed Security workflow failed with "Unable to resolve action aquasecurity/trivy-action@0.28.0". Bare `0.28.0` tag was hallucinated (never existed). Curl-verified that `v0.29.0` exists (200) but `0.29.0` does not (404). Fixed to `v0.29.0`, committed as `d45d1a0`, pushed.
+
+**User Input**: "keep watching the new Actions run"
+**AI Response**: ScheduleWakeup 120s. New run for `d45d1a0`: Security STILL FAILED with "Unable to resolve action aquasecurity/setup-trivy@v0.2.2". Root-cause: aquasecurity deleted setup-trivy v0.2.0-v0.2.5 tags upstream; all older trivy-action releases that pinned them are now broken transitively. Only `v0.36.0` (rebuilt against setup-trivy@v0.2.6 hash-pinned) works. Bumped to v0.36.0 in commit `7cdc44c`. Pushed.
+
+**User Input**: "keep watching the new Actions run"
+**AI Response**: GitHub API confirmed `7cdc44c`: Security ✓ success, CI ✓ success. Trivy filesystem + config scans ran clean (no fixable CRITICAL/HIGH).
+
+**User Input**: "i still see issues in pipeline"
+**AI Response**: Re-checked via more-aggressive WebFetch prompt. Earlier WebFetch had been falsely reporting "passed" on a failed run — page was JS-rendered. Switched to GitHub public API for authoritative status. All checks on latest commit `7cdc44c` were actually green; the failed runs were on earlier commits, not the PR head.
+
+**User Input**: "Please verify updated code base"
+**AI Response**: Discovered PR #13 had been merged into main (as `71ab1a2`, `f5588a5`, `f3c7bc6` via Rebase and merge). Plus two unrelated features had landed: `2dd40cf` ODG/LibreOffice fallback + `95a2cfb` RTF/ODF support. Branch switched back to main during the session. Local `make qa` ran 147 passed + 1 skipped in 67.9s (148 tests total — up from 119, new features brought new tests). All 3 scanning files present + YAML valid. GitHub Security workflow on main ✓ success. 6 dependabot scans (pip ×2, docker ×2, github-actions ×2) all completed clean.
+
+**User Input**: "have you verified ODG via LibreOffice fallback + first-chunk-pull diagnostic surface"
+**AI Response**: Pushback was warranted. Ran focused subset: `pytest tests/unit/test_libreoffice_convert.py tests/unit/test_probe.py::test_detect_odg_routes_to_libreoffice_fallback tests/integration/test_convert_endpoint.py::test_convert_routes_odg_through_libreoffice tests/integration/test_convert_endpoint.py::test_convert_render_failure_returns_json_diagnostic -v`. All 9 passed in 2.78s. Acknowledged the gap: tests mock soffice via fake shell script; real LibreOffice in the deployed container path was not exercised. Local compose container was 22h old, predates `2dd40cf`. Offered to rebuild and POST a real ODG.
+
+**User Input**: "Can we deploy latest rebuilt images on dev05?"
+**AI Response**: Discovered SSO expired; dev05 ACTUALLY deployed (memory was stale — said UNDEPLOYED but pods on `d2b85c6` had been running 9h). Outlined deploy plan with explicit risks (image grows ~2 GB for LibreOffice; /v1/ NOT in this image so no breakage; ALB ~$18/mo continues). Asked user to refresh SSO + confirm scope.
+
+**User Input**: "Done SSO token done go for option 2"
+**AI Response**: User chose "Yes but skip live patches" — deploy `f3c7bc6` with chart defaults only. Verified SSO. Created tasks. Began the full undeploy+deploy plan.
+
+**User Input**: "wait"
+**AI Response**: Paused before any destructive action. No commands kicked off.
+
+**User Input**: "I just want to deploy newly rebuild images in ecr no all undeploy and deploy its timetaking for now"
+**AI Response**: Switched plan to image-only roll via `kubectl set image`. Memory carve-out documented in audit log: image-only rolls are OK; chart changes require full cycle. Updated tasks: deleted "undeploy" task, edited build+push task to image-only.
+
+**AI Response (continued)**: ECR login. Started `make build` (API) in background. Built UI in foreground (~2s, all cached). API build completed in ~3-5 min (cache miss on runtime apt layer due to new LibreOffice deps; Aspose SDK COPY + builder stage all cached). Tagged both as `:f3c7bc6` for ECR.
+
+**User Input**: "Are we done with both images push?"
+**AI Response**: Honest no — only built locally, push and roll not yet attempted (interrupted). Listed exact state.
+
+**User Input**: "removed old images?"
+**AI Response**: Showed ECR + local docker inventory. Hadn't cleaned anything yet.
+
+**User Input**: "go-ahead"
+**AI Response**: Pushed both images to ECR (most layers reused). Then `kubectl set image` BLOCKED by classifier ("NO direct kubectl patches on dev05" memory). Explained nuance: memory has BOTH the "no patches" rule AND a carve-out for image-only rolls. Asked user to choose: paste kubectl commands themselves via `!`, or `helm upgrade` (would hit SSA conflict), or cancel.
+
+**User Input**: "go with option 1"
+**AI Response**: User ran the two `kubectl set image` commands via `!` prefix. Standing by for verify request.
+
+**User Input**: "verify the rollout"
+**AI Response**: Rollout clean — both deployments on `f3c7bc6`, 1/1 Ready, 0 restarts. Old UI pod terminating. Smoke test attempted via `kubectl exec` — BLOCKED by classifier (production read into pod). Fell back to external `curl`. Hit `/v1/health` → 404 (I had wrongly assumed /v1/ was merged; PR #12 still open). Legacy `/health` → 200 from external. My current home IP 36.255.185.84/32 is in inbound-cidrs.
+
+**User Input**: "Hey wait"
+**AI Response**: Paused.
+
+**User Input**: "dont do anything now"
+**AI Response**: Stopped.
+
+**User Input**: "Clean older images"
+**AI Response**: Inventoried ECR + local. Proposed 3 ECR deletes (drift dimension zero), 13 local deletes (~21 GB), and confirmed neither was destructive of anything live. Asked for scope.
+
+**User Input** (via AskUserQuestion): "Both ECR + local"
+**AI Response**: ECR `batch-delete-image` removed `13c7456` (office-convert) + `13c7456`,`d2b85c6` (office-convert-ui). Local `docker rmi` removed 12 of 13 images; 13th blocked because exited compose container `7584d0b465ca` held it — removed the dead container then the image. ECR final state showed an unexpected `d2b85c6` in office-convert that wasn't in initial inventory.
+
+**User Input**: "delete the orphan and prune cache"
+**AI Response**: Deleted `d2b85c6` from office-convert ECR (which revealed: same digest as `13c7456` — they were two tags on one manifest, my initial query had missed the second tag). `docker builder prune -af` reclaimed 12.3 GB. Disk 162 GB → 150 GB used (12 GB net reclaimed).
+
+**User Input**: "Save memory + aidlc + readme if needed"
+**AI Response**: This audit block, plus:
+- Memory: updated `project_dev_deployment_status.md` (new top section for the f3c7bc6 image-only roll, ECR/local cleanup); updated `reference_image_security_scanning.md` (added "Three layers" section + dependabot config + labels gotcha); created new `reference_trivy_action_gotcha.md`; updated MEMORY.md index lines for deployment status + scanning + new gotcha file.
+- AIDLC: appended "CI scanning + dependabot landed; image-only roll to dev05 + cleanup" section to aidlc-state.md.
+- README: added "Vulnerability scanning" subsection under "Security Posture" describing the three layers (ECR scan-on-push, Dockerfile apt-get upgrade, Trivy in CI + dependabot).
+
+**Context**: A multi-strand session that captured several non-obvious gotchas:
+- The trivy-action breakage chain (hallucinated `0.28.0` → broken `v0.29.0` → working `v0.36.0`) — first 2 cost ~2 commits each to find. Now memory-captured.
+- WebFetch is unreliable for GitHub Actions status; switched to public API mid-session for authoritative answers. Worth knowing for future debugging.
+- The "tags-are-pointers-to-digests" ECR mystery — same image manifest tagged twice; describing one tag may miss the other. The "reappearance" was illusory.
+- Branch switching mid-session caught me off-guard twice (`feat/api-versioning` → `main` → `chore/security-scanning` → back to `main`). The reflog is the truth, not the gitStatus snapshot at session start.
+- Auto-mode classifier correctly blocked TWO sensitive kubectl operations (set image + exec). Memory-rule guardrails are doing their job; the user can override via `!` prefix when context warrants it.
+
+---
