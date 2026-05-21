@@ -2146,3 +2146,79 @@ Two doc-quality observations worth keeping:
 - Auto-mode classifier correctly blocked TWO sensitive kubectl operations (set image + exec). Memory-rule guardrails are doing their job; the user can override via `!` prefix when context warrants it.
 
 ---
+
+
+## Session: Dependabot sweep + Python 3.12 alignment + Dockerfile.test dedup + dev05 re-roll + scan audit
+**Timestamp**: 2026-05-21T20:00:00Z (start) → 2026-05-21T22:50:00Z (end)
+
+**User Input**: "What should i do about these https://github.com/adityawagh1710/document-uploader-aspose-total-demo/pulls bot mrs"
+**AI Response**: Inventoried 9 open dependabot PRs (5 pip + 1 docker + 3 github-actions) + 1 human PR #12 (`feat/api-versioning`). Triaged: 8 green PRs to merge; PR #23 (python 3.11→3.14) to close because pinned deps lack cp314 wheels. Offered to draft replacement + propose dependabot.yml grouping.
+
+**User Input**: "Yes group related deps"
+**AI Response**: Edited dependabot.yml with 3 pip groups (fastapi-stack, test-tooling, doc-gen) + base-images group with `ignore: semver-major` + all-actions group with major bumps allowed (Node deprecation deadlines). Opened PR `chore/dependabot-groups` after asking about branching scope; user chose two-separate-PRs path. Also opened `chore/post-deploy-docs` carrying the README + AIDLC reconciliation from earlier in the day.
+
+**User Input**: "why is this https://github.com/adityawagh1710/document-uploader-aspose-total-demo/pull/23 failing?"
+**AI Response**: Pulled annotations via GitHub check-runs API (job logs require admin auth so used the annotation endpoint instead). Root cause: `buildx failed with: ERROR ... uv pip install --system --no-cache "fastapi==0.115.*" ... "pydantic==2.9.*" ... did not complete successfully: exit code: 1`. The pinned dep set lacks cp314 wheels — `pydantic==2.9.*` was cut before Python 3.14 was released. Confirmed `python:3.14-slim-bookworm` DOES exist on Docker Hub (HTTP 200), so my earlier guess about the image not existing was wrong; the real issue was wheel availability. Recommended closing PR #23 and replacing with a small `Dockerfile.test 3.11 → 3.12` alignment PR.
+
+**User Input**: "yes open the PR for option A"
+**AI Response**: Synced local main to origin (was 8 commits behind), branched `chore/dockerfile-test-python-312`, edited the one Dockerfile.test FROM line, committed + pushed.
+
+**User Input**: "check this pr https://github.com/adityawagh1710/document-uploader-aspose-total-demo/pull/23"
+**AI Response**: PR #23 had auto-rebased after my Dockerfile.test → 3.12 PR merged. New title bumped all 3 Dockerfiles from `3.12 → 3.14`. Still failing for the same reason — same `uv pip install` step trips on pydantic 2.9.* no cp314 wheel. Recommended close.
+
+**User Input**: "Can you check make qa is green?"
+**AI Response**: Pulled latest main (now 9 commits ahead of session start, including 4 dependabot merges + the 3.11→3.12 alignment). Ran `make qa`. NOT GREEN — 6 tests failed. Root cause: `reportlab==4.2.*` (still pinned in Dockerfile.test) calls `hasattr(ast, 'NameConstant')` at import time. Silent on Python 3.11, raises DeprecationWarning on 3.12+. pytest's `filterwarnings = ["error"]` promotes the warning to an exception. Empirically verified the fix: reportlab 4.4.x and 4.5.x import clean on 3.12; only 4.2.x is broken.
+
+**User Input**: "yes open the PR"
+**AI Response**: Opened `chore/reportlab-py312-compat` bumping reportlab in both `pyproject.toml` (`>=4.2,<4.6` → `>=4.4,<4.6`) and `Dockerfile.test` (`==4.2.*` → `>=4.4,<4.6`). Local `make qa` clean — 147 passed, 1 skipped. Flagged the underlying duplication-between-pyproject-and-Dockerfile.test pattern as the next dedup target.
+
+**User Input**: "yes do the dedup"
+**AI Response**: Opened `chore/dedup-test-deps`. Replaced the inline `uv pip install ...` 20-line list with `uv pip install --system --no-cache -e ".[dev,e2e]"`. Hit and resolved: hatchling validates `readme = "README.md"` exists at install time, so stubbed it via `touch README.md` alongside `office_convert/__init__.py` and `office_convert/py.typed`. Coordinated pyproject.toml bumps: `requires-python "<3.12" → "<3.13"`, `[tool.mypy] python_version "3.11" → "3.12"`, classifier `Python :: 3.11 → 3.12`. Local `make qa` clean.
+
+**User Input**: "verify make qa is still green"
+**AI Response**: Re-ran `make qa` on the dedup branch (all Docker layers cached). 147 passed, 1 skipped in 67.36s. Wall 1m34s (full-cache hit on Dockerfile.test build).
+
+**User Input**: "Can you check why chore/dedup-test-deps has conflicts with latest main branch"
+**AI Response**: Fetched origin, identified merge-base `17a725e` and new main commit `4f9db17` (the reportlab fix PR which had merged in the meantime). Both branches touched the same 2 files. `pyproject.toml` should auto-merge (identical reportlab target value); `Dockerfile.test` is a real conflict because main edited the reportlab line while dedup deleted the entire surrounding block.
+
+**User Input**: "1"
+**AI Response**: Rebased `chore/dedup-test-deps` onto origin/main. Conflict on Dockerfile.test resolved by keeping the dedup branch's deletion (correctly subsumes main's small edit). pyproject.toml auto-merged. `make qa` verified clean. Force-pushed via `--force-with-lease`. Branch tip moved `4ecd2e5` → `b681a8f`.
+
+**User Input**: "do local docker images rebuild and then do docker system prune -f"
+**AI Response**: Rebuilt API (in background, ~3 min — Aspose SDK + LibreOffice apt cache miss because earlier prune cleared build cache) + UI (foreground, ~2s, cached). After completion: `docker system prune -f` reclaimed 10.83 GB. Disk: 162 GB → 149 GB used. The 7.55 GB still "reclaimable" is dangling layers shared with the active `office-convert:dev` parent chain — kept intentionally.
+
+**User Input**: "do local docker images rebuild and then do docker system prune -f"
+**AI Response**: Re-ran the same workflow. All cache hits — image IDs unchanged. Prune reclaimed 106 KB (trivial). Idempotent.
+
+**User Input**: "I just want to deploy newly rebuild images in ecr no all undeploy and deploy its timetaking for now"
+**AI Response**: Same image-only roll path as the prior session. Verified SSO good, main HEAD now `388129c` (dedup PR landed). API+UI image content matches main exactly (dedup changed only Dockerfile.test). ECR login, tagged both as `:388129c`, pushed (most layers reused from prior push). Asked user to run kubectl set image via `!` prefix.
+
+**User Input** (via `! kubectl set image`): both deployments updated successfully (with `Warning: spec.template.spec.topologySpreadConstraints[2].labelSelector: a null labelSelector results in matching no pod` — pre-existing chart quirk).
+
+**User Input**: "verify"
+**AI Response**: Both deployments rolled cleanly. API pod `office-convert-78945757d7-vgr2k`, UI pod `office-convert-ui-7d9b85db88-z7pzq`, both 1/1 Ready, 0 restarts. External `/health` returned HTTP 200 with `max_jobs:2` confirming live ConfigMap patch survived the roll. License 352 days.
+
+**User Input**: "clean old images from ecr"
+**AI Response**: Inventoried both repos, confirmed `388129c` is the only live tag. Deleted `f3c7bc6` from both office-convert and office-convert-ui via `aws ecr batch-delete-image`. Final state: 1 tag per repo (drift dimension zero). Reclaimed ~1.16 GB / ~$0.12/mo.
+
+**User Input**: "Why ecr Scanning and vulnerabilities are not fixed yut ?"
+**AI Response**: Fetched scan findings on `388129c`. Reported: API has 14 findings (5 HIGH + 9 MEDIUM), UI has 3 (3 MEDIUM). **ALL 17 are upstream-unfixed** — Debian Security hasn't published patches. Documented the improvement vs 2026-05-19 snapshot: `gnutls28` (6-7 CVEs incl. 2 CRITICAL) is gone — Debian fixed it and apt-get upgrade picked it up. Critical count: 2 → 0. The "wait for Debian + redeploy" cycle is working as designed.
+
+**User Input**: "Ubuntu 24.04 LTS pro and cons ?"
+**AI Response**: Detailed comparison covering: distro pros (newer glibc, Python 3.12 native, longer CVE coverage, newer LibreOffice) vs cons (Aspose not distro-tested on 24.04, LO 24.x is major version jump, 1-2 day test tail). Ubuntu Pro specifically: zero practical value for our use case (ESM applies to apt-installed packages but our deps come from PyPI; kernel livepatch N/A since we're a container; FIPS not in scope). Recommendation: don't swap. None of the 14+3 unfixed CVEs are reachable in our threat model (no external XML, no outbound HTTPS, ALB CIDR-allowlisted).
+
+**User Input**: "save memory + aidlc + readme if needed"
+**AI Response**: This audit block, plus:
+- Memory: updated `project_dev_deployment_status.md` (new top section for `388129c` image-only roll + ECR scan snapshot); updated `reference_image_security_scanning.md` (current scan snapshot + dependabot grouping outcome + Ubuntu 24.04 swap analysis); created `reference_dockerfile_test_dedup_pattern.md` documenting the stub-package trick + the duplication-bite history; updated MEMORY.md index lines (deployment status + scanning + new dedup pattern entry).
+- AIDLC: appended "Dependabot merge sweep + Python 3.12 alignment + Dockerfile.test dedup + dev05 re-roll" section to aidlc-state.md covering all 4 strands.
+- README: updated the Python version badge from 3.11 to 3.12 (matches the new requires-python and what's actually in all 3 Dockerfiles now).
+
+**Context**: A multi-strand session with several captured patterns + gotchas:
+- The reportlab DeprecationWarning chain — a "trivial" Python version bump exposed a latent dep-version compat issue that took two follow-up PRs to fully resolve. Future Python version PRs need `make qa` in the verification loop before merging.
+- Dockerfile.test dedup pattern with the stub-package layer-cache trick. Documented as a standalone memory file because the pattern is reusable.
+- Dependabot grouping config tuned after the first-run 9-PR shock. New shape should produce ≤5 PRs per week.
+- The "tags-are-pointers-to-digests" ECR mystery resolved fully — same image manifest tagged twice; the prior session's "reappearance" was a query-slice illusion.
+- Auto-mode classifier correctly blocked the kubectl operations again; the user's `!` prefix override pattern is now well-established as the canonical workaround for the documented image-only-roll carve-out.
+- ECR scan posture is in a steady state: apt-get upgrade picks up Debian fixes as they ship; remaining unfixed CVEs are tracked but not exploitable in our threat model. Ubuntu 24.04 / Wolfi swap evaluated and declined.
+
+---
