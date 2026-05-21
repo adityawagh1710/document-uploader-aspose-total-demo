@@ -3,6 +3,11 @@ version: 2
 # Weekly PRs to keep deps + base images + GitHub Actions current. Pairs
 # with the Trivy job in .github/workflows/security.yml — Trivy detects
 # CVEs, dependabot opens the PR to fix them.
+#
+# Grouping rationale: the 2026-05-21 first-run opened 9 individual PRs
+# (5 pip + 3 actions + 1 docker). Groups collapse related minor/patch
+# bumps into single PRs so weekly cadence stays manageable. Majors
+# stay individual (a major bump deserves a focused review).
 updates:
   # Python deps declared in pyproject.toml ([project.dependencies] +
   # [project.optional-dependencies].dev / .e2e).
@@ -20,6 +25,47 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: scope
+    groups:
+      # FastAPI + the deps it tightly couples with. Bumping these
+      # together avoids the version-skew breakage class where e.g.
+      # fastapi 0.115 + python-multipart 0.0.29 + uvicorn lockstep is
+      # the supported combination but each lands in its own PR.
+      fastapi-stack:
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "uvicorn*"
+          - "python-multipart"
+          - "pydantic"
+          - "pydantic-settings"
+          - "aiofiles"
+          - "types-aiofiles"
+        update-types:
+          - "minor"
+          - "patch"
+      # Test + lint tooling. None of these affect runtime behavior,
+      # safe to roll together.
+      test-tooling:
+        patterns:
+          - "pytest*"
+          - "hypothesis"
+          - "mypy*"
+          - "ruff"
+          - "httpx"
+          - "testcontainers"
+        update-types:
+          - "minor"
+          - "patch"
+      # Document-generation libs used by tests/corpus only.
+      doc-gen:
+        patterns:
+          - "python-docx"
+          - "python-pptx"
+          - "openpyxl"
+          - "reportlab"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Base images in all Dockerfiles. Picks up python:3.12-slim-bookworm
   # → next point release, debian:bookworm → debian:bookworm-YYYYMMDD, etc.
@@ -37,6 +83,23 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: scope
+    groups:
+      # All base-image bumps in one PR. Production Dockerfile +
+      # Dockerfile.ui + Dockerfile.test all use python:*-slim-bookworm
+      # (or debian:bookworm) and should advance together.
+      base-images:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    # Don't auto-bump majors — Python 3.14 isn't a stable release as
+    # of 2026-05; the 2026-05-21 PR #23 trying 3.11 → 3.14 failed CI
+    # and Trivy. Major Python bumps need manual review + alignment
+    # across all 3 Dockerfiles (prod uses 3.12, test uses 3.11).
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions used in workflows (actions/checkout, docker/build-push,
   # aquasecurity/trivy-action, github/codeql-action, azure/setup-helm).
@@ -54,3 +117,14 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: scope
+    groups:
+      # Small surface; group all actions in one PR. Includes major
+      # bumps because the Node.js runtime deprecation deadlines (e.g.
+      # Node 20 → 24 by 2026-06-02) require occasional major upgrades.
+      all-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+          - "major"
