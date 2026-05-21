@@ -629,6 +629,19 @@ License file is **never baked into the image**, never committed to source,
 never logged. Document content is never logged (only metadata: size,
 format, page count, `request_id`).
 
+### Vulnerability scanning
+
+Three layers, all wired up:
+
+| Layer | What it covers | Where |
+|---|---|---|
+| ECR scan-on-push (BASIC) | OS packages in the pushed image | AWS console / `aws ecr describe-image-scan-findings` |
+| `apt-get upgrade -y` in every Dockerfile apt stage | Base-image-inherited CVEs at build time | `Dockerfile`, `Dockerfile.ui`, `Dockerfile.test` |
+| Trivy filesystem + config scan in CI | Python deps + Dockerfile / Helm / k8s misconfig | `.github/workflows/security.yml`, SARIF → GitHub code scanning |
+
+Dependabot (`.github/dependabot.yml`) opens weekly Monday PRs for `pip`,
+`docker` (base images), and `github-actions` ecosystems.
+
 For the full security testing matrix, see
 `aidlc-docs/construction/build-and-test/security-test-instructions.md`.
 
