@@ -129,6 +129,20 @@ class Settings(BaseSettings):
     # to the legacy pool if a future workload class misbehaves under fork.
     fork_after_load: bool = Field(default=True)
 
+    # Per-IP rate limit on /convert (token bucket). Disabled by setting
+    # OFFICE_CONVERT_RATE_LIMIT_ENABLED=0. Tokens refill at
+    # rate_limit_per_ip_rpm / 60 per second; bucket capacity = rate_limit_burst.
+    # In-memory only — multi-replica deployments get N x the effective rate.
+    # max_keys bounds memory; LRU eviction after that.
+    rate_limit_enabled: bool = Field(default=True)
+    rate_limit_per_ip_rpm: int = Field(default=30, ge=1, le=10000)
+    rate_limit_burst: int = Field(default=5, ge=1, le=1000)
+    rate_limit_max_keys: int = Field(default=10000, ge=10, le=1000000)
+    # Use the first IP in X-Forwarded-For as the client identifier (ALB
+    # appends original client IP first). Set to 0 when the API is exposed
+    # without a proxy — the header is spoofable.
+    rate_limit_trust_xff: bool = Field(default=True)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

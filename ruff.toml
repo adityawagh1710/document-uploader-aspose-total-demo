@@ -11,10 +11,11 @@ ignore = ["PLR0913"]  # allow many args (FastAPI handlers)
 "tests/unit/test_probe.py" = ["E501"]  # full MIME content-type strings as test fixtures
 "tests/e2e/test_real_conversion.py" = ["E501"]  # long URL fixtures
 "office_convert/csv_input.py" = ["E501"]  # OOXML content-type + relationship URLs in XML constants
-# server.py has FastAPI handlers that naturally hit 50+ statements
-# (multipart parse + format detect + buffer + license + cache + orchestrate + stream).
-# Refactoring into smaller pieces would obscure the request lifecycle.
-"office_convert/server.py" = ["PLR0915"]
+# server.py has FastAPI handlers that naturally hit 50+ statements and many
+# branches (multipart parse + format detect + buffer + license + rate-limit
+# + cache + orchestrate + stream). Refactoring into smaller pieces would
+# obscure the request lifecycle.
+"office_convert/server.py" = ["PLR0915", "PLR0912"]
 
 [format]
 quote-style = "double"

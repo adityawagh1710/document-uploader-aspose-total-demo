@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import shutil
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -33,9 +34,11 @@ from office_convert.errors import (
     InputTooLargeError,
     LicenseExpiredError,
     MissingFileError,
+    RateLimitedError,
 )
 from office_convert.license import LicenseManager
 from office_convert.probe import ACCEPTED_FORMATS, detect_format
+from office_convert.rate_limit import RateLimiter, client_id_for
 from office_convert.types import (
     ConversionOptions,
     Diagnostic,
@@ -102,6 +105,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     health_checker = HealthChecker(s, license_mgr)
     cache = CacheManager(s.cache_dir, s.aspose_version)
     server_sem = asyncio.Semaphore(s.max_jobs)
+    rate_limiter: RateLimiter | None = (
+        RateLimiter(
+            per_minute=s.rate_limit_per_ip_rpm,
+            burst=s.rate_limit_burst,
+            max_keys=s.rate_limit_max_keys,
+        )
+        if s.rate_limit_enabled
+        else None
+    )
     state: dict[str, Any] = {
         "active_jobs": 0,
     }
@@ -138,6 +150,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         headers: dict[str, str] = {}
         if isinstance(exc, BusyError):
             headers["Retry-After"] = str(exc.retry_after_seconds)
+        elif isinstance(exc, RateLimitedError):
+            headers["Retry-After"] = str(exc.retry_after_seconds)
+            headers["X-RateLimit-Limit"] = str(exc.limit)
+            headers["X-RateLimit-Remaining"] = "0"
+            headers["X-RateLimit-Reset"] = str(int(time.time() + exc.retry_after_seconds))
         oc_logging.emit_event(
             "request_failed",
             level="error",
@@ -152,11 +169,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/convert")
     async def convert(
+        request: Request,
         file: Annotated[UploadFile, File(...)],
         options: Annotated[str, Form()] = "{}",
     ) -> StreamingResponse:
         rid = oc_logging.current_request_id.get()
         oc_logging.emit_event("request_received", level="info")
+
+        # Per-IP rate limit (token bucket). Runs BEFORE semaphore acquire so
+        # 429s don't briefly hold a job slot.
+        rate_headers: dict[str, str] = {}
+        if rate_limiter is not None:
+            client_id = client_id_for(request, trust_xff=s.rate_limit_trust_xff)
+            decision = await rate_limiter.check(client_id)
+            rate_headers = {
+                "X-RateLimit-Limit": str(decision.limit),
+                "X-RateLimit-Remaining": str(decision.remaining),
+                "X-RateLimit-Reset": str(decision.reset_epoch_seconds),
+            }
+            if not decision.allowed:
+                oc_logging.emit_event(
+                    "rate_limited",
+                    level="warn",
+                    client_id_hash=hash(client_id) & 0xFFFF,
+                    limit=decision.limit,
+                    retry_after_seconds=decision.retry_after_seconds,
+                )
+                raise RateLimitedError(
+                    retry_after_seconds=decision.retry_after_seconds,
+                    limit=decision.limit,
+                )
 
         # Non-blocking acquire — 503 on contention
         try:
@@ -272,6 +314,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers = {
                 "X-Request-ID": rid,
                 "Content-Type": "application/pdf",
+                **rate_headers,
             }
             return StreamingResponse(
                 stream(),
