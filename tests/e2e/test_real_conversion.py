@@ -40,7 +40,7 @@ def test_simple_pdf_converts(base_url: str, http_client: Any) -> None:
 
     with input_pdf.open("rb") as f:
         response = http_client.post(
-            f"{base_url}/convert",
+            f"{base_url}/v1/convert",
             files={"file": ("simple.pdf", f, "application/pdf")},
             data={"options": "{}"},
         )
@@ -53,7 +53,7 @@ def test_simple_pdf_converts(base_url: str, http_client: Any) -> None:
 @e2e
 def test_unsupported_format_is_rejected(base_url: str, http_client: Any) -> None:
     response = http_client.post(
-        f"{base_url}/convert",
+        f"{base_url}/v1/convert",
         files={"file": ("bad.png", b"\x89PNG\r\n\x1a\n", "image/png")},
     )
     assert response.status_code == 400
@@ -66,7 +66,7 @@ def test_unsupported_format_is_rejected(base_url: str, http_client: Any) -> None
 def test_request_id_correlates_with_response_header(base_url: str, http_client: Any) -> None:
     """The X-Request-ID header must match the request_id in any error body."""
     response = http_client.post(
-        f"{base_url}/convert",
+        f"{base_url}/v1/convert",
         files={"file": ("bad.png", b"\x89PNG", "image/png")},
     )
     assert response.status_code == 400
@@ -82,7 +82,7 @@ def test_docx_converts_if_corpus_present(base_url: str, http_client: Any) -> Non
         pytest.skip(f"corpus fixture missing: {input_docx}; run tests/corpus/_generate.py")
     with input_docx.open("rb") as f:
         response = http_client.post(
-            f"{base_url}/convert",
+            f"{base_url}/v1/convert",
             files={
                 "file": (
                     "small.docx",

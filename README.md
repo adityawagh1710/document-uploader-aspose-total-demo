@@ -72,7 +72,7 @@ docker compose up -d --build
 
 # 3. Hit the endpoints via URL
 curl http://localhost:8080/health
-curl -X POST http://localhost:8080/convert \
+curl -X POST http://localhost:8080/v1/convert \
      -F "file=@tests/corpus/simple.pdf" -o output.pdf
 
 # 4. Run the test suite (separate test image; no Aspose SDK needed)
@@ -342,10 +342,13 @@ docker run ... \
 
 ## HTTP API
 
-### `POST /convert`
+All application endpoints are versioned under `/v1/`. Only `/health` stays
+unversioned (orchestrator probe convention).
+
+### `POST /v1/convert`
 
 ```bash
-curl -X POST http://localhost:8080/convert \
+curl -X POST http://localhost:8080/v1/convert \
     -F "file=@document.docx" \
     -F 'options={"cache":true}' \
     -o output.pdf
@@ -418,7 +421,7 @@ All runtime config via `OFFICE_CONVERT_*` environment variables:
 | `OFFICE_CONVERT_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS` | `300` | Per-chunk render timeout. Hung renders killed and treated as render failures. |
 | `OFFICE_CONVERT_MAX_INPUT_BYTES` | `1073741824` | 1 GB. Inputs above this are rejected at ingest. |
-| `OFFICE_CONVERT_RATE_LIMIT_ENABLED` | `1` | Per-IP rate limit on `POST /convert` (token bucket). Set to `0` to disable. |
+| `OFFICE_CONVERT_RATE_LIMIT_ENABLED` | `1` | Per-IP rate limit on `POST /v1/convert` (token bucket). Set to `0` to disable. |
 | `OFFICE_CONVERT_RATE_LIMIT_PER_IP_RPM` | `30` | Sustained requests/minute/IP ceiling. Refill rate = `rpm / 60` tokens/sec. |
 | `OFFICE_CONVERT_RATE_LIMIT_BURST` | `5` | Token-bucket capacity. Lets short bursts through before throttling kicks in. |
 | `OFFICE_CONVERT_RATE_LIMIT_MAX_KEYS` | `10000` | LRU cap on the per-IP bucket dictionary (bounded memory). |
@@ -447,12 +450,12 @@ conversions:
   CPU jiffies, time since last heartbeat.
 - Green dot if heartbeat is ≤ 6 s old; orange if stale (worker likely hung).
 - Each conversion generates a UUID sent as `X-Request-ID`; the panel polls
-  `GET /jobs/{request_id}/heartbeats` every 1 s and correlates 1:1 with the
+  `GET /v1/jobs/{request_id}/heartbeats` every 1 s and correlates 1:1 with the
   in-flight upload.
 
 Heartbeats are also retrievable programmatically:
 ```bash
-curl http://localhost:8080/jobs/<request_id>/heartbeats
+curl http://localhost:8080/v1/jobs/<request_id>/heartbeats
 ```
 Returns the last 5000 heartbeats per request (30-min TTL).
 
@@ -469,10 +472,10 @@ expiry progressively (per `aidlc-docs/construction/office-converter/functional-d
 | Days remaining | Behavior |
 | -------------- | -------- |
 | `> 7` | Silent. |
-| `4–7` | WARN log per `/convert` request. |
-| `1–3` | ERROR log per `/convert` request. |
-| `0` | `/health` flips to `ready: false`. `/convert` still works today. |
-| `< 0` | `/convert` returns 503 `license_expired`. **No silent fallback to evaluation mode (no watermarked PDFs).** |
+| `4–7` | WARN log per `/v1/convert` request. |
+| `1–3` | ERROR log per `/v1/convert` request. |
+| `0` | `/health` flips to `ready: false`. `/v1/convert` still works today. |
+| `< 0` | `/v1/convert` returns 503 `license_expired`. **No silent fallback to evaluation mode (no watermarked PDFs).** |
 
 **To renew**: request a new temp license from Aspose, replace the
 bind-mounted `.lic` in place. The service re-reads on every request — **no
@@ -508,7 +511,7 @@ Aspose render time itself is unchanged — that's still the dominant cost.
 | `/health` 503 with `worker_binary_missing` | C++ worker didn't build | Re-check builder-stage logs; verify the SDK extracted to `/opt/aspose-sdk/` |
 | `/health` 503 with `license_path_missing` | Bind-mount missing | Add `-v ./license.lic:/aspose/license.lic:ro` |
 | `/health` 503 with `license_expired` | License past expiry date | Renew the temp license |
-| All `/convert` requests return 500 `render_failed` with "SDK not linked" | Real Aspose calls still commented out in `worker_cpp/formats/*.cpp` | Uncomment the real Aspose API calls per the inline comment blocks; rebuild |
+| All `/v1/convert` requests return 500 `render_failed` with "SDK not linked" | Real Aspose calls still commented out in `worker_cpp/formats/*.cpp` | Uncomment the real Aspose API calls per the inline comment blocks; rebuild |
 | 500 `subdivision_floor_exceeded` | A single page exceeds 2 GB RAM (e.g. PPTX with huge embedded media) | Reduce input complexity; documented v1 limitation |
 | 503 `busy` on every request | `max_jobs` exhausted | Raise `OFFICE_CONVERT_MAX_JOBS` (mind host RAM headroom; XLSX is fork-unsafe so each worker independently loads the workbook — see `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE` cap) |
 | HTTP client times out at ~30 s on large conversions | Default client timeout too short | Set client timeout to ≥ 15 minutes |
@@ -577,7 +580,7 @@ workflow above avoids these prerequisites.
 
 A separate test suite under `tests/e2e/` uses
 [Testcontainers](https://testcontainers.com/) to bring up the real container
-and exercise `/convert` over real HTTP. These catch what in-process tests
+and exercise `/v1/convert` over real HTTP. These catch what in-process tests
 cannot: Dockerfile bugs, real Aspose linkage, real qpdf concat at real
 sizes, real `prlimit` enforcement.
 

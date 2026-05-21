@@ -53,7 +53,7 @@ def _post_pdf(client: TestClient, sample_pdf: Path, *, xff: str) -> httpx.Respon
     """Convenience: POST sample_pdf with a synthetic X-Forwarded-For."""
     with sample_pdf.open("rb") as f:
         return client.post(
-            "/convert",
+            "/v1/convert",
             files={"file": ("sample.pdf", f, "application/pdf")},
             data={"options": "{}"},
             headers={"X-Forwarded-For": xff},

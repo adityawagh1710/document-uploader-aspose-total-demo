@@ -8,7 +8,7 @@ flowchart TD
 
     subgraph CONTAINER["Docker Container (4GB RAM + 2GB Swap)"]
         subgraph PYTHON["Python Orchestrator (FastAPI)"]
-            Server["server.py<br/>POST /convert"]
+            Server["server.py<br/>POST /v1/convert"]
             FormatDetect["Format Detection<br/>(Magic bytes + OLE2 streams)"]
             ProbeLite["probe_lite.py<br/>(ZIP metadata / size estimate)"]
             Probe["Full Aspose Probe<br/>(fallback only)"]
@@ -61,7 +61,7 @@ sequenceDiagram
     participant W as C++ Workers (×4)
     participant Q as qpdf
 
-    C->>S: POST /convert (multipart file)
+    C->>S: POST /v1/convert (multipart file)
     S->>D: detect_format(magic_bytes, OLE2 streams)
     D-->>S: format (docx/pptx/xlsx/pdf)
 

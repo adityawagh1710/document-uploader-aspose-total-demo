@@ -30,11 +30,11 @@ import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 API_URL = os.environ.get("API_URL", "http://localhost:8080")
-CONVERT_URL = f"{API_URL}/convert"
-HEALTH_URL = f"{API_URL}/health"
-HEARTBEATS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/heartbeats
-PROGRESS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/progress
-TIMINGS_URL = f"{API_URL}/jobs"  # /jobs/{request_id}/timings
+CONVERT_URL = f"{API_URL}/v1/convert"
+HEALTH_URL = f"{API_URL}/health"  # unversioned by convention (orchestrator probe)
+HEARTBEATS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/heartbeats
+PROGRESS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/progress
+TIMINGS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/timings
 
 # Shared HTTP session for all API calls. Fragments fire every 1-4 seconds
 # and each tick makes multiple calls (/health, /stats, /workers,
@@ -918,7 +918,7 @@ def _docker_monitor() -> dict:
         while True:
             new_stats = dict(_DEFAULT_DOCKER_STATS)
             try:
-                r = _SESSION.get(f"{API_URL}/stats", timeout=2)
+                r = _SESSION.get(f"{API_URL}/v1/stats", timeout=2)
                 if r.ok:
                     s = r.json()
                     cur_usec = int(s["cpu_usage_usec"])
@@ -951,7 +951,7 @@ def _docker_monitor() -> dict:
 
             new_workers: list[dict] = []
             try:
-                r = _SESSION.get(f"{API_URL}/workers", timeout=2)
+                r = _SESSION.get(f"{API_URL}/v1/workers", timeout=2)
                 if r.ok:
                     fresh_workers = r.json().get("workers", [])
                     current_pids: set[int] = set()
@@ -2436,7 +2436,7 @@ if st.session_state.history:
         use_container_width=True,
     ):
         try:
-            resp = _SESSION.delete(f"{API_URL}/cache", timeout=10).json()
+            resp = _SESSION.delete(f"{API_URL}/v1/cache", timeout=10).json()
             if not resp.get("enabled"):
                 st.toast("Cache is disabled on this deployment.", icon="ℹ️")
             else:
