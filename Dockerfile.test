@@ -63,7 +63,7 @@ RUN uv pip install --system --no-cache \
         "python-docx==1.1.*" \
         "python-pptx==1.0.*" \
         "openpyxl==3.1.*" \
-        "reportlab==4.2.*" \
+        "reportlab>=4.4,<4.6" \
         "types-aiofiles" \
         "testcontainers==4.8.*"
 

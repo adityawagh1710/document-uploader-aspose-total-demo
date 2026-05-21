@@ -37,7 +37,7 @@ dev = [
     "python-docx==1.1.*",
     "python-pptx==1.0.*",
     "openpyxl==3.1.*",
-    "reportlab>=4.2,<4.6",
+    "reportlab>=4.4,<4.6",
     "types-aiofiles",
 ]
 # End-to-end test extra: requires a Docker daemon at test time. Install with
