@@ -1,6 +1,6 @@
 # office-convert
 
-[![python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
+[![python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![fastapi](https://img.shields.io/badge/fastapi-0.115-009688.svg)](https://fastapi.tiangolo.com/)
 [![aspose.total](https://img.shields.io/badge/aspose.total-c%2B%2B%2026.4-ff4081.svg)](https://products.aspose.com/total/cpp/)
 [![qpdf](https://img.shields.io/badge/qpdf-streaming%20merge-orange.svg)](https://qpdf.sourceforge.io/)

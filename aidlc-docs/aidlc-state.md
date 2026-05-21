@@ -802,3 +802,86 @@ Drift dimension is now ZERO — both deployments on `f3c7bc6`, matching the only
 - Net: disk went 162 GB → 150 GB used (12 GB reclaimed). Next API build cold (~10 min vs ~3-5 min with cache).
 
 **Cost posture**: ALB back up, ~$18.40/mo accruing again. Memory `project_dev_deployment_status.md` updated.
+
+
+### Dependabot merge sweep + Python 3.12 alignment + Dockerfile.test dedup + dev05 re-roll (2026-05-21T22:17 IST)
+
+Long session ending with main HEAD `388129c` and dev05 re-rolled to match. Three intertwined strands:
+
+**1. Python 3.11 → 3.12 alignment cascade**
+
+The `chore/dockerfile-test-python-312` PR (`17a725e`) merged with the intention of "small one-line bump matching prod". It exposed a latent reportlab 4.2.x + Python 3.12 incompatibility:
+
+```
+File ".../reportlab/lib/rl_safe_eval.py", line 12, in <module>
+    haveNameConstant = hasattr(ast,'NameConstant')
+DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14
+```
+
+Why it was latent: pytest config has `filterwarnings = ["error"]`, which promotes DeprecationWarning to an exception. Silent on 3.11; failure on 3.12. 6 tests broke (`test_qpdf`, `test_orchestrator`, `test_qpdf_concat_pbt` — all transitively import reportlab via corpus fixtures).
+
+Fix via `chore/reportlab-py312-compat` PR (`4f9db17`): bumped `reportlab==4.2.*` → `>=4.4,<4.6` in both `Dockerfile.test` (inline pin) and `pyproject.toml`. Verified empirically with `docker run python:3.12-slim-bookworm` + `pip install reportlab==4.X.*` + `python -W error::DeprecationWarning -c "import reportlab.lib.utils"`:
+- 4.2.x → DeprecationWarning (broken)
+- 4.4.x → clean
+- 4.5.x → clean
+
+**Lesson**: Python-version PRs need `make qa` in the verification loop before merging, regardless of how trivial the diff looks. The 3.11→3.12 change was a single Dockerfile line but introduced a downstream test break that took a follow-up PR to resolve.
+
+**2. Dockerfile.test dedup**
+
+The reportlab incident exposed a longstanding duplication: `Dockerfile.test` hardcoded a parallel inline pin list (20+ packages) that dependabot couldn't see. Dependabot scans pyproject.toml only, so bumps to pyproject ranges left Dockerfile.test pins stale. Bit twice in May 2026:
+- tier 1 perf bundle (2026-05-20): `pytest-xdist` had to be added to both files manually.
+- reportlab 4.2.x (2026-05-21): pyproject upper bound bumped via dependabot, Dockerfile.test inline pin stayed.
+
+`chore/dedup-test-deps` PR (`388129c`) replaced the inline list with `uv pip install --system --no-cache -e ".[dev,e2e]"`. Layer caching preserved via a stub-package + stub-README trick:
+
+```dockerfile
+RUN mkdir -p office_convert \
+    && touch office_convert/__init__.py office_convert/py.typed README.md
+COPY pyproject.toml ruff.toml /app/
+RUN uv pip install --system --no-cache -e ".[dev,e2e]"
+COPY office_convert/ /app/office_convert/
+COPY tests/ /app/tests/
+```
+
+Hatchling validates: (a) `[tool.hatch.build.targets.wheel] packages` dir, (b) `force-include` targets, (c) `[project] readme` file. The three `touch` lines satisfy all three; real files overwrite stubs in the next COPY. The editable install's `.pth` pointer survives the swap. See [[reference-dockerfile-test-dedup-pattern]] for the full pattern + history.
+
+Coordinated pyproject.toml changes for the dedup to work:
+- `requires-python = ">=3.11,<3.12"` → `">=3.12,<3.13"` (otherwise `uv pip install -e .` refuses on 3.12)
+- `[tool.mypy] python_version = "3.11"` → `"3.12"`
+- classifier `Python :: 3.11` → `Python :: 3.12`
+
+Verification: `make qa` → 147 passed, 1 skipped in 66.7s (same wall time as the pre-dedup pattern; the cache trick works).
+
+**Rebase saga**: the dedup PR conflicted with the reportlab fix PR because both touched `Dockerfile.test` + `pyproject.toml`. Resolved via rebase onto main with the Dockerfile.test conflict resolved by keeping the dedup branch's full-block deletion (the reportlab inline pin edit was inside that deleted block, correctly subsumed). pyproject.toml auto-merged (identical target value `reportlab>=4.4,<4.6` on both sides). Force-pushed with `--force-with-lease`.
+
+**3. Dependabot merge sweep + dev05 re-roll**
+
+9 dependabot PRs opened on the first scan (5 pip + 1 docker + 3 github-actions). 8 merged cleanly. 1 closed: `#23` (python `3.12 → 3.14`) — failed CI because pinned deps (pydantic 2.9.*, etc.) lack cp314 wheels; superseded by the 3.11→3.12 alignment PR which addressed the actual mismatch.
+
+Grouping config (`chore/dependabot-groups` → merged) collapses future scans into ≤5 PRs per week:
+- pip: `fastapi-stack`, `test-tooling`, `doc-gen` groups (minor/patch only; majors stay individual)
+- docker: `base-images` group + `ignore: semver-major`
+- github-actions: `all-actions` group including majors (Node deprecations like 20→24 by 2026-06-02 require periodic major bumps)
+
+dev05 re-roll: `f3c7bc6` → `388129c` via `kubectl set image`. **Image content is byte-identical** for API+UI between those SHAs — only `Dockerfile.test` + `pyproject.toml` differ. The roll is hygienic (fresh ReplicaSets, ECR tag matches main HEAD) rather than a code rollout. ECR cleanup deleted `f3c7bc6` from both repos; drift dimension is zero again (one tag per repo).
+
+**4. ECR vulnerability scan analysis**
+
+User asked "Why ECR scanning and vulnerabilities are not fixed yet?". Snapshot on `388129c`:
+
+| Image | HIGH | MEDIUM | Fixable | Upstream-unfixed |
+|---|---|---|---|---|
+| office-convert | 5 | 9 | **0** | 14 |
+| office-convert-ui | 0 | 3 | **0** | 3 |
+
+All remaining findings are upstream-unfixed (curl, expat, libxml2, nss, krb5, libgcrypt20). Comparing vs 2026-05-19 memory snapshot: `gnutls28` (6-7 CVEs incl. 2 CRITICAL) is GONE — Debian shipped the fix and apt-get upgrade picked it up. CRITICAL count: 2 → 0. The "wait for Debian + redeploy" cycle is working.
+
+Also ran a Ubuntu 24.04 / Ubuntu Pro / Wolfi swap analysis. Recommendation: **don't swap**. Three reasons:
+1. None of the 14+3 unfixed CVEs are reachable in our threat model (no external XML input; no outbound HTTPS during conversion; ALB CIDR-allowlisted).
+2. apt-get upgrade cycle continues to work as designed.
+3. Aspose worker binaries against an untested distro is non-zero risk; 1-2 day test tail for a non-blocking signal.
+
+Full analysis preserved in [[reference-image-security-scanning]] §"Ubuntu 24.04 swap analysis".
+
+**Local docker housekeeping**: rebuilt API + UI images (all cache hits after the initial rebuild post-dedup), pruned build cache, deleted dangling layers. ~12 GB host disk reclaimed cumulatively across the session.
