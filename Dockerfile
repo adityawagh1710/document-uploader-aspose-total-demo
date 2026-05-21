@@ -75,7 +75,7 @@ RUN cmake -S worker_cpp -B build \
 # =============================================================================
 # Stage 2: runtime — slim Python + qpdf + the worker binary + Aspose .so files
 # =============================================================================
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 
 # Runtime deps. libfontconfig1 is required by Aspose.Words rendering;
 # libfreetype6 + libpng16 + libxml2 satisfy other Aspose transitive needs.
