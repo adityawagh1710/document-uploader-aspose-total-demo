@@ -1,0 +1,56 @@
+version: 2
+
+# Weekly PRs to keep deps + base images + GitHub Actions current. Pairs
+# with the Trivy job in .github/workflows/security.yml — Trivy detects
+# CVEs, dependabot opens the PR to fix them.
+updates:
+  # Python deps declared in pyproject.toml ([project.dependencies] +
+  # [project.optional-dependencies].dev / .e2e).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+
+  # Base images in all Dockerfiles. Picks up python:3.12-slim-bookworm
+  # → next point release, debian:bookworm → debian:bookworm-YYYYMMDD, etc.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+
+  # GitHub Actions used in workflows (actions/checkout, docker/build-push,
+  # aquasecurity/trivy-action, github/codeql-action, azure/setup-helm).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope

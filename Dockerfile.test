@@ -19,7 +19,14 @@ FROM python:3.11-slim-bookworm
 
 # System deps: qpdf for tests, util-linux for prlimit references in tests,
 # build-essential because some Python deps compile native bits.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# `apt-get upgrade` picks up the latest Debian Bookworm point-release fixes
+# for the base image (gnutls, expat, libxml2, etc.) so ECR scan findings on
+# this image stay aligned with Dockerfile + Dockerfile.ui. See
+# reference_image_security_scanning.md.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         qpdf \
         util-linux \
         build-essential \
