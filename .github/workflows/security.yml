@@ -1,0 +1,75 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Monday 07:00 UTC — picks up newly-disclosed CVEs against
+    # pinned deps that didn't change since last PR.
+    - cron: "0 7 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  security-events: write  # upload SARIF to GitHub code scanning
+
+jobs:
+  trivy-fs:
+    name: trivy filesystem (deps + iac)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Filesystem scan: Python deps in pyproject.toml + Dockerfile.test
+      # inline pins. ignore-unfixed=true matches our policy (we already
+      # patch what Debian ships; unfixed CVEs are tracked manually —
+      # see reference_image_security_scanning.md).
+      - name: Trivy filesystem (vuln)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-fs.sarif
+          # Skip dirs not worth scanning. corpus + .ruff_cache are bulky
+          # and have no security-relevant content.
+          skip-dirs: corpus,.ruff_cache,.pytest_cache,.mypy_cache,.venv
+
+      - name: Upload Trivy filesystem SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      # Config scan: Dockerfiles + Helm chart + k8s manifests. Surfaces
+      # misconfigurations (root user, missing healthchecks, broad caps).
+      # exit-code=0 — informational only, don't block PRs on style nits.
+      - name: Trivy config (Dockerfile + Helm + k8s)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          format: sarif
+          output: trivy-config.sarif
+          skip-dirs: corpus,.ruff_cache,.pytest_cache,.mypy_cache,.venv
+
+      - name: Upload Trivy config SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
