@@ -11,6 +11,12 @@ from enum import StrEnum
 from typing import Any, Literal
 
 FormatName = Literal["docx", "pptx", "xlsx", "pdf"]
+# Wider type returned by probe.detect_format: includes formats that don't go
+# through an Aspose worker. Currently only ODG (handled by LibreOffice). The
+# orchestrator + workers still operate on FormatName; the server routes
+# `DispatchFormat \ FormatName` to the libreoffice path before the
+# orchestrator is even constructed.
+DispatchFormat = Literal["docx", "pptx", "xlsx", "pdf", "odg"]
 
 
 class FailureClass(StrEnum):

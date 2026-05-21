@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from office_convert.errors import InputUnprocessableError, UnsupportedFormatError
-from office_convert.types import FormatName, ProbeResult
+from office_convert.types import DispatchFormat, FormatName, ProbeResult
 
 if TYPE_CHECKING:
     from office_convert.config import Settings
@@ -46,6 +46,7 @@ ACCEPTED_UPLOAD_FORMATS: tuple[str, ...] = (
     "odt",
     "ods",
     "odp",
+    "odg",
 )
 
 PDF_MAGIC = b"%PDF-"
@@ -65,11 +66,25 @@ OOXML_CONTENT_TYPE_TO_FORMAT: dict[str, FormatName] = {
 
 # ODF files also start with ZIP magic. Per ODF spec, the first ZIP entry is
 # an uncompressed "mimetype" file whose contents identify the document type.
-# Aspose handles ODT/ODS/ODP natively via the docx/xlsx/pptx workers respectively.
-ODF_MIMETYPE_TO_FORMAT: dict[str, FormatName] = {
+# Aspose handles ODT/ODS/ODP natively via the docx/xlsx/pptx workers; ODG
+# is routed to the LibreOffice fallback path (Aspose.Total C++ has no
+# library that renders drawing pages).
+ODF_MIMETYPE_TO_FORMAT: dict[str, DispatchFormat] = {
     "application/vnd.oasis.opendocument.text": "docx",
     "application/vnd.oasis.opendocument.spreadsheet": "xlsx",
     "application/vnd.oasis.opendocument.presentation": "pptx",
+    "application/vnd.oasis.opendocument.graphics": "odg",
+}
+
+# ODF subtypes neither Aspose.Total C++ nor LibreOffice's --convert-to-pdf
+# path produces meaningful PDFs for. Detected here so we can reject them
+# at the gate with a precise message — without this dict the files
+# default-route to the docx worker and surface as confusing
+# `FileCorruptedException` errors. (.odf is a standalone MathML formula;
+# .odb is a Base database container — neither has rendering semantics.)
+UNRENDERABLE_ODF_SUBTYPES: dict[str, str] = {
+    "application/vnd.oasis.opendocument.formula": "OpenDocument Formula (.odf)",
+    "application/vnd.oasis.opendocument.base": "OpenDocument Base (.odb)",
 }
 
 # CFB directory entries store stream names as UTF-16LE. Search the first
@@ -106,7 +121,7 @@ def detect_format(
     *,
     source_path: Path | None = None,
     filename: str | None = None,
-) -> FormatName:
+) -> DispatchFormat:
     """Detect format by magic bytes, plus OOXML/OLE2 disambiguation.
 
     For OOXML formats (DOCX/PPTX/XLSX), the ZIP magic alone isn't enough.
@@ -194,7 +209,7 @@ def _classify_ole2(source_path: Path | None, filename: str | None) -> FormatName
     )
 
 
-def _inspect_ooxml_path(path: Path) -> FormatName:
+def _inspect_ooxml_path(path: Path) -> DispatchFormat:
     """Classify a ZIP-magic document on disk as OOXML or ODF.
 
     ODF: read the `mimetype` entry (uncompressed first entry per ODF spec)
@@ -208,6 +223,15 @@ def _inspect_ooxml_path(path: Path) -> FormatName:
                 mimetype = zf.read("mimetype").decode("utf-8", errors="replace").strip()
                 if mimetype in ODF_MIMETYPE_TO_FORMAT:
                     return ODF_MIMETYPE_TO_FORMAT[mimetype]
+                if mimetype in UNRENDERABLE_ODF_SUBTYPES:
+                    raise UnsupportedFormatError(
+                        detected_magic=mimetype,
+                        accepted=list(ACCEPTED_UPLOAD_FORMATS),
+                        reason=(
+                            f"{UNRENDERABLE_ODF_SUBTYPES[mimetype]} is not "
+                            f"supported by Aspose.Total C++"
+                        ),
+                    )
             if "[Content_Types].xml" in names:
                 content = zf.read("[Content_Types].xml").decode("utf-8", errors="replace")
                 return _classify_by_content_types(content)

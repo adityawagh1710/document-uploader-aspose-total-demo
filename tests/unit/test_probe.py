@@ -195,3 +195,70 @@ def test_detect_ole2_stream_takes_precedence_over_misleading_filename(tmp_path) 
     p = _build_ole2("WordDocument", tmp_path, name="suspicious.xls")
     head = p.read_bytes()[:512]
     assert detect_format(head, source_path=p, filename="suspicious.xls") == "docx"
+
+
+def _build_odf(mimetype: str, tmp_path: Path, name: str) -> Path:
+    """Build a minimal ODF zip with the given mimetype as the first
+    uncompressed entry (per ODF 1.2 §3.3)."""
+    path = tmp_path / name
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        mi = zipfile.ZipInfo("mimetype")
+        mi.compress_type = zipfile.ZIP_STORED
+        zf.writestr(mi, mimetype.encode("utf-8"))
+        zf.writestr("META-INF/manifest.xml", "<manifest/>")
+    return path
+
+
+def test_detect_odt_routes_to_docx(tmp_path: Path) -> None:
+    p = _build_odf("application/vnd.oasis.opendocument.text", tmp_path, "sample.odt")
+    head = p.read_bytes()[:512]
+    assert detect_format(head, source_path=p, filename="sample.odt") == "docx"
+
+
+def test_detect_ods_routes_to_xlsx(tmp_path: Path) -> None:
+    p = _build_odf("application/vnd.oasis.opendocument.spreadsheet", tmp_path, "sample.ods")
+    head = p.read_bytes()[:512]
+    assert detect_format(head, source_path=p, filename="sample.ods") == "xlsx"
+
+
+def test_detect_odp_routes_to_pptx(tmp_path: Path) -> None:
+    p = _build_odf("application/vnd.oasis.opendocument.presentation", tmp_path, "sample.odp")
+    head = p.read_bytes()[:512]
+    assert detect_format(head, source_path=p, filename="sample.odp") == "pptx"
+
+
+def test_detect_odg_routes_to_libreoffice_fallback(tmp_path: Path) -> None:
+    """ODG is no longer rejected at the gate — it routes to a 'odg'
+    dispatch format that the server hands to LibreOffice (Aspose.Total
+    C++ has no library that renders drawing pages, but soffice does)."""
+    p = _build_odf("application/vnd.oasis.opendocument.graphics", tmp_path, "sample.odg")
+    head = p.read_bytes()[:512]
+    assert detect_format(head, source_path=p, filename="sample.odg") == "odg"
+
+
+@pytest.mark.parametrize(
+    ("mimetype", "ext", "expected_subtype"),
+    [
+        ("application/vnd.oasis.opendocument.formula", "odf", "OpenDocument Formula"),
+        ("application/vnd.oasis.opendocument.base", "odb", "OpenDocument Base"),
+    ],
+)
+def test_detect_rejects_unrenderable_odf_subtype(
+    tmp_path: Path, mimetype: str, ext: str, expected_subtype: str
+) -> None:
+    """ODF (formula)/ODB get rejected with a precise message at the gate.
+
+    Neither has a rendering semantic — .odf is a standalone MathML
+    formula and .odb is a Base database container. Letting them
+    default-route to the docx worker surfaces as a confusing
+    `FileCorruptedException` at render time.
+    """
+    p = _build_odf(mimetype, tmp_path, f"sample.{ext}")
+    head = p.read_bytes()[:512]
+    with pytest.raises(UnsupportedFormatError) as exc:
+        detect_format(head, source_path=p, filename=f"sample.{ext}")
+    assert exc.value.detected_magic == mimetype
+    assert exc.value.reason is not None
+    assert expected_subtype in exc.value.reason
+    # And the error's serialized detail dict carries the reason for the client.
+    assert exc.value.as_detail_dict()["reason"] == exc.value.reason

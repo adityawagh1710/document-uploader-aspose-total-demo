@@ -97,6 +97,8 @@ RUN apt-get update \
         ca-certificates \
         fontconfig \
         fonts-dejavu-core \
+        libreoffice-core-nogui \
+        libreoffice-draw-nogui \
     && rm -rf /var/lib/apt/lists/* \
     && fc-cache -f
 

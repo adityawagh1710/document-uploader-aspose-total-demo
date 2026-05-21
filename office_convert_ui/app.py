@@ -1041,6 +1041,37 @@ def get_progress(request_id: str) -> dict:
         return {}
 
 
+def _format_diagnostic(status_code: int, body: dict) -> str:
+    """Render the server's JSON Diagnostic as a single human-readable line.
+
+    Server emits {failure_class, request_id, detail: {...}}. `failure_class`
+    alone is a slug ("unsupported_format", "render_failed"); the actionable
+    text — the Aspose exception, the rejected ODF subtype, the size ceiling
+    — lives in `detail`. Pick the first useful field and tack it onto the
+    failure class so the user sees *why* in the UI without reading logs.
+    """
+    failure_class = body.get("failure_class", "unknown")
+    detail = body.get("detail") or {}
+    text = (
+        detail.get("reason")
+        or detail.get("message")
+        or (detail.get("stderr_tail") or "").strip()
+    )
+    if not text:
+        if "size_bytes" in detail and "ceiling_bytes" in detail:
+            text = f"{detail['size_bytes']} > {detail['ceiling_bytes']} byte limit"
+        elif "retry_after_seconds" in detail:
+            text = f"retry after {detail['retry_after_seconds']}s"
+        elif "expired_on" in detail and detail["expired_on"]:
+            text = f"expired on {detail['expired_on']}"
+    if text:
+        # Truncate runaway stderr tails so the Streamlit toast stays readable.
+        if len(text) > 240:
+            text = text[:237] + "..."
+        return f"Error {status_code} ({failure_class}): {text}"
+    return f"Error {status_code}: {failure_class}"
+
+
 def do_conversion(file_name, file_bytes, request_id):
     """Blocking conversion. Returns (data, elapsed, error)."""
     start = time.time()
@@ -1058,7 +1089,7 @@ def do_conversion(file_name, file_bytes, request_id):
                 return (
                     None,
                     time.time() - start,
-                    f"Error {resp.status_code}: {body.get('failure_class', 'unknown')}",
+                    _format_diagnostic(resp.status_code, body),
                 )
             except Exception:
                 return None, time.time() - start, f"Error {resp.status_code}"
@@ -2183,8 +2214,20 @@ if _snap_error and _snap_error["ts"] > st.session_state.seen_error_ts:
     st.session_state.seen_error_ts = _snap_error["ts"]
 
 uploaded_file = st.file_uploader(
-    "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT, CSV, RTF, ODT, ODS, ODP)",
-    type=["docx", "pptx", "xlsx", "pdf", "doc", "xls", "ppt", "csv", "rtf", "odt", "ods", "odp"],
+    "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT, CSV, RTF, ODT, ODS, ODP, "
+    "ODG — ODF/ODB upload but are rejected: no rendering library for them)",
+    # ODG goes through the LibreOffice fallback path (Aspose.Total C++
+    # can't render drawing pages). ODF/ODB are still accepted at the
+    # picker so the server's per-subtype rejection message reaches the UI
+    # toast instead of Streamlit's generic "files of type X are not
+    # allowed" — see _format_diagnostic.
+    type=[
+        "docx", "pptx", "xlsx", "pdf",
+        "doc", "xls", "ppt",
+        "csv", "rtf",
+        "odt", "ods", "odp", "odg",
+        "odf", "odb",
+    ],
 )
 
 
