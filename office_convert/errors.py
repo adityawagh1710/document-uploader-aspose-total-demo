@@ -145,3 +145,16 @@ class BusyError(ConversionError):
 
     def as_detail_dict(self) -> dict[str, Any]:
         return {"retry_after_seconds": self.retry_after_seconds}
+
+
+class RateLimitedError(ConversionError):
+    failure_class = FailureClass.RATE_LIMITED
+    http_status = 429
+
+    def __init__(self, *, retry_after_seconds: int, limit: int) -> None:
+        super().__init__(f"rate limit exceeded ({limit} req/min/IP)")
+        self.retry_after_seconds = retry_after_seconds
+        self.limit = limit
+
+    def as_detail_dict(self) -> dict[str, Any]:
+        return {"retry_after_seconds": self.retry_after_seconds, "limit": self.limit}

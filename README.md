@@ -5,7 +5,7 @@
 [![aspose.total](https://img.shields.io/badge/aspose.total-c%2B%2B%2026.4-ff4081.svg)](https://products.aspose.com/total/cpp/)
 [![qpdf](https://img.shields.io/badge/qpdf-streaming%20merge-orange.svg)](https://qpdf.sourceforge.io/)
 [![docker](https://img.shields.io/badge/docker-required-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/)
-[![tests](https://img.shields.io/badge/tests-120-brightgreen.svg)](#tldr--quickstart)
+[![tests](https://img.shields.io/badge/tests-134-brightgreen.svg)](#tldr--quickstart)
 [![type checked](https://img.shields.io/badge/type%20checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
 [![lint](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://github.com/astral-sh/ruff)
 [![status](https://img.shields.io/badge/status-v1%20local%20PoC-yellow.svg)](#)
@@ -375,6 +375,7 @@ chunked transfer encoding. Headers:
 | 500 | `render_failed` | Transient render error |
 | 500 | `subdivision_floor_exceeded` | Single page OOMs even at 2 GB RAM |
 | 500 | `merge_failed` | qpdf concat failed |
+| 429 | `rate_limited` | Per-IP token bucket exhausted (`Retry-After` + `X-RateLimit-*` headers set) |
 | 503 | `license_expired` | Aspose license past expiry |
 | 503 | `busy` | At `max_jobs` capacity (`Retry-After` header set) |
 
@@ -417,6 +418,11 @@ All runtime config via `OFFICE_CONVERT_*` environment variables:
 | `OFFICE_CONVERT_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS` | `300` | Per-chunk render timeout. Hung renders killed and treated as render failures. |
 | `OFFICE_CONVERT_MAX_INPUT_BYTES` | `1073741824` | 1 GB. Inputs above this are rejected at ingest. |
+| `OFFICE_CONVERT_RATE_LIMIT_ENABLED` | `1` | Per-IP rate limit on `POST /convert` (token bucket). Set to `0` to disable. |
+| `OFFICE_CONVERT_RATE_LIMIT_PER_IP_RPM` | `30` | Sustained requests/minute/IP ceiling. Refill rate = `rpm / 60` tokens/sec. |
+| `OFFICE_CONVERT_RATE_LIMIT_BURST` | `5` | Token-bucket capacity. Lets short bursts through before throttling kicks in. |
+| `OFFICE_CONVERT_RATE_LIMIT_MAX_KEYS` | `10000` | LRU cap on the per-IP bucket dictionary (bounded memory). |
+| `OFFICE_CONVERT_RATE_LIMIT_TRUST_XFF` | `1` | Use the first IP in `X-Forwarded-For` as the client identifier (ALB pattern). Set to `0` if exposed without a proxy — the header is spoofable. |
 
 ### Pool mode & observability knobs
 

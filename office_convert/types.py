@@ -25,6 +25,7 @@ class FailureClass(StrEnum):
     MERGE_FAILED = "merge_failed"
     LICENSE_EXPIRED = "license_expired"
     BUSY = "busy"
+    RATE_LIMITED = "rate_limited"
 
 
 class LicenseState(StrEnum):
