@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import aiofiles
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from office_convert import logging as oc_logging
@@ -167,7 +167,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers=headers,
         )
 
-    @app.post("/convert")
+    # All routes except /health live under /v1 to keep the API contract
+    # versionable. /health stays at root by convention so K8s probes and
+    # the AWS ALB target group health check don't break on a version bump.
+    v1 = APIRouter(prefix="/v1")
+
+    @v1.post("/convert")
     async def convert(
         request: Request,
         file: Annotated[UploadFile, File(...)],
@@ -332,27 +337,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_code = 200 if snap["ready"] else 503
         return JSONResponse(status_code=status_code, content=snap)
 
-    @app.get("/jobs/{request_id}/heartbeats")
+    @v1.get("/jobs/{request_id}/heartbeats")
     async def get_heartbeats(request_id: str) -> JSONResponse:
         from office_convert.heartbeats import heartbeat_store
 
         beats = heartbeat_store().get(request_id)
         return JSONResponse(content={"request_id": request_id, "heartbeats": beats})
 
-    @app.get("/jobs/{request_id}/timings")
+    @v1.get("/jobs/{request_id}/timings")
     async def get_timings(request_id: str) -> JSONResponse:
         from office_convert.timings import timing_store
 
         events = timing_store().get(request_id)
         return JSONResponse(content={"request_id": request_id, "timings": events})
 
-    @app.get("/stats")
+    @v1.get("/stats")
     async def container_stats() -> JSONResponse:
         from office_convert.container_stats import read_container_stats
 
         return JSONResponse(content=read_container_stats())
 
-    @app.delete("/cache")
+    @v1.delete("/cache")
     async def clear_cache() -> JSONResponse:
         """Wipe the on-disk conversion cache. No-op success (200) when the
         cache is disabled (no OFFICE_CONVERT_CACHE_DIR set) — the caller
@@ -361,13 +366,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with the rest of the API surface."""
         return JSONResponse(content=cache.clear())
 
-    @app.get("/workers")
+    @v1.get("/workers")
     async def container_workers() -> JSONResponse:
         from office_convert.container_stats import list_workers
 
         return JSONResponse(content={"workers": list_workers()})
 
-    @app.get("/jobs/{request_id}/progress")
+    @v1.get("/jobs/{request_id}/progress")
     async def get_progress(request_id: str) -> JSONResponse:
         from office_convert.job_progress import job_progress_store
 
@@ -387,6 +392,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return JSONResponse(content={"request_id": request_id, **jp.to_dict()})
 
+    app.include_router(v1)
     return app
 
 

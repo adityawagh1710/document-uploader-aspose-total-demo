@@ -38,7 +38,7 @@ This file is the source of truth for that reality.
 │  Service: office-convert (LoadBalancer, scheme=internal NLB)                  │
 │    → Pod: office-convert-* (FastAPI orchestrator, :8080)                      │
 │      • uvicorn office_convert.server:app                                      │
-│      • /health, /convert, /jobs/{id}, /jobs/{id}/heartbeats, /timings, ...    │
+│      • /health (unversioned probe); /v1/convert, /v1/jobs/{id}/..., /v1/stats │
 │      • max_jobs: 1 (one in-flight conversion per pod)                         │
 │      • parallel: 2 (two C++ chunk workers per conversion)                     │
 │      • fork-after-load enabled (DOCX/PPTX/PDF); XLSX uses legacy pool         │

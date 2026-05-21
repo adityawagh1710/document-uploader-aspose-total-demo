@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 def test_convert_returns_pdf(client: TestClient, sample_pdf: Path) -> None:
     with sample_pdf.open("rb") as f:
         response = client.post(
-            "/convert",
+            "/v1/convert",
             files={"file": ("sample.pdf", f, "application/pdf")},
             data={"options": "{}"},
         )
@@ -32,7 +32,7 @@ def test_convert_returns_pdf(client: TestClient, sample_pdf: Path) -> None:
 
 def test_convert_rejects_unsupported_format(client: TestClient) -> None:
     response = client.post(
-        "/convert",
+        "/v1/convert",
         files={"file": ("bad.png", b"\x89PNG\r\n\x1a\n", "image/png")},
     )
     assert response.status_code == 400
@@ -74,7 +74,7 @@ def test_convert_rejects_oversized_input(
         # PDF body of just over 1 MB
         body = b"%PDF-1.7\n" + b"x" * (1024 * 1024 + 10)
         response = small_client.post(
-            "/convert",
+            "/v1/convert",
             files={"file": ("big.pdf", body, "application/pdf")},
         )
     assert response.status_code == 400
@@ -83,7 +83,7 @@ def test_convert_rejects_oversized_input(
 
 def test_convert_failure_response_carries_request_id(client: TestClient) -> None:
     response = client.post(
-        "/convert",
+        "/v1/convert",
         files={"file": ("bad.png", b"\x89PNG", "image/png")},
     )
     assert response.status_code == 400
