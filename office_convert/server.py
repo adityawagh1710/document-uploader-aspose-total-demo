@@ -23,8 +23,8 @@ import aiofiles
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from office_convert import libreoffice_convert, orchestrator
 from office_convert import logging as oc_logging
-from office_convert import orchestrator
 from office_convert.cache import CacheManager
 from office_convert.config import Settings, get_settings
 from office_convert.csv_input import csv_bytes_to_xlsx_bytes, is_csv_filename
@@ -42,6 +42,7 @@ from office_convert.rate_limit import RateLimiter, client_id_for
 from office_convert.types import (
     ConversionOptions,
     Diagnostic,
+    FormatName,
 )
 
 log = logging.getLogger(__name__)
@@ -284,8 +285,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # loaders use the file extension as a format hint — renaming an ODT
             # to .docx makes Aspose.Words try to parse it as OOXML and fail with
             # FileCorruptedException. Preserve the original extension for these.
-            ext_hint_formats = {"odt", "ods", "odp", "rtf"}
-            suffix = fmt
+            ext_hint_formats = {"odt", "ods", "odp", "odg", "rtf"}
+            # Suffix is a free-form filename hint, not a DispatchFormat — it
+            # carries non-Aspose-product extensions like .odt back through to
+            # Aspose's loaders so they pick the right LoadFormat.
+            suffix: str = fmt
             if file.filename and "." in file.filename:
                 orig_ext = file.filename.rsplit(".", 1)[-1].lower()
                 if orig_ext in ext_hint_formats:
@@ -293,20 +297,87 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             input_path = scratch_dir / f"input.{suffix}"
             input_path_tmp.rename(input_path)
 
+            if fmt == "odg":
+                # LibreOffice fallback. Aspose.Total C++ has no library that
+                # renders ODG drawing pages — Words rejects with
+                # `UnsupportedFileFormatException: Unknown`, Slides rejects
+                # with `PptUnsupportedFormatException: Not a Open Office
+                # presentation`. We shell out to `soffice --headless
+                # --convert-to pdf` and stream the produced PDF back. No
+                # chunking, no caching — one subprocess per request.
+                lo_output_dir = scratch_dir / "lo_out"
+                try:
+                    pdf_path = await libreoffice_convert.convert_to_pdf(
+                        input_path,
+                        output_dir=lo_output_dir,
+                        timeout_seconds=s.chunk_timeout_seconds,
+                    )
+                except BaseException:
+                    shutil.rmtree(scratch_dir, ignore_errors=True)
+                    raise
+
+                async def stream_libreoffice() -> AsyncIterator[bytes]:
+                    try:
+                        async with aiofiles.open(pdf_path, "rb") as fh:
+                            while True:
+                                block = await fh.read(64 * 1024)
+                                if not block:
+                                    break
+                                yield block
+                    finally:
+                        shutil.rmtree(scratch_dir, ignore_errors=True)
+                        state["active_jobs"] -= 1
+                        server_sem.release()
+
+                return StreamingResponse(
+                    stream_libreoffice(),
+                    media_type="application/pdf",
+                    headers={
+                        "X-Request-ID": rid,
+                        "Content-Type": "application/pdf",
+                    },
+                )
+
+            # All other formats go through the Aspose orchestrator. mypy
+            # narrows `fmt` to FormatName here thanks to the ODG branch above.
+            aspose_fmt: FormatName = fmt
             # Hand off to orchestrator; build the streaming response
             cache_local = cache if opts.cache else CacheManager(None, s.aspose_version)
             gen = orchestrator.convert_job(
                 request_id=rid,
                 input_path=input_path,
-                format=fmt,
+                format=aspose_fmt,
                 options=opts,
                 settings=s,
                 cache=cache_local,
                 scratch_dir=scratch_dir,
             )
 
+            # Drive the generator far enough to materialize the first body
+            # chunk (or exhaust it for empty results) BEFORE constructing the
+            # StreamingResponse. Aspose load errors surface during the first
+            # render — `FileCorruptedException` on a malformed ODT, RLIMIT_AS
+            # kills on huge inputs, etc. If we let Starlette pull the first
+            # chunk it will already have flushed `200 OK Content-Type:
+            # application/pdf` headers; the ConversionError handler then
+            # can't substitute a JSONResponse and Starlette logs
+            # "Caught handled exception, but response already started" while
+            # the client sees a successful response with an empty body.
+            try:
+                first_chunk = await gen.__anext__()
+            except StopAsyncIteration:
+                first_chunk = b""
+            except BaseException:
+                # Generator failed before yielding — scratch needs cleanup
+                # here because stream() never gets a chance to run. The outer
+                # except handles semaphore release.
+                shutil.rmtree(scratch_dir, ignore_errors=True)
+                raise
+
             async def stream() -> AsyncIterator[bytes]:
                 try:
+                    if first_chunk:
+                        yield first_chunk
                     async for block in gen:
                         yield block
                 finally:

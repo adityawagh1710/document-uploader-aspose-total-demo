@@ -26,13 +26,28 @@ class UnsupportedFormatError(ConversionError):
     failure_class = FailureClass.UNSUPPORTED_FORMAT
     http_status = 400
 
-    def __init__(self, detected_magic: str, accepted: list[str]) -> None:
-        super().__init__(f"unsupported format (magic={detected_magic})")
+    def __init__(
+        self,
+        detected_magic: str,
+        accepted: list[str],
+        reason: str | None = None,
+    ) -> None:
+        msg = f"unsupported format (magic={detected_magic})"
+        if reason:
+            msg = f"{msg}: {reason}"
+        super().__init__(msg)
         self.detected_magic = detected_magic
         self.accepted = accepted
+        self.reason = reason
 
     def as_detail_dict(self) -> dict[str, Any]:
-        return {"detected_magic": self.detected_magic, "accepted": self.accepted}
+        d: dict[str, Any] = {
+            "detected_magic": self.detected_magic,
+            "accepted": self.accepted,
+        }
+        if self.reason:
+            d["reason"] = self.reason
+        return d
 
 
 class MissingFileError(ConversionError):
