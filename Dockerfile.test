@@ -1,11 +1,10 @@
 # Dockerfile.test — Python test runner image.
 #
 # Used by `make test`, `make lint`, `make typecheck`, etc. Contains:
-#   - Python 3.11 + uv
-#   - All [dev] dependencies (pytest, hypothesis, ruff, mypy, …)
+#   - Python 3.12 + uv
+#   - All [project.dependencies] + [dev] + [e2e] extras from pyproject.toml
+#     (pytest, hypothesis, ruff, mypy, testcontainers, python-docx, …)
 #   - qpdf binary (for qpdf-dependent unit and property tests)
-#   - Document-generation deps (python-docx, python-pptx, openpyxl, reportlab)
-#     so `make corpus` can generate fixtures inside the container.
 #
 # Does NOT contain:
 #   - Aspose.Total C++ (not needed; integration tests use a fake worker)
@@ -14,6 +13,11 @@
 # This image runs WITHOUT the Aspose SDK tarball being present, so it can
 # build immediately. The full production image (Dockerfile, multi-stage)
 # requires the SDK.
+#
+# Dep source of truth: pyproject.toml. Previously this file hardcoded a
+# parallel inline pin list which dependabot couldn't see (bot scans
+# pyproject.toml only). Drift bit us at least twice — reportlab 4.2.x
+# vs >=4.4 on the 3.11→3.12 alignment was the most recent example.
 
 FROM python:3.12-slim-bookworm
 
@@ -39,35 +43,23 @@ RUN pip install --no-cache-dir uv==0.5.*
 
 WORKDIR /app
 
-# Copy dependency manifests first so the layer caches well.
-COPY pyproject.toml /app/
-COPY ruff.toml /app/
+# Stub package + README so hatchling can complete the editable-install
+# handshake without the real source tree present yet. Hatchling validates
+# that pyproject.toml's `readme = "README.md"` resolves to a real file.
+# All stubs get overwritten by the real source in the next COPY step;
+# the test image never needs the real README content at runtime.
+# Effect: preserves the dep-install layer cache across source-only
+# changes — only pyproject.toml changes bust this layer.
+RUN mkdir -p office_convert \
+    && touch office_convert/__init__.py office_convert/py.typed README.md
+COPY pyproject.toml ruff.toml /app/
 
-# Install ALL Python deps (the [dev] extra includes test runners, linters,
-# type checkers, and doc-generation libraries for the corpus).
-RUN uv pip install --system --no-cache \
-        "fastapi==0.115.*" \
-        "uvicorn[standard]==0.32.*" \
-        "pydantic==2.9.*" \
-        "pydantic-settings==2.6.*" \
-        "aiofiles==24.1.*" \
-        "python-multipart==0.0.12" \
-        "pytest==8.3.*" \
-        "pytest-cov==5.*" \
-        "pytest-asyncio==0.24.*" \
-        "pytest-xdist==3.6.*" \
-        "hypothesis==6.*" \
-        "httpx==0.27.*" \
-        "mypy==1.13.*" \
-        "ruff==0.7.*" \
-        "python-docx==1.1.*" \
-        "python-pptx==1.0.*" \
-        "openpyxl==3.1.*" \
-        "reportlab>=4.4,<4.6" \
-        "types-aiofiles" \
-        "testcontainers==4.8.*"
+# Install project + dev + e2e extras. Editable mode (-e) so the `.pth`
+# file points back at /app/office_convert (which the next COPY fills
+# with real code).
+RUN uv pip install --system --no-cache -e ".[dev,e2e]"
 
-# Copy source + tests last so changes don't bust the dep cache.
+# Copy real source + tests last; overwrites the stub.
 COPY office_convert/ /app/office_convert/
 COPY tests/ /app/tests/
 
