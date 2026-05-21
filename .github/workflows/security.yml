@@ -32,7 +32,7 @@ jobs:
       # patch what Debian ships; unfixed CVEs are tracked manually —
       # see reference_image_security_scanning.md).
       - name: Trivy filesystem (vuln)
-        uses: aquasecurity/trivy-action@v0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -57,7 +57,7 @@ jobs:
       # exit-code=0 — informational only, don't block PRs on style nits.
       - name: Trivy config (Dockerfile + Helm + k8s)
         if: always()
-        uses: aquasecurity/trivy-action@v0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: .
