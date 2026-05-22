@@ -195,13 +195,40 @@ full file for OOXML central-directory inspection):
 | `PK\x03\x04` + OOXML Content-Types → wordprocessingml.document.main+xml                | DOCX          |
 | `PK\x03\x04` + OOXML Content-Types → presentationml.presentation.main+xml              | PPTX          |
 | `PK\x03\x04` + OOXML Content-Types → spreadsheetml.sheet.main+xml                      | XLSX          |
+| `PK\x03\x04` + ODF mimetype entry `application/vnd.oasis.opendocument.text`            | DOCX (.odt)   |
+| `PK\x03\x04` + ODF mimetype entry `application/vnd.oasis.opendocument.spreadsheet`     | XLSX (.ods)   |
+| `PK\x03\x04` + ODF mimetype entry `application/vnd.oasis.opendocument.presentation`    | PPTX (.odp)   |
+| `PK\x03\x04` + ODF mimetype entry `application/vnd.oasis.opendocument.graphics`        | **LibreOffice** (.odg) |
+| `PK\x03\x04` + ODF mimetype `application/vnd.oasis.opendocument.formula` or `.base`    | reject 400 `unsupported_format` (precise reason in `detail`) |
 | `\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1` (OLE2/CFB) + UTF-16LE stream `WordDocument`         | DOCX (.doc)   |
 | `\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1` (OLE2/CFB) + UTF-16LE stream `Workbook` or `Book`   | XLSX (.xls)   |
 | `\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1` (OLE2/CFB) + UTF-16LE stream `PowerPoint Document`  | PPTX (.ppt)   |
 | `\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1` + no stream signature, filename ext `.doc/.dot`     | DOCX (fallback) |
 | `\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1` + no stream signature, filename ext `.xls/.xlt/.xlm` | XLSX (fallback) |
 | `\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1` + no stream signature, filename ext `.ppt/.pot/.pps` | PPTX (fallback) |
+| `{\\rtf` (RTF magic)                                                                   | DOCX (RTF native to Aspose.Words) |
+| CSV — detected by `is_csv_filename` upstream of `detect_format`; normalized to XLSX bytes before magic-byte detection runs | XLSX (via `csv_input.csv_bytes_to_xlsx_bytes`) |
+| `\x89PNG\r\n\x1a\n`                                                                    | **LibreOffice** (.png) |
+| `\xFF\xD8\xFF` (JPEG SOI + first marker)                                              | **LibreOffice** (.jpg) |
+| `GIF87a` or `GIF89a`                                                                  | **LibreOffice** (.gif) |
+| `BM` (BMP)                                                                            | **LibreOffice** (.bmp) |
+| `II*\x00` (TIFF little-endian) or `MM\x00*` (TIFF big-endian)                         | **LibreOffice** (.tiff) |
+| `RIFF` + `WEBP` tag within first 16 bytes                                             | **LibreOffice** (.webp) |
+| `<?xml…<svg…` or `<svg…` (tolerant text sniff in first 512 bytes, BOM-tolerant)       | **LibreOffice** (.svg) |
 | anything else                                                                          | reject 400 `unsupported_format` |
+
+**LibreOffice fallback path (ODG + images, added 2026-05-22)**: rows marked
+**LibreOffice** in the table above bypass the Aspose orchestrator entirely.
+The server hands the buffered input to `office_convert.libreoffice_convert.
+convert_to_pdf()`, which shells out to `soffice --headless --convert-to pdf`.
+The bare `pdf` filter (not `pdf:writer_pdf_Export`) lets soffice pick the
+right importer from the input file's extension — that's why the dispatch
+loop preserves the original extension as `input.<ext>` rather than the
+generic `input.<format>`. One subprocess per request, no chunking, no
+caching. Rationale: Aspose.Total for C++ has no library for drawing pages,
+raster images, or SVG; Aspose.Imaging is .NET/Java only; LibreOffice
+Draw is already installed via `libreoffice-draw-nogui` for the original
+ODG use case (commit `2dd40cf`), so reusing it costs zero new image weight.
 
 **Legacy binary Office formats (added 2026-05-13)**: OLE2 / Compound File
 Binary inputs (pre-2007 `.doc`/`.xls`/`.ppt` and their template/template-show
