@@ -12,11 +12,26 @@ from typing import Any, Literal
 
 FormatName = Literal["docx", "pptx", "xlsx", "pdf"]
 # Wider type returned by probe.detect_format: includes formats that don't go
-# through an Aspose worker. Currently only ODG (handled by LibreOffice). The
-# orchestrator + workers still operate on FormatName; the server routes
-# `DispatchFormat \ FormatName` to the libreoffice path before the
-# orchestrator is even constructed.
-DispatchFormat = Literal["docx", "pptx", "xlsx", "pdf", "odg"]
+# through an Aspose worker. Currently ODG plus raster/vector image formats
+# (PNG/JPG/TIFF/GIF/BMP/WEBP/SVG), all routed to the LibreOffice fallback —
+# Aspose.Total for C++ has no library for them, but headless soffice handles
+# the lot via `--convert-to pdf`. The orchestrator + workers still operate
+# on FormatName; the server routes `DispatchFormat \ FormatName` to the
+# libreoffice path before the orchestrator is even constructed.
+DispatchFormat = Literal[
+    "docx",
+    "pptx",
+    "xlsx",
+    "pdf",
+    "odg",
+    "png",
+    "jpg",
+    "tiff",
+    "gif",
+    "bmp",
+    "webp",
+    "svg",
+]
 
 
 class FailureClass(StrEnum):

@@ -5,7 +5,7 @@
 [![aspose.total](https://img.shields.io/badge/aspose.total-c%2B%2B%2026.4-ff4081.svg)](https://products.aspose.com/total/cpp/)
 [![qpdf](https://img.shields.io/badge/qpdf-streaming%20merge-orange.svg)](https://qpdf.sourceforge.io/)
 [![docker](https://img.shields.io/badge/docker-required-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/)
-[![tests](https://img.shields.io/badge/tests-148-brightgreen.svg)](#tldr--quickstart)
+[![tests](https://img.shields.io/badge/tests-162-brightgreen.svg)](#tldr--quickstart)
 [![type checked](https://img.shields.io/badge/type%20checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
 [![lint](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://github.com/astral-sh/ruff)
 [![status](https://img.shields.io/badge/status-v1%20local%20PoC-yellow.svg)](#)

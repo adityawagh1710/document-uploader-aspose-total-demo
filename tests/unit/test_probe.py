@@ -262,3 +262,50 @@ def test_detect_rejects_unrenderable_odf_subtype(
     assert expected_subtype in exc.value.reason
     # And the error's serialized detail dict carries the reason for the client.
     assert exc.value.as_detail_dict()["reason"] == exc.value.reason
+
+
+# ---------------------------------------------------------------------------
+# Image format detection (raster + vector, all dispatched to LibreOffice).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("magic", "expected"),
+    [
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, "png"),
+        (b"\xff\xd8\xff\xe0" + b"\x00JFIF\x00", "jpg"),
+        (b"\xff\xd8\xff\xe1" + b"\x00Exif", "jpg"),
+        (b"GIF87a" + b"\x00" * 10, "gif"),
+        (b"GIF89a" + b"\x00" * 10, "gif"),
+        (b"BM" + b"\x00" * 14, "bmp"),
+        (b"II*\x00" + b"\x00" * 12, "tiff"),
+        (b"MM\x00*" + b"\x00" * 12, "tiff"),
+        (b"RIFF\x10\x00\x00\x00WEBPVP8 ", "webp"),
+    ],
+)
+def test_detect_image_by_magic(magic: bytes, expected: str) -> None:
+    """Raster image magic bytes route to their respective DispatchFormat."""
+    assert detect_format(magic) == expected
+
+
+def test_detect_svg_with_xml_declaration() -> None:
+    body = b'<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg"/>'
+    assert detect_format(body) == "svg"
+
+
+def test_detect_svg_without_xml_declaration() -> None:
+    body = b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'
+    assert detect_format(body) == "svg"
+
+
+def test_detect_svg_with_bom() -> None:
+    """UTF-8 BOM-prefixed SVG is still detected."""
+    body = b'\xef\xbb\xbf<?xml version="1.0"?>\n<svg/>'
+    assert detect_format(body) == "svg"
+
+
+def test_detect_webp_requires_webp_tag() -> None:
+    """A RIFF file without the WEBP tag (e.g., AVI/WAV) is NOT detected as webp."""
+    avi_like = b"RIFF\x10\x00\x00\x00AVI LIST"
+    with pytest.raises(UnsupportedFormatError):
+        detect_format(avi_like)

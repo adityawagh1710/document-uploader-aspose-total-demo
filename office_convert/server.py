@@ -17,7 +17,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import aiofiles
 from fastapi import APIRouter, FastAPI, File, Form, Request, UploadFile
@@ -147,6 +147,7 @@ _LANDING_HTML = """<!doctype html>
   </div>
 
   <div class="section-title">Supported input formats</div>
+  <div class="row-title" style="margin-top:0">Office &amp; documents</div>
   <div class="badges">
     <span class="badge">.docx</span>
     <span class="badge">.doc</span>
@@ -161,6 +162,18 @@ _LANDING_HTML = """<!doctype html>
     <span class="badge">.odg</span>
     <span class="badge">.rtf</span>
     <span class="badge">.csv</span>
+  </div>
+
+  <div class="row-title">Images</div>
+  <div class="badges">
+    <span class="badge">.png</span>
+    <span class="badge">.jpg</span>
+    <span class="badge">.jpeg</span>
+    <span class="badge">.tiff</span>
+    <span class="badge">.gif</span>
+    <span class="badge">.bmp</span>
+    <span class="badge">.webp</span>
+    <span class="badge">.svg</span>
   </div>
 
   <div class="section-title">Endpoints</div>
@@ -444,7 +457,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # loaders use the file extension as a format hint — renaming an ODT
             # to .docx makes Aspose.Words try to parse it as OOXML and fail with
             # FileCorruptedException. Preserve the original extension for these.
-            ext_hint_formats = {"odt", "ods", "odp", "odg", "rtf"}
+            # Image formats (png/jpg/etc.) also need the original extension
+            # preserved so soffice's --convert-to pdf picks the right importer.
+            image_ext_hints = {"jpg", "jpeg", "tif", "tiff"}
+            ext_hint_formats = {"odt", "ods", "odp", "odg", "rtf"} | image_ext_hints
             # Suffix is a free-form filename hint, not a DispatchFormat — it
             # carries non-Aspose-product extensions like .odt back through to
             # Aspose's loaders so they pick the right LoadFormat.
@@ -456,14 +472,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             input_path = scratch_dir / f"input.{suffix}"
             input_path_tmp.rename(input_path)
 
-            if fmt == "odg":
+            # Formats that bypass the Aspose orchestrator entirely and go
+            # through `soffice --convert-to pdf`. ODG was the original consumer
+            # (Aspose.Total C++ has no drawing-page renderer); raster + vector
+            # images followed because LibreOffice Draw is already installed,
+            # imports the lot, and dropping Pillow/ImageMagick into the image
+            # would just duplicate that capability.
+            libreoffice_formats = {"odg", "png", "jpg", "tiff", "gif", "bmp", "webp", "svg"}
+            if fmt in libreoffice_formats:
                 # LibreOffice fallback. Aspose.Total C++ has no library that
-                # renders ODG drawing pages — Words rejects with
-                # `UnsupportedFileFormatException: Unknown`, Slides rejects
-                # with `PptUnsupportedFormatException: Not a Open Office
-                # presentation`. We shell out to `soffice --headless
-                # --convert-to pdf` and stream the produced PDF back. No
-                # chunking, no caching — one subprocess per request.
+                # renders these formats — drawing pages, raster images, or
+                # vector SVG. We shell out to `soffice --headless
+                # --convert-to pdf` (the bare `pdf` filter picks the right
+                # importer per input extension) and stream the produced PDF
+                # back. No chunking, no caching — one subprocess per request.
                 lo_output_dir = scratch_dir / "lo_out"
                 try:
                     pdf_path = await libreoffice_convert.convert_to_pdf(
@@ -497,9 +519,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     },
                 )
 
-            # All other formats go through the Aspose orchestrator. mypy
-            # narrows `fmt` to FormatName here thanks to the ODG branch above.
-            aspose_fmt: FormatName = fmt
+            # All other formats go through the Aspose orchestrator. The
+            # libreoffice_formats `if` above returned for everything outside
+            # FormatName, but mypy can't narrow off a runtime-set membership
+            # check. `cast` is safe by construction — the only DispatchFormat
+            # values that reach here are exactly FormatName.
+            assert fmt in ("docx", "pptx", "xlsx", "pdf"), f"unexpected dispatch format {fmt}"
+            aspose_fmt = cast(FormatName, fmt)
             # Hand off to orchestrator; build the streaming response
             cache_local = cache if opts.cache else CacheManager(None, s.aspose_version)
             gen = orchestrator.convert_job(

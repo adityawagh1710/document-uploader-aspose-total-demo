@@ -48,9 +48,16 @@ def test_convert_returns_pdf(client: TestClient, sample_pdf: Path) -> None:
 
 
 def test_convert_rejects_unsupported_format(client: TestClient) -> None:
+    """Bytes that don't match any office, ODF, OOXML, RTF, OLE2, PDF, or
+    image magic must be rejected at the gate with failure_class=unsupported_format.
+
+    PNG used to be the canary here, but raster images now route to LibreOffice
+    (see test_convert_routes_png_through_libreoffice). Using a random binary
+    prefix that is intentionally NOT a recognized magic byte sequence.
+    """
     response = client.post(
         "/v1/convert",
-        files={"file": ("bad.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+        files={"file": ("mystery.bin", b"\xde\xad\xbe\xef\x00\x00not a real file", None)},
     )
     assert response.status_code == 400
     body = response.json()
@@ -155,6 +162,53 @@ def test_convert_routes_odg_through_libreoffice(
     assert response.headers["content-type"] == "application/pdf"
     assert response.content.startswith(b"%PDF-")
     assert b"fake odg pdf" in response.content
+
+
+def test_convert_routes_png_through_libreoffice(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PNG bypasses the Aspose orchestrator and reaches LibreOffice.
+
+    Mirrors the ODG test pattern. PNG was added to the libreoffice_formats
+    dispatch set alongside ODG (raster + vector images all share that path
+    since Aspose.Total C++ has no image-to-PDF library).
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    soffice = fake_bin / "soffice"
+    soffice.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, os\n"
+        "argv = sys.argv[1:]\n"
+        "outdir = argv[argv.index('--outdir') + 1]\n"
+        "infile = argv[-1]\n"
+        "stem = os.path.splitext(os.path.basename(infile))[0]\n"
+        "with open(os.path.join(outdir, stem + '.pdf'), 'wb') as f:\n"
+        "    f.write(b'%PDF-1.4\\nfake png pdf\\n%%EOF\\n')\n"
+    )
+    soffice.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    # Minimal valid PNG: 8-byte signature + IHDR chunk + IEND chunk. We only
+    # need it to satisfy detect_format's magic check; soffice is stubbed and
+    # never actually parses the payload.
+    png_body = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    response = client.post(
+        "/v1/convert",
+        files={"file": ("photo.png", png_body, "image/png")},
+    )
+    assert response.status_code == 200, response.content
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
+    assert b"fake png pdf" in response.content
 
 
 def test_convert_render_failure_returns_json_diagnostic(tmp_path: Path) -> None:

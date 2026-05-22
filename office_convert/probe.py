@@ -47,6 +47,15 @@ ACCEPTED_UPLOAD_FORMATS: tuple[str, ...] = (
     "ods",
     "odp",
     "odg",
+    "png",
+    "jpg",
+    "jpeg",
+    "tiff",
+    "tif",
+    "gif",
+    "bmp",
+    "webp",
+    "svg",
 )
 
 PDF_MAGIC = b"%PDF-"
@@ -57,6 +66,21 @@ OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 # Rich Text Format — Aspose.Words ingests RTF natively, so we route it
 # through the docx worker without any pre-conversion step.
 RTF_MAGIC = b"{\\rtf"
+
+# Raster + vector image magic bytes. All of these route to the LibreOffice
+# fallback (`soffice --convert-to pdf` picks the right import filter by
+# input extension — see DispatchFormat in types.py).
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff"
+GIF87_MAGIC = b"GIF87a"
+GIF89_MAGIC = b"GIF89a"
+BMP_MAGIC = b"BM"
+TIFF_LE_MAGIC = b"II*\x00"
+TIFF_BE_MAGIC = b"MM\x00*"
+# WEBP files start with RIFF<4 bytes>WEBP — the 4 bytes in between are the
+# chunk size, so this is a two-segment match handled in detect_format().
+RIFF_MAGIC = b"RIFF"
+WEBP_TAG = b"WEBP"
 
 OOXML_CONTENT_TYPE_TO_FORMAT: dict[str, FormatName] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml": "docx",
@@ -157,8 +181,41 @@ def detect_format(
     if magic_bytes.startswith(RTF_MAGIC):
         return "docx"
 
+    image_fmt = _detect_image_format(magic_bytes)
+    if image_fmt is not None:
+        return image_fmt
+
     head_hex = magic_bytes[:8].hex()
     raise UnsupportedFormatError(detected_magic=head_hex, accepted=list(ACCEPTED_UPLOAD_FORMATS))
+
+
+def _detect_image_format(magic_bytes: bytes) -> DispatchFormat | None:  # noqa: PLR0911
+    """Magic-byte image detection.
+
+    SVG is text-based with no fixed magic; we look for a `<svg` tag in the
+    head sample (case-insensitive) after a tolerant XML/BOM prefix. The
+    file is routed to LibreOffice regardless of the specific raster vs
+    vector format because soffice's `--convert-to pdf` filter picks the
+    correct importer from the input file's extension. PLR0911 ignored —
+    one return per format reads more naturally than a dict lookup here.
+    """
+    if magic_bytes.startswith(PNG_MAGIC):
+        return "png"
+    if magic_bytes.startswith(JPEG_MAGIC):
+        return "jpg"
+    if magic_bytes.startswith((GIF87_MAGIC, GIF89_MAGIC)):
+        return "gif"
+    if magic_bytes.startswith(BMP_MAGIC):
+        return "bmp"
+    if magic_bytes.startswith((TIFF_LE_MAGIC, TIFF_BE_MAGIC)):
+        return "tiff"
+    if magic_bytes.startswith(RIFF_MAGIC) and WEBP_TAG in magic_bytes[:16]:
+        return "webp"
+    # SVG: tolerant text sniff in the first ~512 bytes
+    head = magic_bytes[:512].lstrip(b"\xef\xbb\xbf").lstrip()
+    if head.startswith((b"<?xml", b"<svg")) and b"<svg" in magic_bytes[:512].lower():
+        return "svg"
+    return None
 
 
 def _classify_ole2(source_path: Path | None, filename: str | None) -> FormatName:

@@ -595,18 +595,27 @@ def _format_key(filename: str) -> str:
     edge case where the file's extension doesn't match any known set.
     Kept in lock-step with _format_icon's branches."""
     ext = Path(filename).suffix.lower().lstrip(".")
-    if ext in {"docx", "doc", "dot", "dotx", "dotm", "docm"}:
+    if ext in {"docx", "doc", "dot", "dotx", "dotm", "docm", "odt", "rtf"}:
         return "docx"
-    if ext in {"pptx", "ppt", "pot", "pps", "ppsx", "potx", "pptm"}:
+    if ext in {"pptx", "ppt", "pot", "pps", "ppsx", "potx", "pptm", "odp"}:
         return "pptx"
-    if ext in {"xlsx", "xls", "xlsm", "xlt", "xltx", "xlsb"}:
+    if ext in {"xlsx", "xls", "xlsm", "xlt", "xltx", "xlsb", "ods", "csv"}:
         return "xlsx"
     if ext == "pdf":
         return "pdf"
+    if ext in {"png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "webp", "svg", "odg"}:
+        return "image"
     return "other"
 
 
-_FORMAT_ICONS = {"docx": "📄", "pptx": "📊", "xlsx": "📈", "pdf": "📕", "other": "📦"}
+_FORMAT_ICONS = {
+    "docx": "📄",
+    "pptx": "📊",
+    "xlsx": "📈",
+    "pdf": "📕",
+    "image": "🖼️",
+    "other": "📦",
+}
 
 
 def _format_icon(filename: str) -> str:
@@ -2216,14 +2225,17 @@ if _snap_error and _snap_error["ts"] > st.session_state.seen_error_ts:
     st.session_state.seen_error_ts = _snap_error["ts"]
 
 uploaded_file = st.file_uploader(
-    "Drop a file (DOCX, PPTX, XLSX, PDF, DOC, XLS, PPT, CSV, RTF, ODT, ODS, ODP, "
-    "ODG — ODF/ODB upload but are rejected: no rendering library for them)",
-    # ODG goes through the LibreOffice fallback path (Aspose.Total C++
-    # can't render drawing pages). ODF/ODB are still accepted at the
-    # picker so the server's per-subtype rejection message reaches the UI
-    # toast instead of Streamlit's generic "files of type X are not
-    # allowed" — see _format_diagnostic.
+    "Drop a file — Office (DOCX/PPTX/XLSX/PDF/legacy/ODT/ODS/ODP/ODG/RTF/CSV) "
+    "or image (PNG/JPG/TIFF/GIF/BMP/WEBP/SVG). Images + ODG go through "
+    "LibreOffice; everything else through Aspose. ODF/ODB upload but are "
+    "rejected with a precise message — no rendering library for them.",
+    # ODG and image formats go through the LibreOffice fallback path
+    # (Aspose.Total C++ can't render drawing pages, raster images, or SVG).
+    # ODF/ODB are still accepted at the picker so the server's per-subtype
+    # rejection message reaches the UI toast instead of Streamlit's generic
+    # "files of type X are not allowed" — see _format_diagnostic.
     type=[
+        # Office & documents
         "docx",
         "pptx",
         "xlsx",
@@ -2239,6 +2251,16 @@ uploaded_file = st.file_uploader(
         "odg",
         "odf",
         "odb",
+        # Images (raster + vector — all dispatched to LibreOffice)
+        "png",
+        "jpg",
+        "jpeg",
+        "tiff",
+        "tif",
+        "gif",
+        "bmp",
+        "webp",
+        "svg",
     ],
 )
 
