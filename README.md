@@ -16,9 +16,13 @@
 
 **v1.0 — local PoC** · Chunked Office document → PDF conversion service.
 
-Converts DOCX, PPTX, XLSX, PDF, and legacy DOC/XLS/PPT inputs to PDF
-over a local HTTP API, using **Aspose.Total C++** rendering with
-RAM-isolated subprocess workers and **qpdf** streaming merge.
+Converts DOCX, PPTX, XLSX, PDF, legacy DOC/XLS/PPT, ODT/ODS/ODP/ODG,
+RTF, CSV, **and raster + vector images** (PNG, JPG, TIFF, GIF, BMP,
+WEBP, SVG) to PDF over a local HTTP API. Office docs render via
+**Aspose.Total C++** with RAM-isolated subprocess workers and **qpdf**
+streaming merge; ODG + images route through the bundled **LibreOffice**
+fallback (soffice `--convert-to pdf` picks the right importer per
+input extension).
 
 ```
 ┌────────────────────── Docker container (4GB RAM + 2GB swap) ──────────────────────┐
@@ -356,8 +360,11 @@ curl -X POST http://localhost:8080/v1/convert \
 
 **Request**: `multipart/form-data` with:
 
-- `file` — binary input (DOCX/PPTX/XLSX/PDF; magic-byte detected, not
-  by extension)
+- `file` — binary input. Accepted (magic-byte detected, not by extension):
+  - **Office / documents**: DOCX, PPTX, XLSX, PDF, legacy DOC/XLS/PPT,
+    ODT, ODS, ODP, ODG, RTF, CSV
+  - **Images** (routed to LibreOffice): PNG, JPG, JPEG, TIFF, GIF, BMP,
+    WEBP, SVG
 - `options` (optional JSON): `{"cache": <bool>, "log_level": "<level>"}`
 
 **Response on success**: HTTP 200, `Content-Type: application/pdf`,
