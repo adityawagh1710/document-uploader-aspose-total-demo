@@ -173,7 +173,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # the AWS ALB target group health check don't break on a version bump.
     v1 = APIRouter(prefix="/v1")
 
-    @v1.post("/convert")
+    @v1.post(
+        "/convert",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "content": {
+                    "application/pdf": {
+                        "schema": {"type": "string", "format": "binary"}
+                    }
+                },
+                "description": "Converted PDF file (binary stream).",
+            }
+        },
+    )
     async def convert(
         request: Request,
         file: Annotated[UploadFile, File(...)],
