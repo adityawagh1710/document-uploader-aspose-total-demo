@@ -575,7 +575,7 @@ def _render_tile(
         bar_html = (
             f'<div class="tile-bar">'
             f'<div class="tile-bar-fill" style="width:{p:.1f}%"></div>'
-            f'</div>'
+            f"</div>"
         )
     else:
         bar_html = ""
@@ -659,12 +659,12 @@ def _render_format_perf(stats: dict) -> str:
                 f'<span class="icon">{_FORMAT_ICONS[fmt]}</span>'
                 f'<span class="fmt">{fmt}</span>'
                 f'<span class="count">—</span>'
-                f'</div>'
+                f"</div>"
                 f'<div class="stats">'
                 f'<span><span class="label">avg</span> —</span>'
                 f'<span><span class="label">p95</span> —</span>'
-                f'</div>'
-                f'</div>'
+                f"</div>"
+                f"</div>"
             )
         else:
             avg = sum(times) / len(times) if times else 0.0
@@ -675,12 +675,12 @@ def _render_format_perf(stats: dict) -> str:
                 f'<span class="icon">{_FORMAT_ICONS[fmt]}</span>'
                 f'<span class="fmt">{fmt}</span>'
                 f'<span class="count">{count:,}</span>'
-                f'</div>'
+                f"</div>"
                 f'<div class="stats">'
                 f'<span><span class="label">avg</span> {avg:.1f}s</span>'
                 f'<span><span class="label">p95</span> {p95:.1f}s</span>'
-                f'</div>'
-                f'</div>'
+                f"</div>"
+                f"</div>"
             )
     return (
         '<div class="format-perf">'
@@ -702,7 +702,7 @@ def _render_chart_skeleton(title: str, message: str = "Awaiting conversion data"
         f'<div class="chart-skeleton">'
         f'<div class="title">{title}</div>'
         f'<div class="message">{message}</div>'
-        f'</div>'
+        f"</div>"
     )
 
 
@@ -755,7 +755,7 @@ def _render_sparkline(values: list[float], css_class: str) -> str:
         f'viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
         f'<polygon points="{area}" />'
         f'<polyline points="{line}" />'
-        f'</svg>'
+        f"</svg>"
     )
 
 
@@ -773,17 +773,20 @@ def _render_util_card(label: str, pct: float, base_class: str = "cpu", sub: str 
         fill_class = "warn"
     else:
         fill_class = base_class
-    sub_html = f'<div class="meta"><span>0%</span><span>{sub}</span><span>100%</span></div>' if sub else \
-               '<div class="meta"><span>0%</span><span>100%</span></div>'
+    sub_html = (
+        f'<div class="meta"><span>0%</span><span>{sub}</span><span>100%</span></div>'
+        if sub
+        else '<div class="meta"><span>0%</span><span>100%</span></div>'
+    )
     spark_html = _render_sparkline(list(_metric_hist.get(base_class, [])), fill_class)
     return (
         f'<div class="util-card">'
         f'<div class="label">{label}</div>'
         f'<div class="value">{p:.1f}%</div>'
         f'<div class="bar"><div class="bar-fill {fill_class}" style="width:{p}%"></div></div>'
-        f'{sub_html}'
-        f'{spark_html}'
-        f'</div>'
+        f"{sub_html}"
+        f"{spark_html}"
+        f"</div>"
     )
 
 
@@ -1053,16 +1056,14 @@ def _format_diagnostic(status_code: int, body: dict) -> str:
     failure_class = body.get("failure_class", "unknown")
     detail = body.get("detail") or {}
     text = (
-        detail.get("reason")
-        or detail.get("message")
-        or (detail.get("stderr_tail") or "").strip()
+        detail.get("reason") or detail.get("message") or (detail.get("stderr_tail") or "").strip()
     )
     if not text:
         if "size_bytes" in detail and "ceiling_bytes" in detail:
             text = f"{detail['size_bytes']} > {detail['ceiling_bytes']} byte limit"
         elif "retry_after_seconds" in detail:
             text = f"retry after {detail['retry_after_seconds']}s"
-        elif "expired_on" in detail and detail["expired_on"]:
+        elif detail.get("expired_on"):
             text = f"expired on {detail['expired_on']}"
     if text:
         # Truncate runaway stderr tails so the Streamlit toast stays readable.
@@ -1255,11 +1256,11 @@ del st.session_state.history[MAX_RECENT_RESULTS:]
 # Dashboard header — title + live indicator (pulses while stats are refreshing).
 st.markdown(
     '<div class="dash-header">'
-    '<h1>📄 Office-Convert</h1>'
+    "<h1>📄 Office-Convert</h1>"
     '<span class="crumb">Monitor &nbsp;›&nbsp; Conversion service</span>'
     '<span class="crumb" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;">'
     '<span class="eq-bars" aria-label="Live"><span></span><span></span><span></span></span>LIVE</span>'
-    '</div>',
+    "</div>",
     unsafe_allow_html=True,
 )
 
@@ -1304,7 +1305,6 @@ def live_stats():
     max_jobs = health.get("max_jobs", 0)
     jobs_status = "ok" if (max_jobs and active_jobs < max_jobs) else "warn"
     worker_count = len(workers)
-    worker_status = "info" if worker_count > 0 else "dim"
 
     # Lifetime counters + per-format aggregates live in the process-wide
     # state dict (survive the rolling MAX_RECENT_RESULTS cap on s["results"]).
@@ -1322,47 +1322,49 @@ def live_stats():
             for fmt, bucket in (_s.get("per_format_stats") or {}).items()
         }
 
-    tiles_html = _render_tile_row([
-        _render_tile(
-            "Service",
-            "OK" if ready else "DOWN",
-            "ok" if ready else "crit",
-            sub="office-convert · port 8080",
-        ),
-        _render_tile(
-            "Pool Mode",
-            "fork",
-            "info",
-            sub="legacy pool for XLSX",
-        ),
-        _render_tile(
-            "License",
-            f"{license_days} days",
-            license_status,
-            sub="Aspose.Total — auto-renews on rebuild",
-            # 365 d == 100% bar; clamped in _render_tile. Visualizes the
-            # countdown so the days-remaining number isn't the only signal.
-            bar_pct=(license_days / 365.0) * 100.0,
-        ),
-        _render_tile(
-            "API Health",
-            "READY" if ready else "503",
-            "ok" if ready else "crit",
-            sub=", ".join(health.get("problems") or []) or "no problems",
-        ),
-        _render_tile(
-            "Active Jobs",
-            f"{active_jobs} / {max_jobs}" if max_jobs else "—",
-            jobs_status,
-            sub=f"{worker_count} worker PIDs alive",
-        ),
-        _render_tile(
-            "Lifetime",
-            f"{total_conv:,}",
-            "info" if total_conv > 0 else "dim",
-            sub=f"{_human_bytes(total_in_bytes)} in · {_human_bytes(total_out_bytes)} out",
-        ),
-    ])
+    tiles_html = _render_tile_row(
+        [
+            _render_tile(
+                "Service",
+                "OK" if ready else "DOWN",
+                "ok" if ready else "crit",
+                sub="office-convert · port 8080",
+            ),
+            _render_tile(
+                "Pool Mode",
+                "fork",
+                "info",
+                sub="legacy pool for XLSX",
+            ),
+            _render_tile(
+                "License",
+                f"{license_days} days",
+                license_status,
+                sub="Aspose.Total — auto-renews on rebuild",
+                # 365 d == 100% bar; clamped in _render_tile. Visualizes the
+                # countdown so the days-remaining number isn't the only signal.
+                bar_pct=(license_days / 365.0) * 100.0,
+            ),
+            _render_tile(
+                "API Health",
+                "READY" if ready else "503",
+                "ok" if ready else "crit",
+                sub=", ".join(health.get("problems") or []) or "no problems",
+            ),
+            _render_tile(
+                "Active Jobs",
+                f"{active_jobs} / {max_jobs}" if max_jobs else "—",
+                jobs_status,
+                sub=f"{worker_count} worker PIDs alive",
+            ),
+            _render_tile(
+                "Lifetime",
+                f"{total_conv:,}",
+                "info" if total_conv > 0 else "dim",
+                sub=f"{_human_bytes(total_in_bytes)} in · {_human_bytes(total_out_bytes)} out",
+            ),
+        ]
+    )
     _slot_tiles.markdown(tiles_html, unsafe_allow_html=True)
 
     # --- Gauges + process panel -------------------------------------------
@@ -1402,17 +1404,17 @@ def live_stats():
             cpu_val = float(w.get("cpu_pct", 0.0))
             cmdline = w.get("cmdline", "")
             fmt = (
-                "docx" if "docx" in cmdline
-                else "pptx" if "pptx" in cmdline
-                else "xlsx" if "xlsx" in cmdline
-                else "pdf" if "pdf" in cmdline
+                "docx"
+                if "docx" in cmdline
+                else "pptx"
+                if "pptx" in cmdline
+                else "xlsx"
+                if "xlsx" in cmdline
+                else "pdf"
+                if "pdf" in cmdline
                 else "—"
             )
-            mode = (
-                "pool" if "pool" in cmdline
-                else "render" if "render" in cmdline
-                else "probe"
-            )
+            mode = "pool" if "pool" in cmdline else "render" if "render" in cmdline else "probe"
             cpu_pct_w = max(0.0, min(100.0, cpu_val))
             # Threshold > 0.5% avoids pulsing on float-rounding noise from
             # workers that report 0.1% jitter when idle.
@@ -1421,12 +1423,12 @@ def live_stats():
                 f'<tr class="{row_class}">'
                 f'<td><span class="pill info">{fmt}</span></td>'
                 f'<td><span class="pill dim">{mode}</span></td>'
-                f'<td>{pid}</td>'
-                f'<td>'
+                f"<td>{pid}</td>"
+                f"<td>"
                 f'  <div class="bar-cell"><div class="bar-fill cpu" style="width:{cpu_pct_w}%"></div>'
                 f'  <span class="bar-label">{cpu_val:.1f}%</span></div>'
-                f'</td>'
-                f'</tr>'
+                f"</td>"
+                f"</tr>"
             )
         panel_html = (
             '<div style="background:linear-gradient(180deg,rgba(30,41,59,0.55),rgba(15,23,42,0.5));'
@@ -1446,22 +1448,20 @@ def live_stats():
     else:
         idle_html = (
             '<div style="background:linear-gradient(180deg,rgba(30,41,59,0.55),rgba(15,23,42,0.5));'
-            'border:1px solid rgba(148,163,184,0.12);border-radius:8px;padding:10px 12px;'
-            'height:210px;display:flex;align-items:center;justify-content:center;'
+            "border:1px solid rgba(148,163,184,0.12);border-radius:8px;padding:10px 12px;"
+            "height:210px;display:flex;align-items:center;justify-content:center;"
             'color:#64748b;font-size:12px;">'
             '<div style="text-align:center;">'
             '<div style="font-size:24px;margin-bottom:6px;opacity:0.4;">⚙️</div>'
-            'No worker processes — system idle'
-            '</div></div>'
+            "No worker processes — system idle"
+            "</div></div>"
         )
         _slot_proc_panel.markdown(idle_html, unsafe_allow_html=True)
 
     # Per-format performance summary — rendered after the Mega Row so the
     # tile/util-card density stays compact above and this larger 4-cell
     # panel anchors the section below.
-    _slot_format_perf.markdown(
-        _render_format_perf(per_fmt_snapshot), unsafe_allow_html=True
-    )
+    _slot_format_perf.markdown(_render_format_perf(per_fmt_snapshot), unsafe_allow_html=True)
 
 
 def _render_heartbeats(request_id: str, wall_now: float) -> str:
@@ -1478,7 +1478,7 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
             '<div style="margin-top:8px;display:flex;align-items:center;gap:8px;">'
             '<span class="pill dim">WAITING</span>'
             '<span style="font-size:11.5px;color:#64748b;">for first pool-worker heartbeat…</span>'
-            '</div>'
+            "</div>"
         )
 
     by_index: dict[int, dict] = {}
@@ -1492,9 +1492,7 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
 
     # Bars scale relative to the largest current RSS so the visual ordering
     # is meaningful even before we hit the container memory limit.
-    max_rss_mb = max(
-        ((b.get("rss_bytes") or 0) / 1024 / 1024) for b in by_index.values()
-    ) or 1.0
+    max_rss_mb = max(((b.get("rss_bytes") or 0) / 1024 / 1024) for b in by_index.values()) or 1.0
 
     rows: list[str] = []
     for idx in sorted(by_index.keys()):
@@ -1508,12 +1506,15 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
         worker = b.get("worker") or "—"
 
         status_pill = (
-            '<span class="pill ok">OK</span>' if staleness < 6
+            '<span class="pill ok">OK</span>'
+            if staleness < 6
             else '<span class="pill warn">STALE</span>'
         )
         phase_pill = (
-            '<span class="pill info">LOAD</span>' if phase == "load"
-            else '<span class="pill ok">RENDER</span>' if phase == "render"
+            '<span class="pill info">LOAD</span>'
+            if phase == "load"
+            else '<span class="pill ok">RENDER</span>'
+            if phase == "render"
             else f'<span class="pill dim">{phase.upper()}</span>'
         )
         rss_pct = min(100.0, (rss_mb / max_rss_mb) * 100.0) if max_rss_mb > 0 else 0.0
@@ -1521,22 +1522,26 @@ def _render_heartbeats(request_id: str, wall_now: float) -> str:
         # red-flag situation and the bar capping out is the desired signal.
         swap_pct = min(100.0, (swap_mb / 500.0) * 100.0) if swap_mb > 0 else 0.0
         swap_cell = (
-            f'<div class="bar-cell"><div class="bar-fill swap" style="width:{swap_pct}%"></div>'
-            f'<span class="bar-label">{swap_mb:,.0f} MB</span></div>'
-        ) if swap_mb > 0 else '<span style="opacity:0.35;">—</span>'
+            (
+                f'<div class="bar-cell"><div class="bar-fill swap" style="width:{swap_pct}%"></div>'
+                f'<span class="bar-label">{swap_mb:,.0f} MB</span></div>'
+            )
+            if swap_mb > 0
+            else '<span style="opacity:0.35;">—</span>'
+        )
 
         rows.append(
-            f'<tr>'
-            f'<td>pool[{idx}]</td>'
-            f'<td>{status_pill}</td>'
+            f"<tr>"
+            f"<td>pool[{idx}]</td>"
+            f"<td>{status_pill}</td>"
             f'<td><span class="pill dim">{worker}</span></td>'
-            f'<td>{phase_pill}</td>'
+            f"<td>{phase_pill}</td>"
             f'<td style="text-align:right;">{elapsed}s</td>'
             f'<td><div class="bar-cell"><div class="bar-fill mem" style="width:{rss_pct}%"></div>'
             f'<span class="bar-label">{rss_mb:,.0f} MB</span></div></td>'
-            f'<td>{swap_cell}</td>'
+            f"<td>{swap_cell}</td>"
             f'<td style="text-align:right;color:#64748b;">{staleness:.1f}s</td>'
-            f'</tr>'
+            f"</tr>"
         )
 
     table = (
@@ -1662,8 +1667,7 @@ def _build_memory_chart(request_id: str) -> go.Figure | None:
                     name=f"pool[{idx}] swap",
                     line=dict(color=color, width=1.5, dash="dot"),
                     hovertemplate=(
-                        f"<b>pool[{idx}] swap</b><br>"
-                        "%{x:.0f}s · %{y:.0f} MB<extra></extra>"
+                        f"<b>pool[{idx}] swap</b><br>" "%{x:.0f}s · %{y:.0f} MB<extra></extra>"
                     ),
                 )
             )
@@ -1733,16 +1737,16 @@ def _build_timing_chart(request_id: str) -> go.Figure | None:
         "pool_render.save",
     ]
     stage_color = {
-        "pool_load.workbook_load":   "#3b82f6",  # blue   — initial file load
-        "pool_load.pagination":      "#f59e0b",  # amber  — pagination pass
+        "pool_load.workbook_load": "#3b82f6",  # blue   — initial file load
+        "pool_load.pagination": "#f59e0b",  # amber  — pagination pass
         "pool_render.workbook_load": "#fb923c",  # orange — per-chunk reload
-        "pool_render.save":          "#10b981",  # emerald — actual render
+        "pool_render.save": "#10b981",  # emerald — actual render
     }
     stage_label = {
-        "pool_load.workbook_load":   "1. Initial load",
-        "pool_load.pagination":      "2. Pagination",
+        "pool_load.workbook_load": "1. Initial load",
+        "pool_load.pagination": "2. Pagination",
         "pool_render.workbook_load": "3. Chunk reload",
-        "pool_render.save":          "4. Render (save)",
+        "pool_render.save": "4. Render (save)",
     }
 
     workers = sorted(by_idx)
@@ -1767,8 +1771,7 @@ def _build_timing_chart(request_id: str) -> go.Figure | None:
                 insidetextanchor="middle",
                 textfont=dict(color="white", size=12),
                 hovertemplate=(
-                    f"<b>{stage_label[stage]}</b><br>"
-                    "%{y}: %{x:.2f} s<extra></extra>"
+                    f"<b>{stage_label[stage]}</b><br>" "%{y}: %{x:.2f} s<extra></extra>"
                 ),
             )
         )
@@ -1808,15 +1811,15 @@ def _build_chunk_gantt(request_id: str) -> "go.Figure | None":
         return None
 
     stage_label = {
-        "pool_load.workbook_load":   "Initial load",
-        "pool_load.pagination":      "Pagination",
+        "pool_load.workbook_load": "Initial load",
+        "pool_load.pagination": "Pagination",
         "pool_render.workbook_load": "Chunk reload",
-        "pool_render.save":          "Render (save)",
+        "pool_render.save": "Render (save)",
     }
     stage_color_map = {
-        "Initial load":  "#3b82f6",
-        "Pagination":    "#f59e0b",
-        "Chunk reload":  "#fb923c",
+        "Initial load": "#3b82f6",
+        "Pagination": "#f59e0b",
+        "Chunk reload": "#fb923c",
         "Render (save)": "#10b981",
     }
 
@@ -1839,7 +1842,7 @@ def _build_chunk_gantt(request_id: str) -> "go.Figure | None":
                 "Worker": f"pool[{int(idx)}]",
                 "Stage": stage_label[stage],
                 "Start": datetime.datetime.fromtimestamp(start_unix),
-                "End":   datetime.datetime.fromtimestamp(end_unix),
+                "End": datetime.datetime.fromtimestamp(end_unix),
                 "DurationLabel": f"{dur_ms / 1000:.2f}s",
             }
         )
@@ -1891,15 +1894,14 @@ def get_recent_events(limit: int = 25) -> list[dict]:
             capture_output=True,
             text=True,
             timeout=4,
+            check=False,
         )
     except Exception:
         return []
     lines = result.stdout.splitlines()
     # Match the human log format:
     #   office-convert  | YYYY-MM-DD HH:MM:SS LEVEL  [req_xxx] event_name fields...
-    pat = re.compile(
-        r"office-convert\s+\|\s+(\S+)\s+(\S+)\s+(\w+)\s+\[(\S+?)\]\s+(\w+)\s*(.*)$"
-    )
+    pat = re.compile(r"office-convert\s+\|\s+(\S+)\s+(\S+)\s+(\w+)\s+\[(\S+?)\]\s+(\w+)\s*(.*)$")
     SKIP_EVENTS = {"pool_worker_heartbeat"}
     events: list[dict] = []
     for line in lines:
@@ -1928,40 +1930,40 @@ def _render_events_feed() -> str:
     if not events:
         return (
             '<div style="background:linear-gradient(180deg,rgba(30,41,59,0.55),rgba(15,23,42,0.5));'
-            'border:1px solid rgba(148,163,184,0.12);border-radius:8px;padding:18px;'
+            "border:1px solid rgba(148,163,184,0.12);border-radius:8px;padding:18px;"
             'text-align:center;color:#64748b;font-size:12px;">'
             '<div style="font-size:22px;opacity:0.4;">📜</div>'
-            'No events yet — kick off a conversion to populate the feed.'
-            '</div>'
+            "No events yet — kick off a conversion to populate the feed."
+            "</div>"
         )
 
     LEVEL_PILL = {
-        "INFO":    "info",
+        "INFO": "info",
         "WARNING": "warn",
-        "WARN":    "warn",
-        "ERROR":   "crit",
-        "DEBUG":   "dim",
+        "WARN": "warn",
+        "ERROR": "crit",
+        "DEBUG": "dim",
     }
     EVENT_ICON = {
-        "request_received":    "📨",
-        "format_detected":     "🏷️",
-        "probe_start":         "🔍",
-        "probe_complete":      "✓",
-        "plan_complete":       "📐",
-        "dispatch_mode":       "🚦",
-        "pool_worker_spawn":   "⚙️",
-        "pool_worker_loaded":  "✅",
-        "fork_pool_spawn":     "⚙️",
-        "fork_pool_loaded":    "✅",
-        "merge_start":         "🔗",
-        "merge_complete":      "✅",
-        "request_complete":    "🎉",
-        "cache_hit":           "📦",
-        "server_start":        "🚀",
-        "worker_exit":         "🔴",
-        "pool_worker_timing":  "⏱️",
+        "request_received": "📨",
+        "format_detected": "🏷️",
+        "probe_start": "🔍",
+        "probe_complete": "✓",
+        "plan_complete": "📐",
+        "dispatch_mode": "🚦",
+        "pool_worker_spawn": "⚙️",
+        "pool_worker_loaded": "✅",
+        "fork_pool_spawn": "⚙️",
+        "fork_pool_loaded": "✅",
+        "merge_start": "🔗",
+        "merge_complete": "✅",
+        "request_complete": "🎉",
+        "cache_hit": "📦",
+        "server_start": "🚀",
+        "worker_exit": "🔴",
+        "pool_worker_timing": "⏱️",
         "adaptive_chunk_sizing": "✂️",
-        "replan_from_pool":    "♻️",
+        "replan_from_pool": "♻️",
     }
 
     rows: list[str] = []
@@ -2098,15 +2100,15 @@ def toast_renderer():
                 '<div class="toast-container"><div class="toast ok">'
                 f'<div class="toast-title">✓ {title}</div>'
                 f'<div class="toast-body">'
-                f'{secs:.1f}s &middot; {out_mb:.2f} MB output'
-                f'</div></div></div>'
+                f"{secs:.1f}s &middot; {out_mb:.2f} MB output"
+                f"</div></div></div>"
             )
         else:
             html = (
                 '<div class="toast-container"><div class="toast err">'
                 f'<div class="toast-title">✖ Conversion failed</div>'
                 f'<div class="toast-body">{title}</div>'
-                f'</div></div>'
+                f"</div></div>"
             )
         _slot_toast.markdown(html, unsafe_allow_html=True)
         st.session_state["toast_active"] = {"id": cid, "expires_at": now + 5.0}
@@ -2222,11 +2224,21 @@ uploaded_file = st.file_uploader(
     # toast instead of Streamlit's generic "files of type X are not
     # allowed" — see _format_diagnostic.
     type=[
-        "docx", "pptx", "xlsx", "pdf",
-        "doc", "xls", "ppt",
-        "csv", "rtf",
-        "odt", "ods", "odp", "odg",
-        "odf", "odb",
+        "docx",
+        "pptx",
+        "xlsx",
+        "pdf",
+        "doc",
+        "xls",
+        "ppt",
+        "csv",
+        "rtf",
+        "odt",
+        "ods",
+        "odp",
+        "odg",
+        "odf",
+        "odb",
     ],
 )
 
@@ -2281,7 +2293,7 @@ def live_charts():
             label = (
                 '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
                 'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
-                'charts will populate live</div>'
+                "charts will populate live</div>"
             )
         else:
             label = (
@@ -2296,7 +2308,7 @@ def live_charts():
         label = (
             '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
             'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
-            'charts will populate live</div>'
+            "charts will populate live</div>"
         )
 
     _slot_chart_label.markdown(label, unsafe_allow_html=True)
@@ -2379,9 +2391,7 @@ live_charts()
 # Stats display above is independent of upload state.
 if uploaded_file:
     if _snap_active is not None:
-        st.warning(
-            "⏳ A conversion is already running — submit another after it finishes."
-        )
+        st.warning("⏳ A conversion is already running — submit another after it finishes.")
     else:
         # `.size` reads the size from Streamlit's UploadedFile metadata
         # without materializing the bytes. `getvalue()` would copy the full
@@ -2394,9 +2404,7 @@ if uploaded_file:
             if _start_conversion(uploaded_file.name, uploaded_file.getvalue()):
                 st.rerun()
             else:
-                st.warning(
-                    "Another conversion just started — try again in a moment."
-                )
+                st.warning("Another conversion just started — try again in a moment.")
 
 # ============================================================
 # CONVERSION HISTORY
@@ -2442,8 +2450,7 @@ if st.session_state.history:
             else:
                 freed_mb = resp.get("bytes_freed", 0) / 1024 / 1024
                 st.toast(
-                    f"Cleared {resp.get('files_deleted', 0)} files "
-                    f"({freed_mb:.1f} MB freed)",
+                    f"Cleared {resp.get('files_deleted', 0)} files " f"({freed_mb:.1f} MB freed)",
                     icon="✅",
                 )
         except Exception as e:
@@ -2540,7 +2547,7 @@ if st.session_state.history:
 st.markdown(
     '<div class="section-hdr">EVENTS FEED'
     '<span class="right">last 25 · refresh every 3 s</span>'
-    '</div>',
+    "</div>",
     unsafe_allow_html=True,
 )
 _slot_events = st.empty()
@@ -2555,8 +2562,8 @@ live_events()
 
 st.markdown(
     '<div style="text-align:center;font-size:11px;color:#475569;margin-top:18px;">'
-    'Stats auto-refresh every 2s · in-progress conversions and recent results '
-    'survive page refresh · heartbeats &amp; timings kept for 30 min per request'
-    '</div>',
+    "Stats auto-refresh every 2s · in-progress conversions and recent results "
+    "survive page refresh · heartbeats &amp; timings kept for 30 min per request"
+    "</div>",
     unsafe_allow_html=True,
 )

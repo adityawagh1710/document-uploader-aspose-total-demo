@@ -323,11 +323,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response_class=StreamingResponse,
         responses={
             200: {
-                "content": {
-                    "application/pdf": {
-                        "schema": {"type": "string", "format": "binary"}
-                    }
-                },
+                "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}},
                 "description": "Converted PDF file (binary stream).",
             }
         },
@@ -578,8 +574,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def landing() -> HTMLResponse:
         ready = bool(health_checker.snapshot(state["active_jobs"]).get("ready"))
-        return HTMLResponse(_LANDING_HTML
-            .replace("{{STATUS_LABEL}}", "READY" if ready else "NOT READY")
+        return HTMLResponse(
+            _LANDING_HTML.replace("{{STATUS_LABEL}}", "READY" if ready else "NOT READY")
             .replace("{{STATUS_CLASS}}", "ok" if ready else "err")
             .replace("{{VERSION}}", app.version)
         )

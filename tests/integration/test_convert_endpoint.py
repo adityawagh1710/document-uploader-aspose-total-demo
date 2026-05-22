@@ -148,7 +148,7 @@ def test_convert_routes_odg_through_libreoffice(
     odg_body = buf.getvalue()
 
     response = client.post(
-        "/convert",
+        "/v1/convert",
         files={"file": ("drawing.odg", odg_body, "application/octet-stream")},
     )
     assert response.status_code == 200, response.content
@@ -207,7 +207,7 @@ sys.exit(1)
     pdf_body = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj<<>>endobj\n%%EOF\n"
     with TestClient(app) as client:
         response = client.post(
-            "/convert",
+            "/v1/convert",
             files={"file": ("bad.pdf", pdf_body, "application/pdf")},
         )
     assert response.status_code >= 400, (
