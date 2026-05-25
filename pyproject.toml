@@ -18,7 +18,7 @@ classifiers = [
 dependencies = [
     "fastapi>=0.115,<0.137",
     "uvicorn[standard]==0.32.*",
-    "pydantic==2.9.*",
+    "pydantic>=2.9,<2.14",
     "pydantic-settings>=2.6,<2.15",
     "aiofiles==24.1.*",
     "python-multipart==0.0.29",
