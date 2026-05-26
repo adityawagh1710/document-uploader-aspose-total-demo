@@ -23,7 +23,7 @@ import aiofiles
 from fastapi import APIRouter, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from office_convert import libreoffice_convert, orchestrator
+from office_convert import aspose_email_convert, libreoffice_convert, orchestrator
 from office_convert import logging as oc_logging
 from office_convert.cache import CacheManager
 from office_convert.config import Settings, get_settings
@@ -176,6 +176,11 @@ _LANDING_HTML = """<!doctype html>
     <span class="badge">.svg</span>
   </div>
 
+  <div class="row-title">Email</div>
+  <div class="badges">
+    <span class="badge">.eml</span>
+  </div>
+
   <div class="section-title">Endpoints</div>
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
@@ -214,12 +219,15 @@ class HealthChecker:
         self.license_mgr = license_mgr
         self.static_problems: list[str] = []
 
-        # Verify all four per-format worker binaries are present. Each format
-        # is served by its own binary to keep Aspose's CodePorting framework
-        # versions from colliding in one process.
+        # Verify all five per-product worker binaries are present. Each
+        # product gets its own binary to keep Aspose's CodePorting framework
+        # versions from colliding in one process. Email is checked alongside
+        # the four FormatName workers even though it routes outside the
+        # orchestrator — startup readiness should still fail if it's absent.
         prefix = settings.worker_binary_prefix
+        required_workers: tuple[str, ...] = (*ACCEPTED_FORMATS, "email")
         missing = [
-            fmt for fmt in ACCEPTED_FORMATS if not prefix.with_name(f"{prefix.name}-{fmt}").exists()
+            w for w in required_workers if not prefix.with_name(f"{prefix.name}-{w}").exists()
         ]
         if missing:
             self.static_problems.append("worker_binary_missing")
@@ -512,6 +520,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 return StreamingResponse(
                     stream_libreoffice(),
+                    media_type="application/pdf",
+                    headers={
+                        "X-Request-ID": rid,
+                        "Content-Type": "application/pdf",
+                    },
+                )
+
+            # EML goes through the Aspose.Email → MHTML → worker-docx PDF
+            # pipeline (see office_convert.aspose_email_convert). Like the
+            # libreoffice path it bypasses the chunk planner entirely: emails
+            # are short, single-shot, and the two Aspose products' cs2cpp
+            # frameworks must not coexist in one process.
+            if fmt == "eml":
+                email_scratch = scratch_dir / "email_out"
+                try:
+                    pdf_path = await aspose_email_convert.convert_to_pdf(
+                        input_path,
+                        scratch_dir=email_scratch,
+                        settings=s,
+                        request_id=rid,
+                    )
+                except BaseException:
+                    shutil.rmtree(scratch_dir, ignore_errors=True)
+                    raise
+
+                async def stream_email_pdf() -> AsyncIterator[bytes]:
+                    try:
+                        async with aiofiles.open(pdf_path, "rb") as fh:
+                            while True:
+                                block = await fh.read(64 * 1024)
+                                if not block:
+                                    break
+                                yield block
+                    finally:
+                        shutil.rmtree(scratch_dir, ignore_errors=True)
+                        state["active_jobs"] -= 1
+                        server_sem.release()
+
+                return StreamingResponse(
+                    stream_email_pdf(),
                     media_type="application/pdf",
                     headers={
                         "X-Request-ID": rid,

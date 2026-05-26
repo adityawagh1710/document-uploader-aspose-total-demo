@@ -13,7 +13,7 @@ namespace office_convert {
 struct RenderArgs {
     std::string input;
     std::string output;
-    std::string format;  // "docx" | "pptx" | "xlsx" | "pdf"
+    std::string format;  // "docx" | "pptx" | "xlsx" | "pdf" | "email"
     int page_start = 1;
     int page_end = 1;
 };

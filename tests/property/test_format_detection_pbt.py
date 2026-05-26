@@ -9,7 +9,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from office_convert.errors import UnsupportedFormatError
-from office_convert.probe import OLE2_MAGIC, detect_format
+from office_convert.probe import EML_HEADER_PREFIXES, OLE2_MAGIC, detect_format
 
 # All real magic-byte prefixes that detect_format recognizes. Random bytes
 # starting with any of these would (correctly) NOT raise UnsupportedFormatError;
@@ -38,7 +38,15 @@ def _starts_with_any_magic(prefix: bytes) -> bool:
         return True
     # SVG with a UTF-8 BOM is also recognized after lstrip
     stripped = prefix.lstrip(b"\xef\xbb\xbf").lstrip()
-    return stripped.startswith((b"<?xml", b"<svg"))
+    if stripped.startswith((b"<?xml", b"<svg")):
+        return True
+    # EML: lowercase header prefix + ": " in the first 200 bytes anywhere on
+    # the first line. Random bytes hitting both conditions is astronomically
+    # unlikely (specific ASCII case + the colon-space pair), but we mirror
+    # detect_format's logic here so hypothesis can never trip over a path the
+    # production code would accept.
+    first_line = stripped.split(b"\n", 1)[0].lower()
+    return any(first_line.startswith(p) for p in EML_HEADER_PREFIXES) and b": " in stripped[:200]
 
 
 @settings(max_examples=100, deadline=timedelta(seconds=2))

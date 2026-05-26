@@ -215,6 +215,7 @@ full file for OOXML central-directory inspection):
 | `II*\x00` (TIFF little-endian) or `MM\x00*` (TIFF big-endian)                         | **LibreOffice** (.tiff) |
 | `RIFF` + `WEBP` tag within first 16 bytes                                             | **LibreOffice** (.webp) |
 | `<?xml…<svg…` or `<svg…` (tolerant text sniff in first 512 bytes, BOM-tolerant)       | **LibreOffice** (.svg) |
+| RFC 5322 header sniff (first 1 KB, lowercased, starts with one of `received:`/`return-path:`/`delivered-to:`/`message-id:`/`date:`/`from:`/`to:`/`subject:`/`mime-version:`/`x-…` AND contains `": "` in the first 200 bytes) | **Aspose.Email pipeline** (.eml) |
 | anything else                                                                          | reject 400 `unsupported_format` |
 
 **LibreOffice fallback path (ODG + images, added 2026-05-22)**: rows marked
@@ -229,6 +230,26 @@ caching. Rationale: Aspose.Total for C++ has no library for drawing pages,
 raster images, or SVG; Aspose.Imaging is .NET/Java only; LibreOffice
 Draw is already installed via `libreoffice-draw-nogui` for the original
 ODG use case (commit `2dd40cf`), so reusing it costs zero new image weight.
+
+**Aspose.Email pipeline (EML, added 2026-05-26)**: EML inputs also bypass
+the orchestrator. The server hands the buffered input to
+`office_convert.aspose_email_convert.convert_to_pdf()`, which runs a
+three-subprocess pipeline:
+
+1. `office-convert-worker-email` loads the EML via `Aspose::Email::
+   MailMessage::Load`, saves MHTML via `SaveOptions::get_DefaultMhtml()`.
+2. `office-convert-worker-docx --mode probe` on the MHTML returns the
+   rendered page count.
+3. `office-convert-worker-docx --mode render --page-range 1-N` on the
+   MHTML produces the final PDF. Aspose.Words selects `LoadFormat::Mhtml`
+   (51) automatically from the file content.
+
+The stages run in distinct processes so Aspose.Email's CodePorting
+framework 25.12 and Aspose.Words's CodePorting framework 26.3 never
+coexist in one address space — the same isolation that the 4-binary
+split already provides for Words/Cells/Slides/PDF. No chunking, no
+caching; emails are short, single-shot, and the orchestrator's chunk
+planner adds no value here.
 
 **Legacy binary Office formats (added 2026-05-13)**: OLE2 / Compound File
 Binary inputs (pre-2007 `.doc`/`.xls`/`.ppt` and their template/template-show

@@ -211,6 +211,26 @@ def test_convert_routes_png_through_libreoffice(
     assert b"fake png pdf" in response.content
 
 
+def test_convert_routes_eml_through_email_pipeline(
+    client: TestClient,
+    sample_eml: Path,
+) -> None:
+    """EML bypasses the Aspose orchestrator and reaches the email pipeline.
+
+    The fake worker fixture mocks both `worker-email` (stage 1: EML → MHT)
+    and `worker-docx` (stages 2+3: probe + render MHT → PDF). End-to-end
+    we expect: HTTP 200, application/pdf body, valid PDF magic.
+    """
+    with sample_eml.open("rb") as f:
+        response = client.post(
+            "/v1/convert",
+            files={"file": ("message.eml", f, "message/rfc822")},
+        )
+    assert response.status_code == 200, response.content
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
+
+
 def test_convert_render_failure_returns_json_diagnostic(tmp_path: Path) -> None:
     """Regression: a worker that fails on --mode=render must surface as a
     JSON Diagnostic with a 4xx/5xx status, not HTTP 200 with an empty body.

@@ -309,3 +309,33 @@ def test_detect_webp_requires_webp_tag() -> None:
     avi_like = b"RIFF\x10\x00\x00\x00AVI LIST"
     with pytest.raises(UnsupportedFormatError):
         detect_format(avi_like)
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        b"From: a@b.com\r\nTo: c@d.com\r\nSubject: hi\r\n\r\nhello\r\n",
+        b"Return-Path: <a@b.com>\r\nReceived: from x by y;\r\nFrom: a@b.com\r\n\r\nbody",
+        b"Message-ID: <abc@host>\r\nDate: Mon, 1 Jan 2026 00:00:00 +0000\r\nFrom: x\r\n",
+        b"\xef\xbb\xbfFrom: a@b.com\r\nSubject: test\r\n\r\nbody",  # BOM-prefixed
+        b"MIME-Version: 1.0\r\nFrom: a@b.com\r\nSubject: x\r\n\r\n",
+    ],
+)
+def test_detect_eml_by_headers(head: bytes) -> None:
+    """RFC 5322 messages with a recognized header field route to the EML pipeline."""
+    assert detect_format(head) == "eml"
+
+
+def test_detect_plain_text_is_not_eml() -> None:
+    """Plain text starting with header-like words but no ': ' is NOT detected as EML."""
+    body = b"Subject lines are great in essays but not in plain text."
+    with pytest.raises(UnsupportedFormatError):
+        detect_format(body)
+
+
+def test_detect_mbox_is_not_eml() -> None:
+    """The mbox 'From ' separator (no colon) must not register as EML — that's
+    the mbox archive format, not a standalone RFC 5322 message."""
+    mbox_like = b"From jdoe@example.com Mon Jan  1 00:00:00 2026\r\nSubject: x\r\n\r\n"
+    with pytest.raises(UnsupportedFormatError):
+        detect_format(mbox_like)

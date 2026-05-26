@@ -76,10 +76,10 @@ def test_settings(
 ) -> Settings:
     """Settings pointing at a fake per-format worker set + valid license."""
     # Production has one worker binary per Aspose product (post-2026-05-12
-    # 4-binary split). Tests mirror that layout: write the same fake script
-    # to <prefix>-<fmt> for each accepted format.
+    # 4-binary split; Email worker added 2026-05-26). Tests mirror that
+    # layout: write the same fake script to <prefix>-<fmt> for each.
     prefix = tmp_path / "fake-worker"
-    for fmt in ("docx", "pptx", "xlsx", "pdf"):
+    for fmt in ("docx", "pptx", "xlsx", "pdf", "email"):
         _write_executable(prefix.with_name(f"{prefix.name}-{fmt}"), fake_worker_script)
     license_path = tmp_path / "license.lic"
     _make_valid_license(license_path, days=30)
@@ -116,3 +116,9 @@ def sample_pdf(tmp_path: Path) -> Path:
         c.showPage()
     c.save()
     return path
+
+
+@pytest.fixture
+def sample_eml() -> Path:
+    """Pre-checked-in RFC 5322 email fixture (multipart/alternative)."""
+    return Path(__file__).parent / "corpus" / "sample.eml"

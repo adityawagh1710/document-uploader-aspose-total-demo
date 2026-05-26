@@ -56,6 +56,7 @@ ACCEPTED_UPLOAD_FORMATS: tuple[str, ...] = (
     "bmp",
     "webp",
     "svg",
+    "eml",
 )
 
 PDF_MAGIC = b"%PDF-"
@@ -81,6 +82,26 @@ TIFF_BE_MAGIC = b"MM\x00*"
 # chunk size, so this is a two-segment match handled in detect_format().
 RIFF_MAGIC = b"RIFF"
 WEBP_TAG = b"WEBP"
+
+# EML (RFC 5322) has no fixed magic. It's a text-format mail container that
+# always begins with one of a small set of header field names followed by
+# ": ". A real EML file may start with any of these; "From " (mbox separator)
+# is excluded because that's the mbox archive format, not a standalone EML.
+# Checking the first ~1 KB head sample after stripping leading whitespace +
+# optional UTF-8 BOM is enough to disambiguate from random text without
+# false-positives on plain text files (those lack the ": " continuation).
+EML_HEADER_PREFIXES: tuple[bytes, ...] = (
+    b"received:",
+    b"return-path:",
+    b"delivered-to:",
+    b"message-id:",
+    b"date:",
+    b"from:",
+    b"to:",
+    b"subject:",
+    b"mime-version:",
+    b"x-",  # any X-* extension header
+)
 
 OOXML_CONTENT_TYPE_TO_FORMAT: dict[str, FormatName] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml": "docx",
@@ -140,7 +161,7 @@ OLE2_EXT_TO_FORMAT: dict[str, FormatName] = {
 }
 
 
-def detect_format(
+def detect_format(  # noqa: PLR0911
     magic_bytes: bytes,
     *,
     source_path: Path | None = None,
@@ -185,8 +206,26 @@ def detect_format(
     if image_fmt is not None:
         return image_fmt
 
+    if _looks_like_eml(magic_bytes):
+        return "eml"
+
     head_hex = magic_bytes[:8].hex()
     raise UnsupportedFormatError(detected_magic=head_hex, accepted=list(ACCEPTED_UPLOAD_FORMATS))
+
+
+def _looks_like_eml(magic_bytes: bytes) -> bool:
+    """Detect RFC 5322 email by header lines in the first ~1 KB.
+
+    Tolerates a leading UTF-8 BOM and leading whitespace. The presence of
+    a recognized header name followed by ': ' is the discriminator: plain
+    text files happen to start with words but rarely with one of these
+    specific names followed by a colon and a space.
+    """
+    head = magic_bytes[:1024].lstrip(b"\xef\xbb\xbf").lstrip()
+    if b": " not in head[:200]:
+        return False
+    first_line = head.split(b"\n", 1)[0].lower()
+    return any(first_line.startswith(prefix) for prefix in EML_HEADER_PREFIXES)
 
 
 def _detect_image_format(magic_bytes: bytes) -> DispatchFormat | None:  # noqa: PLR0911

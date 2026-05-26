@@ -589,7 +589,7 @@ def _render_tile(
     )
 
 
-def _format_key(filename: str) -> str:
+def _format_key(filename: str) -> str:  # noqa: PLR0911
     """Canonical format key for stat aggregation. Maps OOXML + legacy
     binary extensions onto the 4 worker buckets, with `other` for the
     edge case where the file's extension doesn't match any known set.
@@ -605,6 +605,8 @@ def _format_key(filename: str) -> str:
         return "pdf"
     if ext in {"png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "webp", "svg", "odg"}:
         return "image"
+    if ext == "eml":
+        return "email"
     return "other"
 
 
@@ -614,6 +616,7 @@ _FORMAT_ICONS = {
     "xlsx": "📈",
     "pdf": "📕",
     "image": "🖼️",
+    "email": "✉️",
     "other": "📦",
 }
 
@@ -2225,12 +2228,10 @@ if _snap_error and _snap_error["ts"] > st.session_state.seen_error_ts:
     st.session_state.seen_error_ts = _snap_error["ts"]
 
 uploaded_file = st.file_uploader(
-    "Drop a file — Office (DOCX/PPTX/XLSX/PDF/legacy/ODT/ODS/ODP/ODG/RTF/CSV) "
-    "or image (PNG/JPG/TIFF/GIF/BMP/WEBP/SVG). Images + ODG go through "
-    "LibreOffice; everything else through Aspose. ODF/ODB upload but are "
-    "rejected with a precise message — no rendering library for them.",
+    "Drop an Office doc, image, or email to convert to PDF.",
     # ODG and image formats go through the LibreOffice fallback path
     # (Aspose.Total C++ can't render drawing pages, raster images, or SVG).
+    # EML goes through the aspose_email_convert two-stage pipeline.
     # ODF/ODB are still accepted at the picker so the server's per-subtype
     # rejection message reaches the UI toast instead of Streamlit's generic
     # "files of type X are not allowed" — see _format_diagnostic.
@@ -2261,6 +2262,8 @@ uploaded_file = st.file_uploader(
         "bmp",
         "webp",
         "svg",
+        # Email (Aspose.Email → MHTML → worker-docx pipeline)
+        "eml",
     ],
 )
 
