@@ -12,12 +12,16 @@ from typing import Any, Literal
 
 FormatName = Literal["docx", "pptx", "xlsx", "pdf"]
 # Wider type returned by probe.detect_format: includes formats that don't go
-# through an Aspose worker. Currently ODG plus raster/vector image formats
-# (PNG/JPG/TIFF/GIF/BMP/WEBP/SVG), all routed to the LibreOffice fallback —
-# Aspose.Total for C++ has no library for them, but headless soffice handles
-# the lot via `--convert-to pdf`. The orchestrator + workers still operate
-# on FormatName; the server routes `DispatchFormat \ FormatName` to the
-# libreoffice path before the orchestrator is even constructed.
+# through the Aspose chunk planner. Currently:
+#   - ODG + raster/vector image formats → LibreOffice fallback (no native
+#     Aspose product for drawing-page geometry or image-to-PDF in C++).
+#   - EML → aspose_email_convert pipeline (Aspose.Email→MHTML, then
+#     worker-docx renders MHTML→PDF; the chain runs out of band because
+#     Aspose.Email's cs2cpp framework must stay process-isolated from
+#     Aspose.Words's).
+# The orchestrator + workers still operate on FormatName; the server routes
+# `DispatchFormat \ FormatName` to the libreoffice or email path before the
+# orchestrator is even constructed.
 DispatchFormat = Literal[
     "docx",
     "pptx",
@@ -31,6 +35,7 @@ DispatchFormat = Literal[
     "bmp",
     "webp",
     "svg",
+    "eml",
 ]
 
 

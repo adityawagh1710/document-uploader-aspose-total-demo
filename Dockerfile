@@ -1,11 +1,12 @@
-# Multi-stage Dockerfile for office-convert (4-binary per-product split,
-# post-2026-05-12 v2 ABI fix).
+# Multi-stage Dockerfile for office-convert (5-binary per-product split,
+# post-2026-05-12 v2 ABI fix; Email worker added 2026-05-26).
 #
-# Stage 1 (builder): compile FOUR `office-convert-worker-<fmt>` binaries,
+# Stage 1 (builder): compile FIVE `office-convert-worker-<fmt>` binaries,
 # each linking exactly one Aspose product from `vendor/aspose/`. The split
 # resolves the cs2cpp framework SONAME collision between Words 26.3 and
-# Slides/PDF 26.4 that previously wedged XLSX rendering.
-# Stage 2 (runtime): slim Python 3.12 image with FastAPI + qpdf + all four
+# Slides/PDF 26.4 that previously wedged XLSX rendering; Email 25.12 brings
+# its own cs2cpp 25.12 and stays isolated via the same mechanism.
+# Stage 2 (runtime): slim Python 3.12 image with FastAPI + qpdf + all five
 # worker binaries + each product's full .so tree (per-binary RPATHs keep
 # them isolated at load time).
 #
@@ -52,6 +53,7 @@ COPY vendor/aspose/Words  /opt/aspose/Words
 COPY vendor/aspose/Cells  /opt/aspose/Cells
 COPY vendor/aspose/Slides /opt/aspose/Slides
 COPY vendor/aspose/PDF    /opt/aspose/PDF
+COPY vendor/aspose/Email  /opt/aspose/Email
 
 # Worker sources.
 WORKDIR /build
@@ -70,7 +72,8 @@ RUN cmake -S worker_cpp -B build \
         --target office-convert-worker-docx \
                  office-convert-worker-pptx \
                  office-convert-worker-xlsx \
-                 office-convert-worker-pdf
+                 office-convert-worker-pdf \
+                 office-convert-worker-email
 
 # =============================================================================
 # Stage 2: runtime — slim Python + qpdf + the worker binary + Aspose .so files
@@ -121,10 +124,11 @@ RUN pip install --no-cache-dir uv==0.5.* \
 # Copy all four C++ worker binaries from the builder stage. Each is linked
 # against ONLY its product's libs and has a per-product INSTALL_RPATH, so
 # their address spaces stay independent at load time.
-COPY --from=builder /build/build/office-convert-worker-docx /usr/local/bin/office-convert-worker-docx
-COPY --from=builder /build/build/office-convert-worker-pptx /usr/local/bin/office-convert-worker-pptx
-COPY --from=builder /build/build/office-convert-worker-xlsx /usr/local/bin/office-convert-worker-xlsx
-COPY --from=builder /build/build/office-convert-worker-pdf  /usr/local/bin/office-convert-worker-pdf
+COPY --from=builder /build/build/office-convert-worker-docx  /usr/local/bin/office-convert-worker-docx
+COPY --from=builder /build/build/office-convert-worker-pptx  /usr/local/bin/office-convert-worker-pptx
+COPY --from=builder /build/build/office-convert-worker-xlsx  /usr/local/bin/office-convert-worker-xlsx
+COPY --from=builder /build/build/office-convert-worker-pdf   /usr/local/bin/office-convert-worker-pdf
+COPY --from=builder /build/build/office-convert-worker-email /usr/local/bin/office-convert-worker-email
 RUN chmod 755 /usr/local/bin/office-convert-worker-*
 
 # Copy each product's .so trees to /opt/aspose/<Product>/, matching the
@@ -139,6 +143,7 @@ COPY --from=builder /opt/aspose/Cells/Aspose.Cells/lib                          
 COPY --from=builder /opt/aspose/Slides/Aspose.Slides.Cpp/lib                          /opt/aspose/Slides/Aspose.Slides.Cpp/lib
 COPY --from=builder /opt/aspose/Slides/CodePorting.Translator.Cs2Cpp.Framework/lib    /opt/aspose/Slides/CodePorting.Translator.Cs2Cpp.Framework/lib
 COPY --from=builder /opt/aspose/PDF/lib                                                /opt/aspose/PDF/lib
+COPY --from=builder /opt/aspose/Email/lib                                              /opt/aspose/Email/lib
 
 # Copy the Python package.
 COPY office_convert/ /app/office_convert/

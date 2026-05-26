@@ -527,16 +527,17 @@ clean-all: clean ## CLEAN also remove test/cache artifacts
 # =============================================================================
 .PHONY: check-vendor check-license check-image
 
-# Expected Linux x86_64 .so files for the 4-libs vendor path.
-# (post-2026-05-12 SKU pivot — see aidlc-state.md).
+# Expected Linux x86_64 .so files for the 5-libs vendor path.
+# (post-2026-05-12 SKU pivot — see aidlc-state.md; Email added 2026-05-26).
 WORDS_SO    := $(VENDOR_DIR)/Words/Aspose.Words.Cpp/lib/libAspose.Words.Cpp.so
 CELLS_SO    := $(VENDOR_DIR)/Cells/Aspose.Cells/lib/linux_x86_64/libAspose.Cells.so
 SLIDES_SO   := $(VENDOR_DIR)/Slides/Aspose.Slides.Cpp/lib/libAspose.Slides_x86_64_libstdcpp_libc2.23.so
 PDF_SO_GLOB := $(VENDOR_DIR)/PDF/lib/libAspose.PDF.Cpp_*.so
+EMAIL_SO    := $(VENDOR_DIR)/Email/lib/libAspose.Email.Cpp_gcc.so
 
 check-vendor:
 	@missing=0; \
-	for path in $(WORDS_SO) $(CELLS_SO) $(SLIDES_SO); do \
+	for path in $(WORDS_SO) $(CELLS_SO) $(SLIDES_SO) $(EMAIL_SO); do \
 		if [ ! -f "$$path" ]; then \
 			printf "$(YELLOW)ERROR: $$path not found$(RESET)\n"; \
 			missing=$$((missing + 1)); \
@@ -552,15 +553,16 @@ check-vendor:
 	fi
 
 .PHONY: verify-vendor
-verify-vendor: check-vendor ## BUILD verify the 4 Aspose vendor trees are structurally complete + Linux x86_64
-	@printf "$(BLUE)Verifying vendor/aspose/ layout (Path B — 4 separate libs)...$(RESET)\n\n"
-	@for product in Words Cells Slides PDF; do \
+verify-vendor: check-vendor ## BUILD verify the 5 Aspose vendor trees are structurally complete + Linux x86_64
+	@printf "$(BLUE)Verifying vendor/aspose/ layout (Path B — 5 separate libs)...$(RESET)\n\n"
+	@for product in Words Cells Slides PDF Email; do \
 		printf "$(BLUE)── $$product ──$(RESET)\n"; \
 		case $$product in \
 			Words)  so=$(WORDS_SO);;  \
 			Cells)  so=$(CELLS_SO);;  \
 			Slides) so=$(SLIDES_SO);; \
 			PDF)    so=$$(ls $(PDF_SO_GLOB) 2>/dev/null | head -1);; \
+			Email)  so=$(EMAIL_SO);; \
 		esac; \
 		if [ -f "$$so" ]; then \
 			size=$$(du -h "$$so" | cut -f1); \
@@ -580,7 +582,8 @@ verify-vendor: check-vendor ## BUILD verify the 4 Aspose vendor trees are struct
 	@for cfg in \
 		$(VENDOR_DIR)/Words/Aspose.Words.Cpp/aspose.words.cpp-config.cmake \
 		$(VENDOR_DIR)/Cells/Aspose.Cells/aspose.cells-config.cmake \
-		$(VENDOR_DIR)/Slides/Aspose.Slides.Cpp/aspose.slides.cpp-config.cmake; do \
+		$(VENDOR_DIR)/Slides/Aspose.Slides.Cpp/aspose.slides.cpp-config.cmake \
+		$(VENDOR_DIR)/Email/aspose.email.cpp-config.cmake; do \
 		if [ -f "$$cfg" ]; then \
 			printf "  $(GREEN)✓$(RESET) $$cfg\n"; \
 		else \

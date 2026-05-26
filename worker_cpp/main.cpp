@@ -34,7 +34,7 @@ namespace {
 
 void usage() {
     std::cerr << "usage: office-convert-worker --mode <render|probe> "
-                 "--input <path> --format <docx|pptx|xlsx|pdf> "
+                 "--input <path> --format <docx|pptx|xlsx|pdf|email> "
                  "--license-path <path> "
                  "[--output <path>] [--page-range <s>-<e>]\n";
 }

@@ -17,12 +17,14 @@
 **v1.0 — local PoC** · Chunked Office document → PDF conversion service.
 
 Converts DOCX, PPTX, XLSX, PDF, legacy DOC/XLS/PPT, ODT/ODS/ODP/ODG,
-RTF, CSV, **and raster + vector images** (PNG, JPG, TIFF, GIF, BMP,
-WEBP, SVG) to PDF over a local HTTP API. Office docs render via
-**Aspose.Total C++** with RAM-isolated subprocess workers and **qpdf**
-streaming merge; ODG + images route through the bundled **LibreOffice**
-fallback (soffice `--convert-to pdf` picks the right importer per
-input extension).
+RTF, CSV, **raster + vector images** (PNG, JPG, TIFF, GIF, BMP, WEBP,
+SVG), **and email** (EML) to PDF over a local HTTP API. Office docs
+render via **Aspose.Total C++** with RAM-isolated subprocess workers
+and **qpdf** streaming merge; ODG + images route through the bundled
+**LibreOffice** fallback (soffice `--convert-to pdf` picks the right
+importer per input extension); EML goes through a two-stage
+**Aspose.Email → MHTML → Aspose.Words → PDF** pipeline so the two
+products' CodePorting frameworks stay process-isolated.
 
 ```
 ┌────────────────────── Docker container (4GB RAM + 2GB swap) ──────────────────────┐
@@ -39,11 +41,13 @@ input extension).
 │       │ Pool mode: load once → render N chunks (stdin/stdout JSON protocol)        │
 │       ▼                                                                            │
 │   ┌──────────────────────────────────────────────────────────────────────┐         │
-│   │ C++ Worker Pool (4 per-format binaries, prlimit RLIMIT_AS=6GB)       │         │
+│   │ C++ Worker Pool (5 per-product binaries, prlimit RLIMIT_AS=6GB)      │         │
 │   │ ├─ office-convert-worker-docx  (Aspose.Words, PageSet slicing)       │         │
 │   │ ├─ office-convert-worker-pptx  (Aspose.Slides, slide-index array)    │         │
 │   │ ├─ office-convert-worker-xlsx  (Aspose.Cells, PageIndex/PageCount)   │         │
-│   │ └─ office-convert-worker-pdf   (Aspose.PDF, page Delete + Save)      │         │
+│   │ ├─ office-convert-worker-pdf   (Aspose.PDF, page Delete + Save)      │         │
+│   │ └─ office-convert-worker-email (Aspose.Email, EML → MHTML; the       │         │
+│   │                                 docx worker then renders MHTML→PDF)  │         │
 │   └──────────────────────────────────────────────────────────────────────┘         │
 │       │                                                                            │
 │       │ chunk PDFs                                                                 │
@@ -183,7 +187,7 @@ production design, and the original 25-question requirement set lives at
 
 **Scaffolded — operator must wire in real Aspose calls before production**:
 
-- `worker_cpp/formats/{docx,pptx,xlsx,pdf}.cpp` — Aspose API calls are
+- `worker_cpp/formats/{docx,pptx,xlsx,pdf,email}.cpp` — Aspose API calls are
   documented in comments but commented out, so the C++ compiles cleanly
   without the SDK headers. After placing the Aspose tarball in the
   build context, uncomment the real calls per the inline comment

@@ -1,4 +1,4 @@
-# worker_cpp/CMakeLists.txt — build FOUR per-product office-convert workers.
+# worker_cpp/CMakeLists.txt — build FIVE per-product office-convert workers.
 #
 # Background (the bug this solves):
 #   The previous single-binary worker linked all 4 Aspose libraries. Words 26.3
@@ -15,6 +15,9 @@
 #     - office-convert-worker-pptx  → Slides  + Slides' CodePorting 26.4
 #     - office-convert-worker-xlsx  → Cells   (plain C++ — no CodePorting)
 #     - office-convert-worker-pdf   → PDF.Cpp + PDF's bundled cs2cpp .so
+#     - office-convert-worker-email → Email   + Email's cs2cpp 25.12 (MHTML out,
+#                                     not PDF — see formats/email.cpp for the
+#                                     two-stage pipeline rationale)
 #
 # Each binary compiles:  main.cpp + error.cpp + formats/<fmt>.cpp
 # where formats/<fmt>.cpp owns apply_license, dispatch_render, dispatch_probe
@@ -52,8 +55,9 @@ set(WORDS_VENDOR_ROOT  "${VENDOR_ROOT}/Words"  CACHE PATH "Aspose.Words vendor t
 set(CELLS_VENDOR_ROOT  "${VENDOR_ROOT}/Cells"  CACHE PATH "Aspose.Cells vendor tree")
 set(SLIDES_VENDOR_ROOT "${VENDOR_ROOT}/Slides" CACHE PATH "Aspose.Slides vendor tree")
 set(PDF_VENDOR_ROOT    "${VENDOR_ROOT}/PDF"    CACHE PATH "Aspose.PDF vendor tree")
+set(EMAIL_VENDOR_ROOT  "${VENDOR_ROOT}/Email"  CACHE PATH "Aspose.Email vendor tree")
 
-foreach(_root WORDS_VENDOR_ROOT CELLS_VENDOR_ROOT SLIDES_VENDOR_ROOT PDF_VENDOR_ROOT)
+foreach(_root WORDS_VENDOR_ROOT CELLS_VENDOR_ROOT SLIDES_VENDOR_ROOT PDF_VENDOR_ROOT EMAIL_VENDOR_ROOT)
     if(NOT EXISTS "${${_root}}")
         message(FATAL_ERROR
             "${_root} not found at ${${_root}}. "
@@ -118,6 +122,12 @@ _find_one_so(SLIDES_CS_SO "${SLIDES_VENDOR_ROOT}/CodePorting.Translator.Cs2Cpp.F
 
 _find_one_so(PDF_SO       "${PDF_VENDOR_ROOT}/lib/libAspose.PDF.Cpp_x86_64*.so")
 _find_one_so(PDF_CS_SO    "${PDF_VENDOR_ROOT}/lib/libcodeporting.translator.cs2cpp.framework_x86_64*.so")
+
+# Aspose.Email 25.12 ships a flat layout: include/Aspose.Email.Cpp/ holds the
+# product headers and include/ holds the cs2cpp framework headers; lib/
+# co-locates both the product .so and its bundled cs2cpp framework.
+_find_one_so(EMAIL_SO     "${EMAIL_VENDOR_ROOT}/lib/libAspose.Email.Cpp_gcc.so")
+_find_one_so(EMAIL_CS_SO  "${EMAIL_VENDOR_ROOT}/lib/libcodeporting.translator.cs2cpp.framework_x86_64*.so")
 
 # -----------------------------------------------------------------------------
 # Per-product binary builder.
@@ -234,4 +244,26 @@ add_aspose_worker(
         "${PDF_CS_SO}"
     RPATH
         "${RUNTIME_ASPOSE_ROOT}/PDF/lib"
+)
+
+# -----------------------------------------------------------------------------
+# EMAIL worker — Aspose.Email 25.12 + its bundled CodePorting copy.
+# This binary produces MHTML (NOT PDF). The Python shim then pipes the MHTML
+# through the worker-docx binary to produce the final PDF. The two-process
+# pipeline keeps Email's cs2cpp 25.12 strictly isolated from Words's
+# cs2cpp 26.3 — they never load into the same process.
+# Aspose.Email's flat package layout co-locates product + framework under
+# the single Email/lib/ directory; one RPATH entry covers both.
+# -----------------------------------------------------------------------------
+add_aspose_worker(
+    NAME email
+    FORMAT email
+    INCLUDES
+        "${EMAIL_VENDOR_ROOT}/include/Aspose.Email.Cpp"
+        "${EMAIL_VENDOR_ROOT}/include"
+    LIBS
+        "${EMAIL_SO}"
+        "${EMAIL_CS_SO}"
+    RPATH
+        "${RUNTIME_ASPOSE_ROOT}/Email/lib"
 )

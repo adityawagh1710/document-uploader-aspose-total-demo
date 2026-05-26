@@ -1,0 +1,44 @@
+Return-Path: <alice@example.com>
+Delivered-To: bob@example.com
+Received: from mail.example.com ([10.0.0.1])
+	by mx.example.com with ESMTPS id abcdef0123
+	for <bob@example.com>; Mon, 26 May 2026 14:00:00 +0000 (UTC)
+Message-ID: <CADxyz123@mail.example.com>
+Date: Mon, 26 May 2026 14:00:00 +0000
+From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: Quarterly status update
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="boundary-string-42"
+
+--boundary-string-42
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+Hi Bob,
+
+Quick status update on Q2:
+
+- Aspose.Email integration: complete
+- EML to PDF pipeline: green-pathed
+- Smoke testing in progress
+
+Thanks,
+Alice
+
+--boundary-string-42
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+<html><body>
+<p>Hi Bob,</p>
+<p>Quick status update on <b>Q2</b>:</p>
+<ul>
+  <li>Aspose.Email integration: <span style="color:green">complete</span></li>
+  <li>EML to PDF pipeline: green-pathed</li>
+  <li>Smoke testing in progress</li>
+</ul>
+<p>Thanks,<br/>Alice</p>
+</body></html>
+
+--boundary-string-42--
