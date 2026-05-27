@@ -57,3 +57,15 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/component: ui
 {{- end -}}
+
+{{/*
+ServiceAccount name. The API pod runs as this SA so IRSA can bind an IAM
+role (S3 access) to it. Defaults to the chart fullname.
+*/}}
+{{- define "office-convert.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "office-convert.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}

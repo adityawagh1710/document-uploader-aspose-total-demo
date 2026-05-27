@@ -286,10 +286,14 @@ update-test-badge: build-test ## QA refresh the tests-N badge in README from col
 # Optional:
 #   NAMESPACE        default: office-convert-dev
 #   HELM_RELEASE     default: office-convert
+#   HELM_EXTRA_ARGS  extra `helm` flags, e.g. S3/IRSA enablement:
+#                    HELM_EXTRA_ARGS="--set s3.enabled=true --set serviceAccount.roleArn=arn:..."
+#                    See deploy/iam/README.md.
 .PHONY: deploy-dev _deploy-dev-impl undeploy-dev _undeploy-dev-impl deploy-status deploy-logs _print-aws-urls
 
 NAMESPACE       ?= office-convert-dev
 HELM_RELEASE    ?= office-convert
+HELM_EXTRA_ARGS ?=
 ECR_REPO         = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/office-convert
 ECR_REPO_UI      = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/office-convert-ui
 DEPLOY_LOG_DIR  ?= $(PROJECT_DIR)/deploy/logs
@@ -343,7 +347,7 @@ deploy-dev: ## DEPLOY install office-convert to EKS dev cluster (logs to deploy/
 	    helm template $(HELM_RELEASE) deploy/helm/office-convert \
 	        --namespace $(NAMESPACE) \
 	        --set image.repository=$(ECR_REPO) \
-	        --set image.tag=$(IMAGE_TAG) 2>&1 | tee $$MANIFEST > /dev/null; \
+	        --set image.tag=$(IMAGE_TAG) $(HELM_EXTRA_ARGS) 2>&1 | tee $$MANIFEST > /dev/null; \
 	    echo "Wrote rendered manifest: $$MANIFEST"; \
 	    echo ""; \
 	    $(MAKE) _deploy-dev-impl; \
@@ -381,6 +385,7 @@ _deploy-dev-impl:
 	    --set image.tag=$(IMAGE_TAG) \
 	    --set ui.image.repository=$(ECR_REPO_UI) \
 	    --set ui.image.tag=$(IMAGE_TAG) \
+	    $(HELM_EXTRA_ARGS) \
 	    --wait --timeout 5m
 	@printf "$(GREEN)[7/8] Route 53 A-alias upsert...$(RESET)\n"
 	@AWS_PROFILE=$${AWS_PROFILE:-} NAMESPACE=$(NAMESPACE) ./deploy/scripts/route53-upsert.sh
