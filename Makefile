@@ -289,7 +289,7 @@ update-test-badge: build-test ## QA refresh the tests-N badge in README from col
 #   HELM_EXTRA_ARGS  extra `helm` flags, e.g. S3/IRSA enablement:
 #                    HELM_EXTRA_ARGS="--set s3.enabled=true --set serviceAccount.roleArn=arn:..."
 #                    See deploy/iam/README.md.
-.PHONY: deploy-dev _deploy-dev-impl undeploy-dev _undeploy-dev-impl deploy-status deploy-logs _print-aws-urls
+.PHONY: deploy-dev _deploy-dev-impl undeploy-dev _undeploy-dev-impl deploy-status deploy-logs _print-aws-urls tag-resources irsa-smoketest
 
 NAMESPACE       ?= office-convert-dev
 HELM_RELEASE    ?= office-convert
@@ -378,7 +378,19 @@ _deploy-dev-impl:
 	@printf "$(GREEN)[5/8] Namespace + license Secret...$(RESET)\n"
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	kubectl create secret generic aspose-license --from-file=license.lic=$(LICENSE_FILE) --namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	@printf "$(GREEN)[6/8] helm install/upgrade...$(RESET)\n"
+	@printf "$(GREEN)[6/8] Undeploy-first + helm install...$(RESET)\n"
+	@# Helm 4 server-side apply refuses to overwrite fields owned by live
+	@# `kubectl patch`/`annotate` edits (post-deploy MAX_JOBS/PARALLEL + Ingress
+	@# CIDR patches), so an in-place upgrade fails with field-ownership conflicts.
+	@# Uninstall any existing release first → the install below is a conflict-free
+	@# FRESH install. No-op on a clean cluster; route53-upsert (step 7) re-points
+	@# DNS at the freshly-provisioned ALB.
+	@if helm status $(HELM_RELEASE) --namespace $(NAMESPACE) >/dev/null 2>&1; then \
+	    printf "  existing release found — uninstalling for a conflict-free fresh install\n"; \
+	    helm uninstall $(HELM_RELEASE) --namespace $(NAMESPACE) --wait 2>&1 | tail -2 || true; \
+	else \
+	    printf "  no existing release — fresh install\n"; \
+	fi
 	helm upgrade --install $(HELM_RELEASE) deploy/helm/office-convert \
 	    --namespace $(NAMESPACE) \
 	    --set image.repository=$(ECR_REPO) \
@@ -511,6 +523,39 @@ deploy-status: ## DEPLOY show deployment status (pods, service, NLB)
 
 deploy-logs: ## DEPLOY tail pod logs
 	@kubectl logs -n $(NAMESPACE) -l app.kubernetes.io/instance=$(HELM_RELEASE) --tail=200 -f
+
+# Out-of-band S3 resources (buckets, IRSA role, ECR repos) — IRSA role ARN and
+# bucket names default to the dev05 set provisioned 2026-05-27. See deploy/iam/.
+S3_IRSA_ROLE_ARN   ?= arn:aws:iam::537462380503:role/office-convert-dev-s3
+S3_INPUT_BUCKET    ?= office-convert-dev-sandbox-input
+S3_OUTPUT_BUCKET   ?= office-convert-dev-sandbox-output
+
+tag-resources: ## DEPLOY tag out-of-band S3 buckets + IRSA role + ECR repos (org tag schema)
+	@AWS_PROFILE=$${AWS_PROFILE:-opus2-dev} AWS_REGION=$(AWS_REGION) AWS_ACCOUNT_ID=$(AWS_ACCOUNT_ID) \
+	    S3_INPUT_BUCKET=$(S3_INPUT_BUCKET) S3_OUTPUT_BUCKET=$(S3_OUTPUT_BUCKET) \
+	    ECR_REPO=office-convert ECR_REPO_UI=office-convert-ui \
+	    bash deploy/scripts/tag-resources.sh
+
+irsa-smoketest: ## DEPLOY pre-flight: assume the IRSA role from a throwaway pod (no app deploy). Needs S3_IRSA_ROLE_ARN
+	@if [ -z "$(S3_IRSA_ROLE_ARN)" ]; then printf "$(YELLOW)ERROR: set S3_IRSA_ROLE_ARN=<role-arn> (see deploy/iam/README.md)$(RESET)\n"; exit 1; fi
+	@printf "$(GREEN)IRSA pre-flight → ns=$(NAMESPACE) sa=$(HELM_RELEASE) bucket=$(S3_OUTPUT_BUCKET)$(RESET)\n"
+	@kubectl get ns $(NAMESPACE) >/dev/null 2>&1 || kubectl create ns $(NAMESPACE) >/dev/null
+	@# The SA must be named like the deployment SA — the trust policy is scoped
+	@# to system:serviceaccount:$(NAMESPACE):$(HELM_RELEASE). If a (Helm-managed)
+	@# SA already exists we leave it intact; only a SA WE created for the test is
+	@# removed afterwards, so this is safe to run against a live deployment.
+	@PRE=$$(kubectl -n $(NAMESPACE) get sa $(HELM_RELEASE) -o name 2>/dev/null || true); \
+	kubectl -n $(NAMESPACE) create serviceaccount $(HELM_RELEASE) --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	kubectl -n $(NAMESPACE) annotate serviceaccount $(HELM_RELEASE) eks.amazonaws.com/role-arn=$(S3_IRSA_ROLE_ARN) --overwrite >/dev/null; \
+	kubectl run irsa-smoketest -n $(NAMESPACE) \
+	    --overrides='{"spec":{"serviceAccountName":"$(HELM_RELEASE)"}}' \
+	    --image=amazon/aws-cli:2.17.0 --restart=Never --rm -i --command -- \
+	    sh -c 'aws sts get-caller-identity && aws s3api put-object --bucket $(S3_OUTPUT_BUCKET) --key _irsa_smoketest.txt --body /etc/hostname >/dev/null && echo S3_WRITE_OK'; \
+	    rc=$$?; \
+	    if [ -z "$$PRE" ]; then kubectl -n $(NAMESPACE) delete serviceaccount $(HELM_RELEASE) --ignore-not-found >/dev/null 2>&1; SA_NOTE="temp SA removed"; else SA_NOTE="pre-existing SA left intact"; fi; \
+	    if [ $$rc -eq 0 ]; then printf "$(GREEN)✓ IRSA OK — role assumable + S3 write reachable ($$SA_NOTE)$(RESET)\n"; \
+	    else printf "$(YELLOW)✗ IRSA smoke test FAILED (rc=$$rc) — check OIDC trust, SA name/ns, role policy, pod egress$(RESET)\n"; fi; \
+	    exit $$rc
 
 # =============================================================================
 # CLEAN targets
