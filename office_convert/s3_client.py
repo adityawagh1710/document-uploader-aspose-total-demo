@@ -112,6 +112,14 @@ def _client(settings: Settings) -> Any:
             retries={"max_attempts": 3, "mode": "standard"},
         )
     else:
+        # Real AWS: pin the REGIONAL endpoint. Without this, botocore can emit
+        # the global `s3.amazonaws.com` host in presigned URLs, which
+        # 307-redirects for non-us-east-1 buckets — and because SigV4 signs the
+        # Host header, the redirected request fails with 403
+        # SignatureDoesNotMatch. Verified on dev05 (eu-west-1). get/put also
+        # benefit (direct regional, no redirect round-trip).
+        if settings.s3_region:
+            kwargs["endpoint_url"] = f"https://s3.{settings.s3_region}.amazonaws.com"
         config = Config(
             signature_version="s3v4",
             retries={"max_attempts": 3, "mode": "standard"},

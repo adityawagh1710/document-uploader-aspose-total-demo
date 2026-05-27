@@ -164,6 +164,10 @@ def test_generate_presigned_url(s3: Any) -> None:
     assert OUT_BUCKET in url
     assert "pdf/result.pdf" in url
     assert "X-Amz-Signature" in url
+    # Regional endpoint pinned — guards against the global s3.amazonaws.com
+    # host that 307-redirects (and breaks the SigV4 signature) for non-
+    # us-east-1 buckets. Verified end-to-end on dev05 (eu-west-1).
+    assert f"s3.{REGION}.amazonaws.com" in url
 
 
 def test_presign_bucket_not_allowlisted(s3: Any) -> None:
