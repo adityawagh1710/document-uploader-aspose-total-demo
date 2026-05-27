@@ -69,6 +69,36 @@ config:
   # cushion).
   max_input_bytes: "1073741824"
 
+# ============================================================
+# ServiceAccount + IRSA (S3 access)
+# ============================================================
+# The API pod runs as this ServiceAccount. To enable S3 (input/output +
+# presign), create an IAM role from deploy/iam/office-convert-s3-*.json and
+# set serviceAccount.roleArn to its ARN — IRSA then injects AWS credentials
+# into the pod. Left empty, the SA is created with no AWS permissions and S3
+# stays off (s3.enabled below also defaults false), so a normal deploy is
+# unaffected.
+serviceAccount:
+  create: true
+  name: ""        # defaults to the chart fullname
+  roleArn: ""     # e.g. arn:aws:iam::537462380503:role/office-convert-dev-s3
+
+# ============================================================
+# S3 source/sink integration
+# ============================================================
+# OFF by default. When enabled, /v1/convert accepts s3_input/s3_output and
+# /v1/downloads/presign mints presigned GET URLs. Buckets MUST be allowlisted
+# (fail-closed). The chart never sets AWS_ENDPOINT_URL_S3 — boto3 talks to
+# real AWS via the IRSA role above.
+s3:
+  enabled: false
+  region: ""                       # blank → boto3 resolves from the node/region
+  inputBucketsAllowlist: ""        # comma-separated, e.g. "opus2-dev-office-convert-in"
+  outputBucketsAllowlist: ""       # comma-separated, e.g. "opus2-dev-office-convert-out"
+  defaultOutputBucket: ""          # implicitly output-allowed; used for bucket-only s3_output
+  presignTtlSeconds: 900           # 15 min
+  outputKeyTemplate: "pdf/{request_id}.pdf"
+
 # Aspose license is mounted from a pre-existing Secret. The Secret is NOT
 # created by this chart — create it before `helm install`:
 #   kubectl create secret generic aspose-license \

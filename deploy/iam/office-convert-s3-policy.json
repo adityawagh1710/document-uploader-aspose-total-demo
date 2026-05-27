@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadInputs",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::office-convert-dev-sandbox-input/*"
+    },
+    {
+      "Sid": "WriteOutputs",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:AbortMultipartUpload"],
+      "Resource": "arn:aws:s3:::office-convert-dev-sandbox-output/*"
+    },
+    {
+      "Sid": "ReadOutputsForPresign",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::office-convert-dev-sandbox-output/*"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::537462380503:oidc-provider/oidc.eks.eu-west-1.amazonaws.com/id/4CD18ACA973AEF3E3D289F4092A757EA"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.eu-west-1.amazonaws.com/id/4CD18ACA973AEF3E3D289F4092A757EA:sub": "system:serviceaccount:office-convert-dev:office-convert",
+          "oidc.eks.eu-west-1.amazonaws.com/id/4CD18ACA973AEF3E3D289F4092A757EA:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
