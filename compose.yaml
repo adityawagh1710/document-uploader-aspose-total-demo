@@ -106,6 +106,24 @@ services:
       # read_only: true, we point HOME to /tmp (which is a tmpfs) so
       # ~/.cache/fontconfig resolves to a writable location.
       HOME: "/tmp"
+      # ---- S3 source/sink integration (LocalStack-backed for local dev) ----
+      # boto3 routes to LocalStack via AWS_ENDPOINT_URL_S3; on EKS the Helm
+      # chart leaves that unset so boto3 talks to real AWS via IRSA. Flip
+      # OFFICE_CONVERT_S3_ENABLED=false to disable the feature locally
+      # (localstack still starts, but s3_* fields/endpoints return 400).
+      OFFICE_CONVERT_S3_ENABLED: "${OFFICE_CONVERT_S3_ENABLED:-true}"
+      OFFICE_CONVERT_S3_INPUT_BUCKETS_ALLOWLIST: "office-convert-in"
+      OFFICE_CONVERT_S3_OUTPUT_BUCKETS_ALLOWLIST: "office-convert-out"
+      OFFICE_CONVERT_S3_DEFAULT_OUTPUT_BUCKET: "office-convert-out"
+      AWS_ENDPOINT_URL_S3: "http://localstack:4566"
+      # Presigned URLs are signed against the HOST-published port (4567) so the
+      # browser following a "Download from S3" link can reach LocalStack. The
+      # server still GETs/PUTs in-network via AWS_ENDPOINT_URL_S3 above.
+      # Mirrors classification-service's S3_PUBLIC_ENDPOINT.
+      OFFICE_CONVERT_S3_PUBLIC_ENDPOINT: "http://localhost:4567"
+      AWS_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
     # Defense-in-depth runtime posture (matches the recommended
     # operator flags from the README).
     cap_drop:
@@ -151,6 +169,38 @@ services:
     memswap_limit: 6g
     mem_swappiness: 60
     # cpus: 4
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  # ============================================================
+  # LocalStack — local AWS S3 emulation for the S3 source/sink
+  # integration. Buckets are created by the init hook on ready.
+  # Open:  awslocal s3 ls   (inside the container)
+  # ============================================================
+  localstack:
+    container_name: office-convert-localstack
+    image: localstack/localstack:3.8        # pin major; "latest" drifts
+    ports:
+      # Host port 4567 (not the LocalStack-default 4566) so this stack can
+      # coexist with another project's localstack already holding 4566 on the
+      # same machine. The API container still reaches it at localstack:4566
+      # over the compose network — only the host-side publish changed.
+      - "127.0.0.1:4567:4566"
+    environment:
+      SERVICES: "s3"                          # S3-only for v1
+      DEBUG: "0"
+      PERSISTENCE: "0"                        # ephemeral; init hook recreates buckets
+    volumes:
+      # Init hook runs once S3 is ready — creates office-convert-{in,out}.
+      - ./deploy/localstack/init-buckets.sh:/etc/localstack/init/ready.d/init-buckets.sh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
 
   # ============================================================
   # Test runner — opt-in profile. Not started by default.
@@ -196,6 +246,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       API_URL: "http://office-convert:8080"
+      # S3 output controls for the UI. When enabled, the UI shows a
+      # "store to S3" toggle and renders a presigned "Download from S3"
+      # link in Conversion History (via GET /v1/downloads/presign).
+      UI_S3_ENABLED: "${OFFICE_CONVERT_S3_ENABLED:-true}"
+      UI_S3_DEFAULT_OUTPUT_BUCKET: "office-convert-out"
       # Match the API's OFFICE_CONVERT_MAX_INPUT_BYTES=1 GiB (above).
       # Streamlit's default file_uploader cap is 200 MB, which silently
       # rejects bigger files before they reach the API. Value in MiB.
