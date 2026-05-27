@@ -557,6 +557,39 @@ irsa-smoketest: ## DEPLOY pre-flight: assume the IRSA role from a throwaway pod 
 	    else printf "$(YELLOW)✗ IRSA smoke test FAILED (rc=$$rc) — check OIDC trust, SA name/ns, role policy, pod egress$(RESET)\n"; fi; \
 	    exit $$rc
 
+# Out-of-band data teardown (DESTRUCTIVE) — Helm can't manage these, so neither
+# can `undeploy-dev`. Guarded by NUKE_DATA=true. Role name + inline policy
+# default to the dev05 set (deploy/iam/).
+S3_IRSA_ROLE_NAME   ?= office-convert-dev-s3
+S3_IRSA_POLICY_NAME ?= office-convert-s3
+.PHONY: check-nuke nuke-data undeploy-all
+
+check-nuke:
+	@if [ "$(NUKE_DATA)" != "true" ]; then \
+	    printf "$(YELLOW)✗ This DESTROYS persistent S3 data + the IRSA role — refused without explicit confirmation.$(RESET)\n"; \
+	    printf "  It would permanently delete (region $${AWS_REGION:-eu-west-1}, profile $${AWS_PROFILE:-opus2-dev}):\n"; \
+	    printf "    - S3 bucket  $(S3_INPUT_BUCKET)   (+ every object)\n"; \
+	    printf "    - S3 bucket  $(S3_OUTPUT_BUCKET)  (+ every object)\n"; \
+	    printf "    - IAM role   $(S3_IRSA_ROLE_NAME) (inline policy $(S3_IRSA_POLICY_NAME))\n"; \
+	    printf "  App-only teardown (keeps data): $(YELLOW)make undeploy-dev$(RESET).\n"; \
+	    printf "  To really destroy data, re-run with $(YELLOW)NUKE_DATA=true$(RESET).\n"; \
+	    exit 1; \
+	fi
+
+nuke-data: check-nuke ## DEPLOY DANGER: destroy out-of-band S3 buckets + IRSA role (needs NUKE_DATA=true)
+	@printf "$(YELLOW)NUKING out-of-band data — S3 buckets + IRSA role$(RESET)\n"
+	@printf "$(YELLOW)→ aws s3 rb s3://$(S3_INPUT_BUCKET) --force$(RESET)\n"
+	-@AWS_PROFILE=$${AWS_PROFILE:-opus2-dev} aws s3 rb s3://$(S3_INPUT_BUCKET) --force --region $${AWS_REGION:-eu-west-1} 2>&1 | tail -3
+	@printf "$(YELLOW)→ aws s3 rb s3://$(S3_OUTPUT_BUCKET) --force$(RESET)\n"
+	-@AWS_PROFILE=$${AWS_PROFILE:-opus2-dev} aws s3 rb s3://$(S3_OUTPUT_BUCKET) --force --region $${AWS_REGION:-eu-west-1} 2>&1 | tail -3
+	@printf "$(YELLOW)→ delete IAM role $(S3_IRSA_ROLE_NAME) (inline policy first)$(RESET)\n"
+	-@AWS_PROFILE=$${AWS_PROFILE:-opus2-dev} aws iam delete-role-policy --role-name $(S3_IRSA_ROLE_NAME) --policy-name $(S3_IRSA_POLICY_NAME) 2>/dev/null || true
+	-@AWS_PROFILE=$${AWS_PROFILE:-opus2-dev} aws iam delete-role --role-name $(S3_IRSA_ROLE_NAME) 2>&1 | tail -2
+	@printf "$(GREEN)Out-of-band data resources destroyed.$(RESET)\n"
+
+undeploy-all: check-nuke undeploy-dev nuke-data ## DEPLOY DANGER: full teardown INCL. DATA — undeploy-dev + destroy buckets/role (needs NUKE_DATA=true)
+	@printf "$(GREEN)Full teardown complete (release + out-of-band data).$(RESET)\n"
+
 # =============================================================================
 # CLEAN targets
 # =============================================================================
