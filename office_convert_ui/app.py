@@ -35,6 +35,12 @@ HEALTH_URL = f"{API_URL}/health"  # unversioned by convention (orchestrator prob
 HEARTBEATS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/heartbeats
 PROGRESS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/progress
 TIMINGS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/timings
+PRESIGN_URL = f"{API_URL}/v1/downloads/presign"  # GET ?bucket=&key=
+
+# S3 output controls. When enabled, the upload panel shows a "store to S3"
+# toggle and Conversion History offers a presigned download link.
+UI_S3_ENABLED = os.environ.get("UI_S3_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+UI_S3_DEFAULT_OUTPUT_BUCKET = os.environ.get("UI_S3_DEFAULT_OUTPUT_BUCKET", "").strip()
 
 # Shared HTTP session for all API calls. Fragments fire every 1-4 seconds
 # and each tick makes multiple calls (/health, /stats, /workers,
@@ -1085,13 +1091,22 @@ def _format_diagnostic(status_code: int, body: dict) -> str:
     return f"Error {status_code}: {failure_class}"
 
 
-def do_conversion(file_name, file_bytes, request_id):
-    """Blocking conversion. Returns (data, elapsed, error)."""
+def do_conversion(file_name, file_bytes, request_id, s3_output=None):
+    """Blocking conversion. Returns (data, elapsed, error, s3_bucket, s3_key).
+
+    When `s3_output` is set, the API also tees the PDF to S3 and echoes
+    X-S3-Output-Bucket/Key headers, which we surface so Conversion History
+    can offer a presigned download link.
+    """
     start = time.time()
     try:
+        data_fields = {"options": "{}"}
+        if s3_output:
+            data_fields["s3_output"] = s3_output
         resp = _SESSION.post(
             CONVERT_URL,
             files={"file": (file_name, file_bytes)},
+            data=data_fields,
             headers={"X-Request-ID": request_id},
             stream=True,
             timeout=1800,
@@ -1103,31 +1118,39 @@ def do_conversion(file_name, file_bytes, request_id):
                     None,
                     time.time() - start,
                     _format_diagnostic(resp.status_code, body),
+                    None,
+                    None,
                 )
             except Exception:
-                return None, time.time() - start, f"Error {resp.status_code}"
+                return None, time.time() - start, f"Error {resp.status_code}", None, None
+        s3_bucket = resp.headers.get("X-S3-Output-Bucket")
+        s3_key = resp.headers.get("X-S3-Output-Key")
         chunks = []
         for chunk in resp.iter_content(65536):
             chunks.append(chunk)
         data = b"".join(chunks)
         elapsed = time.time() - start
         if not data or not data.startswith(b"%PDF"):
-            return None, elapsed, "Invalid output (not a PDF)"
-        return data, elapsed, None
+            return None, elapsed, "Invalid output (not a PDF)", None, None
+        return data, elapsed, None, s3_bucket, s3_key
     except Exception as e:
-        return None, time.time() - start, str(e)
+        return None, time.time() - start, str(e), None, None
 
 
-def _conversion_worker(file_name, file_bytes, request_id, holder):
+def _conversion_worker(file_name, file_bytes, request_id, holder, s3_output=None):
     """Runs in a background thread. Writes result into shared holder dict."""
-    data, elapsed, error = do_conversion(file_name, file_bytes, request_id)
+    data, elapsed, error, s3_bucket, s3_key = do_conversion(
+        file_name, file_bytes, request_id, s3_output
+    )
     holder["data"] = data
     holder["elapsed"] = elapsed
     holder["error"] = error
+    holder["s3_bucket"] = s3_bucket
+    holder["s3_key"] = s3_key
     holder["done"] = True
 
 
-def _start_conversion(file_name: str, file_bytes: bytes) -> bool:
+def _start_conversion(file_name: str, file_bytes: bytes, s3_output: str | None = None) -> bool:
     """Atomically start a process-wide conversion. Returns False if one is already running."""
     s = _state()
     with s["lock"]:
@@ -1141,7 +1164,7 @@ def _start_conversion(file_name: str, file_bytes: bytes) -> bool:
         holder = {"done": False}
         thread = threading.Thread(
             target=_conversion_worker,
-            args=(file_name, file_bytes, request_id, holder),
+            args=(file_name, file_bytes, request_id, holder, s3_output),
             daemon=True,
         )
         add_script_run_ctx(thread)
@@ -1204,6 +1227,8 @@ def _collect_if_finished() -> bool:
                     "time": elapsed,
                     "ts": time.strftime("%H:%M:%S"),
                     "input_data": input_bytes_for_rerun,
+                    "s3_bucket": holder.get("s3_bucket"),
+                    "s3_key": holder.get("s3_key"),
                 },
             )
             del s["results"][MAX_RECENT_RESULTS:]
@@ -2425,8 +2450,17 @@ if uploaded_file:
         size_mb = uploaded_file.size / 1024 / 1024
         st.info(f"📁 **{uploaded_file.name}** — {size_mb:.2f} MB")
 
+        store_s3 = False
+        if UI_S3_ENABLED and UI_S3_DEFAULT_OUTPUT_BUCKET:
+            store_s3 = st.checkbox(
+                f"☁️ Also store the PDF in S3 (s3://{UI_S3_DEFAULT_OUTPUT_BUCKET})",
+                value=False,
+                help="Tees the PDF to S3; history offers a presigned download link.",
+            )
+
         if st.button("▶️ Start Conversion", type="primary"):
-            if _start_conversion(uploaded_file.name, uploaded_file.getvalue()):
+            s3_output = f"s3://{UI_S3_DEFAULT_OUTPUT_BUCKET}" if store_s3 else None
+            if _start_conversion(uploaded_file.name, uploaded_file.getvalue(), s3_output):
                 st.rerun()
             else:
                 st.warning("Another conversion just started — try again in a moment.")
@@ -2533,10 +2567,34 @@ if st.session_state.history:
     for i, item in enumerate(filtered[:10]):
         col1, col2, col3 = st.columns([4, 1, 1])
         with col1:
-            st.markdown(
+            md = (
                 f"{_format_icon(item['input'])} **{item['input']}** → `{item['name']}`  \n"
-                f"⏱️ {item['time']:.1f}s | 📥 {item['in_mb']:.1f} MB → 📤 {item['out_mb']:.1f} MB | 🕐 {item['ts']}"
+                f"⏱️ {item['time']:.1f}s | 📥 {item['in_mb']:.1f} MB → 📤 {item['out_mb']:.1f} MB"
+                f" | 🕐 {item['ts']}"
             )
+            if item.get("s3_bucket") and item.get("s3_key"):
+                md += f"  \n☁️ `s3://{item['s3_bucket']}/{item['s3_key']}`"
+            st.markdown(md)
+            # Presigned "Download from S3" — minted fresh per click (presigned
+            # URLs expire), via the API's /v1/downloads/presign endpoint.
+            if item.get("s3_bucket") and item.get("s3_key"):
+                if st.button("☁️ Download from S3", key=f"s3_{i}_{item['ts']}"):
+                    try:
+                        pr = _SESSION.get(
+                            PRESIGN_URL,
+                            params={"bucket": item["s3_bucket"], "key": item["s3_key"]},
+                            timeout=10,
+                        )
+                        if pr.status_code == 200:
+                            st.session_state[f"s3url_{item['id']}"] = pr.json()["download_url"]
+                        else:
+                            st.session_state[f"s3url_{item['id']}"] = None
+                            st.warning(f"presign failed ({pr.status_code})")
+                    except Exception as e:
+                        st.warning(f"presign error: {e}")
+                presigned = st.session_state.get(f"s3url_{item['id']}")
+                if presigned:
+                    st.markdown(f"[⬇️ Open presigned S3 link]({presigned})")
         with col2:
             st.download_button(
                 "⬇️ Download",
