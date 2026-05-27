@@ -143,6 +143,39 @@ class Settings(BaseSettings):
     # without a proxy — the header is spoofable.
     rate_limit_trust_xff: bool = Field(default=True)
 
+    # ---- S3 source/sink integration (see plans/s3-source-integration-plan.md) ----
+    # Master switch. When False, any request carrying s3_input/s3_output and
+    # the /v1/downloads/presign endpoint are rejected with HTTP 400
+    # (failure_class=s3_disabled). Off by default so existing deployments
+    # without IAM/IRSA are unaffected.
+    s3_enabled: bool = Field(default=False)
+    # boto3 region. None → boto3 resolves from AWS_REGION / instance metadata.
+    s3_region: str | None = Field(default=None)
+    # Comma-separated bucket allowlists (NOT JSON — pydantic-settings would try
+    # to JSON-decode a list-typed env value, and the compose/Helm config sets
+    # plain "bucket-a,bucket-b"). Parsed via s3.parse_allowlist(). An empty
+    # allowlist FAILS CLOSED: every bucket is rejected. The configured default
+    # output bucket is implicitly allowed for output even if not listed.
+    s3_input_buckets_allowlist: str | None = Field(default=None)
+    s3_output_buckets_allowlist: str | None = Field(default=None)
+    # Used when s3_output is requested without an explicit bucket (future:
+    # s3_always_store_output). Currently only marks a bucket as implicitly
+    # output-allowed.
+    s3_default_output_bucket: str | None = Field(default=None)
+    # Default key for s3_output when the caller passes a bucket-only URL.
+    # `{request_id}` is substituted; the `pdf/` prefix keeps presign scoping
+    # simple and avoids leaking input filenames in the key.
+    s3_output_key_template: str = Field(default="pdf/{request_id}.pdf")
+    # TTL for presigned GET URLs minted by /v1/downloads/presign. 15 min.
+    s3_presign_ttl_seconds: int = Field(default=900, ge=1, le=7 * 24 * 3600)
+    # Endpoint used ONLY for SIGNING presigned URLs, when it must differ from
+    # the server-side endpoint. LocalStack case: the API reaches S3 in-network
+    # at localstack:4566, but the browser following a presigned link is on the
+    # host, where LocalStack is published at localhost:4567 — so the URL must
+    # carry that host. Unset on real AWS (presigned URLs already point at the
+    # public S3 endpoint). Mirrors classification-service's S3_PUBLIC_ENDPOINT.
+    s3_public_endpoint: str | None = Field(default=None)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
