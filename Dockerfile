@@ -119,7 +119,8 @@ RUN pip install --no-cache-dir uv==0.5.* \
         "pydantic==2.9.*" \
         "pydantic-settings==2.6.*" \
         "aiofiles==24.1.*" \
-        "python-multipart==0.0.12"
+        "python-multipart==0.0.12" \
+        "boto3>=1.35,<2"
 
 # Copy all four C++ worker binaries from the builder stage. Each is linked
 # against ONLY its product's libs and has a per-product INSTALL_RPATH, so

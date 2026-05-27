@@ -173,3 +173,89 @@ class RateLimitedError(ConversionError):
 
     def as_detail_dict(self) -> dict[str, Any]:
         return {"retry_after_seconds": self.retry_after_seconds, "limit": self.limit}
+
+
+# ---- S3 source/sink integration (see plans/s3-source-integration-plan.md) ----
+
+
+class InputSourceConflictError(ConversionError):
+    """Both `file` and `s3_input` were supplied; exactly one is required."""
+
+    failure_class = FailureClass.INPUT_SOURCE_CONFLICT
+    http_status = 400
+
+    def __init__(self) -> None:
+        super().__init__("provide exactly one input source: 'file' or 's3_input'")
+
+
+class S3DisabledError(ConversionError):
+    """An S3 feature was requested but OFFICE_CONVERT_S3_ENABLED is false."""
+
+    failure_class = FailureClass.S3_DISABLED
+    http_status = 400
+
+    def __init__(self) -> None:
+        super().__init__("S3 integration is disabled (set OFFICE_CONVERT_S3_ENABLED=1)")
+
+
+class S3InvalidUrlError(ConversionError):
+    failure_class = FailureClass.S3_INVALID_URL
+    http_status = 400
+
+    def __init__(self, url: str) -> None:
+        super().__init__(f"invalid s3 url {url!r} (expected s3://bucket/key)")
+        self.url = url
+
+    def as_detail_dict(self) -> dict[str, Any]:
+        return {"url": self.url}
+
+
+class S3InputNotFoundError(ConversionError):
+    failure_class = FailureClass.S3_INPUT_NOT_FOUND
+    http_status = 404
+
+    def __init__(self, bucket: str, key: str) -> None:
+        super().__init__(f"s3 input not found: s3://{bucket}/{key}")
+        self.bucket = bucket
+        self.key = key
+
+    def as_detail_dict(self) -> dict[str, Any]:
+        return {"bucket": self.bucket, "key": self.key}
+
+
+class S3InputForbiddenError(ConversionError):
+    failure_class = FailureClass.S3_INPUT_FORBIDDEN
+    http_status = 400
+
+    def __init__(self, bucket: str) -> None:
+        super().__init__(f"s3 input bucket not in allowlist: {bucket}")
+        self.bucket = bucket
+
+    def as_detail_dict(self) -> dict[str, Any]:
+        return {"bucket": self.bucket}
+
+
+class S3OutputForbiddenError(ConversionError):
+    failure_class = FailureClass.S3_OUTPUT_FORBIDDEN
+    http_status = 400
+
+    def __init__(self, bucket: str) -> None:
+        super().__init__(f"s3 output bucket not in allowlist: {bucket}")
+        self.bucket = bucket
+
+    def as_detail_dict(self) -> dict[str, Any]:
+        return {"bucket": self.bucket}
+
+
+class S3OutputUploadFailedError(ConversionError):
+    failure_class = FailureClass.S3_OUTPUT_UPLOAD_FAILED
+    http_status = 500
+
+    def __init__(self, bucket: str, key: str, reason: str) -> None:
+        super().__init__(f"s3 output upload failed for s3://{bucket}/{key}: {reason}")
+        self.bucket = bucket
+        self.key = key
+        self.reason = reason
+
+    def as_detail_dict(self) -> dict[str, Any]:
+        return {"bucket": self.bucket, "key": self.key, "reason": self.reason}

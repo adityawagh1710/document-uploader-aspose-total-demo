@@ -22,6 +22,7 @@ dependencies = [
     "pydantic-settings>=2.6,<2.15",
     "aiofiles==24.1.*",
     "python-multipart==0.0.29",
+    "boto3>=1.35,<2",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +40,7 @@ dev = [
     "openpyxl==3.1.*",
     "reportlab>=4.4,<4.6",
     "types-aiofiles",
+    "moto[s3]>=5.0,<6",
 ]
 # End-to-end test extra: requires a Docker daemon at test time. Install with
 # `uv pip install -e .[e2e]` alongside `[dev]`.
@@ -80,5 +82,14 @@ python_version = "3.12"
 exclude = ["tests/corpus/_generate.py"]
 
 [[tool.mypy.overrides]]
-module = ["aiofiles.*", "reportlab.*", "docx.*", "pptx.*", "openpyxl.*"]
+module = [
+    "aiofiles.*",
+    "reportlab.*",
+    "docx.*",
+    "pptx.*",
+    "openpyxl.*",
+    "boto3.*",
+    "botocore.*",
+    "moto.*",
+]
 ignore_missing_imports = true

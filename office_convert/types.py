@@ -52,6 +52,14 @@ class FailureClass(StrEnum):
     LICENSE_EXPIRED = "license_expired"
     BUSY = "busy"
     RATE_LIMITED = "rate_limited"
+    # S3 source/sink integration
+    INPUT_SOURCE_CONFLICT = "input_source_conflict"
+    S3_DISABLED = "s3_disabled"
+    S3_INVALID_URL = "s3_invalid_url"
+    S3_INPUT_NOT_FOUND = "s3_input_not_found"
+    S3_INPUT_FORBIDDEN = "s3_input_forbidden"
+    S3_OUTPUT_FORBIDDEN = "s3_output_forbidden"
+    S3_OUTPUT_UPLOAD_FAILED = "s3_output_upload_failed"
 
 
 class LicenseState(StrEnum):
