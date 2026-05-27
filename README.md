@@ -5,7 +5,7 @@
 [![aspose.total](https://img.shields.io/badge/aspose.total-c%2B%2B%2026.4-ff4081.svg)](https://products.aspose.com/total/cpp/)
 [![qpdf](https://img.shields.io/badge/qpdf-streaming%20merge-orange.svg)](https://qpdf.sourceforge.io/)
 [![docker](https://img.shields.io/badge/docker-required-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/)
-[![tests](https://img.shields.io/badge/tests-162-brightgreen.svg)](#tldr--quickstart)
+[![tests](https://img.shields.io/badge/tests-202-brightgreen.svg)](#tldr--quickstart)
 [![type checked](https://img.shields.io/badge/type%20checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
 [![lint](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://github.com/astral-sh/ruff)
 [![status](https://img.shields.io/badge/status-v1%20local%20PoC-yellow.svg)](#)
@@ -370,12 +370,18 @@ curl -X POST http://localhost:8080/v1/convert \
   - **Images** (routed to LibreOffice): PNG, JPG, JPEG, TIFF, GIF, BMP,
     WEBP, SVG
 - `options` (optional JSON): `{"cache": <bool>, "log_level": "<level>"}`
+- `s3_input` (optional, requires `OFFICE_CONVERT_S3_ENABLED=1`) — `s3://bucket/key`
+  to convert *instead of* uploading `file`. Exactly one of `file` / `s3_input`.
+- `s3_output` (optional, requires S3 enabled) — `s3://bucket[/key]`. The PDF is
+  streamed back to the caller AND teed to this S3 location. A bucket-only URL
+  uses `s3_output_key_template` (`pdf/{request_id}.pdf`). Works in both input modes.
 
 **Response on success**: HTTP 200, `Content-Type: application/pdf`,
 chunked transfer encoding. Headers:
 
 - `X-Request-ID` — UUID for log correlation
 - `Content-Type: application/pdf`
+- `X-S3-Output-Bucket` / `X-S3-Output-Key` — present only when `s3_output` was set
 
 **Response on failure**: structured JSON body
 `{request_id, failure_class, detail}`:
@@ -392,6 +398,36 @@ chunked transfer encoding. Headers:
 | 429 | `rate_limited` | Per-IP token bucket exhausted (`Retry-After` + `X-RateLimit-*` headers set) |
 | 503 | `license_expired` | Aspose license past expiry |
 | 503 | `busy` | At `max_jobs` capacity (`Retry-After` header set) |
+| 400 | `input_source_conflict` | Both `file` and `s3_input` supplied |
+| 400 | `s3_disabled` | `s3_input`/`s3_output`/presign used while S3 is off |
+| 400 | `s3_invalid_url` | Malformed `s3://…` URL |
+| 400 | `s3_input_forbidden` / `s3_output_forbidden` | Bucket not in the allowlist |
+| 404 | `s3_input_not_found` | `s3_input` object does not exist |
+| 500 | `s3_output_upload_failed` | S3 PUT failed (surfaced post-stream; logged) |
+
+### `GET /v1/downloads/presign`
+
+Mints a short-TTL presigned GET URL for an output object. The service owns the
+S3 credentials (IRSA on EKS); clients only ever receive a time-boxed URL. The
+output-bucket allowlist is enforced before signing.
+
+```bash
+curl "http://localhost:8080/v1/downloads/presign?bucket=office-convert-out&key=pdf/abc123.pdf"
+# → {"download_url":"https://…X-Amz-Signature=…","bucket":"…","key":"…",
+#    "expires_in_seconds":900,"expires_at":"2026-05-27T…Z"}
+```
+
+A fresh URL is minted per call (presigned URLs expire), so the Streamlit UI's
+Conversion History calls this on demand for its "☁️ Download from S3" link.
+
+### S3 integration — local vs EKS
+
+| Concern | Local (compose) | EKS (Helm) |
+|---|---|---|
+| S3 endpoint | LocalStack (`AWS_ENDPOINT_URL_S3=http://localstack:4566`) | real AWS |
+| Auth | `test`/`test` env creds | IRSA — ServiceAccount → OIDC → IAM role |
+| Buckets | `office-convert-{in,out}` (auto-created by the localstack init hook) | operator-created |
+| Enable | on by default in `compose.yaml` | `--set s3.enabled=true …` (see `deploy/iam/README.md`) |
 
 ### `GET /health`
 
