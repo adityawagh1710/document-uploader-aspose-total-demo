@@ -163,9 +163,18 @@ def request_context(request_id: str) -> Iterator[None]:
         current_request_id.reset(token)
 
 
+# LogRecord attribute names that cannot be supplied via `extra=` — the stdlib
+# raises KeyError on collision. Computed once from a blank record plus the two
+# names logging special-cases (`message`, `asctime`). A caller-supplied detail
+# dict (e.g. the base ConversionError's `{"message": ...}`) must not crash the
+# logger, so colliding keys are suffixed with `_`.
+_RESERVED_LOG_KEYS = frozenset(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+
+
 def emit_event(event: str, level: str = "info", **fields: Any) -> None:
     """Emit a structured log event using the canonical event vocabulary."""
     logger = logging.getLogger("office_convert")
     log_level = _LEVEL_MAP.get(level, logging.INFO)
-    extra = {"event": event, **fields}
+    safe_fields = {(f"{k}_" if k in _RESERVED_LOG_KEYS else k): v for k, v in fields.items()}
+    extra = {"event": event, **safe_fields}
     logger.log(log_level, event, extra=extra)
