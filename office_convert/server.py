@@ -12,18 +12,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Any, cast
 
 import aiofiles
 from fastapi import APIRouter, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from office_convert import aspose_email_convert, libreoffice_convert, orchestrator
+from office_convert import aspose_email_convert, libreoffice_convert, orchestrator, s3_client
 from office_convert import logging as oc_logging
 from office_convert.cache import CacheManager
 from office_convert.config import Settings, get_settings
@@ -31,10 +35,13 @@ from office_convert.csv_input import csv_bytes_to_xlsx_bytes, is_csv_filename
 from office_convert.errors import (
     BusyError,
     ConversionError,
+    InputSourceConflictError,
     InputTooLargeError,
     LicenseExpiredError,
     MissingFileError,
     RateLimitedError,
+    S3DisabledError,
+    S3OutputForbiddenError,
 )
 from office_convert.license import LicenseManager
 from office_convert.probe import ACCEPTED_FORMATS, detect_format
@@ -263,6 +270,53 @@ class HealthChecker:
         }
 
 
+def _s3_output_headers(target: tuple[str, str] | None) -> dict[str, str]:
+    """X-S3-Output-* headers for a resolved (bucket, key), or empty."""
+    if target is None:
+        return {}
+    return {"X-S3-Output-Bucket": target[0], "X-S3-Output-Key": target[1]}
+
+
+async def _tee_to_s3(
+    inner: AsyncIterator[bytes],
+    target: tuple[str, str] | None,
+    settings: Settings,
+) -> AsyncIterator[bytes]:
+    """Stream `inner` to the client AND (if `target` set) to S3 after the
+    last byte. Generic wrapper used by all three streaming paths.
+
+    The PDF is teed to a private temp file — NOT the cache temp (only exists
+    when caching is active) and NOT `scratch_dir` (the inner generators delete
+    it in their `finally`). Upload happens after the inner stream completes so
+    `boto3.upload_file` reads a complete file. Passthrough with zero overhead
+    when `target is None`.
+    """
+    if target is None:
+        async for block in inner:
+            yield block
+        return
+
+    bucket, key = target
+    fd, tmp_name = tempfile.mkstemp(suffix=".pdf", prefix="s3out-")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        async with aiofiles.open(tmp, "wb") as fh:
+            async for block in inner:
+                await fh.write(block)
+                yield block
+        await s3_client.upload_file(tmp, bucket, key, settings)
+        oc_logging.emit_event(
+            "s3_output_uploaded",
+            level="info",
+            bucket=bucket,
+            key=key,
+        )
+    finally:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Application factory. Tests build a custom-settings app via this."""
     s = settings if settings is not None else get_settings()
@@ -351,7 +405,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def convert(
         request: Request,
-        file: Annotated[UploadFile, File(...)],
+        file: Annotated[UploadFile | None, File()] = None,
+        s3_input: Annotated[str | None, Form()] = None,
+        s3_output: Annotated[str | None, Form()] = None,
         options: Annotated[str, Form()] = "{}",
     ) -> StreamingResponse:
         rid = oc_logging.current_request_id.get()
@@ -406,29 +462,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except FileNotFoundError as e:
                 raise LicenseExpiredError(None) from e
 
-            # Validate file field is present before buffering.
-            if file.filename is None and file.size == 0:
-                raise MissingFileError("file field is required")
+            # --- Input source selection (S3 integration) ---
+            # Exactly one of `file` / `s3_input` is required; `s3_output` is
+            # independent. Any S3 field requires the feature flag to be on.
+            has_file = file is not None and (file.filename is not None or (file.size or 0) > 0)
+            if (s3_input or s3_output) and not s.s3_enabled:
+                raise S3DisabledError()
+            if has_file and s3_input:
+                raise InputSourceConflictError()
+            if not has_file and not s3_input:
+                raise MissingFileError("provide exactly one input source: 'file' or 's3_input'")
+
+            # Resolve + allowlist-check the output target BEFORE rendering, so a
+            # forbidden bucket fails fast with 400 rather than after a full
+            # conversion. Streaming + upload happen later via _tee_to_s3.
+            s3_out_target: tuple[str, str] | None = None
+            if s3_output:
+                out_bucket, out_key = s3_client.resolve_output_target(s3_output, rid, s)
+                if not s3_client.is_output_bucket_allowed(out_bucket, s):
+                    raise S3OutputForbiddenError(out_bucket)
+                s3_out_target = (out_bucket, out_key)
 
             scratch_dir = s.scratch_dir / rid
             scratch_dir.mkdir(parents=True, exist_ok=True)
-
-            # Buffer body to scratch FIRST (size-bounded), then detect format
-            # from the complete file. OOXML files (DOCX/PPTX/XLSX) place
-            # `[Content_Types].xml` in the ZIP central directory near the END
-            # of the archive — the previous 512-byte head-only detection
-            # misclassified anything but tiny DOCX as DOCX by default.
             input_path_tmp = scratch_dir / "input.tmp"
-            size = 0
-            async with aiofiles.open(input_path_tmp, "wb") as dest:
-                while True:
-                    block = await file.read(1024 * 1024)
-                    if not block:
-                        break
-                    size += len(block)
-                    if size > s.max_input_bytes:
-                        raise InputTooLargeError(size, s.max_input_bytes)
-                    await dest.write(block)
+
+            # Acquire the input into input_path_tmp (size-bounded), then detect
+            # format from the COMPLETE file. OOXML files (DOCX/PPTX/XLSX) place
+            # `[Content_Types].xml` in the ZIP central directory near the END
+            # of the archive — head-only detection misclassifies them.
+            if s3_input:
+                # Allowlist enforced inside download_to_path before any S3 call.
+                await s3_client.download_to_path(s3_input, input_path_tmp, s)
+                size = input_path_tmp.stat().st_size
+                if size > s.max_input_bytes:
+                    raise InputTooLargeError(size, s.max_input_bytes)
+                source_filename: str | None = s3_client.parse_s3_url(s3_input)[1].rsplit("/", 1)[-1]
+            else:
+                assert file is not None
+                source_filename = file.filename
+                size = 0
+                async with aiofiles.open(input_path_tmp, "wb") as dest:
+                    while True:
+                        block = await file.read(1024 * 1024)
+                        if not block:
+                            break
+                        size += len(block)
+                        if size > s.max_input_bytes:
+                            raise InputTooLargeError(size, s.max_input_bytes)
+                        await dest.write(block)
             if size == 0:
                 raise MissingFileError("file is empty")
 
@@ -436,7 +518,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Rewrite the buffered body in-place as XLSX so the rest of the
             # pipeline (detect → probe → workers) sees a normal spreadsheet.
             # Done in a thread to keep the event loop responsive on big CSVs.
-            if is_csv_filename(file.filename):
+            if is_csv_filename(source_filename):
                 csv_bytes = await asyncio.to_thread(input_path_tmp.read_bytes)
                 xlsx_bytes = await asyncio.to_thread(csv_bytes_to_xlsx_bytes, csv_bytes)
                 if len(xlsx_bytes) > s.max_input_bytes:
@@ -451,12 +533,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # legacy formats (.doc/.xls/.ppt) where the magic is ambiguous.
             async with aiofiles.open(input_path_tmp, "rb") as src:
                 head = await src.read(min(size, 512))
-            fmt = detect_format(head, source_path=input_path_tmp, filename=file.filename)
+            fmt = detect_format(head, source_path=input_path_tmp, filename=source_filename)
 
             oc_logging.emit_event(
                 "format_detected",
                 level="info",
-                source_filename=file.filename or "",
+                source_filename=source_filename or "",
                 size_bytes=size,
                 format=fmt,
             )
@@ -473,8 +555,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # carries non-Aspose-product extensions like .odt back through to
             # Aspose's loaders so they pick the right LoadFormat.
             suffix: str = fmt
-            if file.filename and "." in file.filename:
-                orig_ext = file.filename.rsplit(".", 1)[-1].lower()
+            if source_filename and "." in source_filename:
+                orig_ext = source_filename.rsplit(".", 1)[-1].lower()
                 if orig_ext in ext_hint_formats:
                     suffix = orig_ext
             input_path = scratch_dir / f"input.{suffix}"
@@ -519,11 +601,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         server_sem.release()
 
                 return StreamingResponse(
-                    stream_libreoffice(),
+                    _tee_to_s3(stream_libreoffice(), s3_out_target, s),
                     media_type="application/pdf",
                     headers={
                         "X-Request-ID": rid,
                         "Content-Type": "application/pdf",
+                        **_s3_output_headers(s3_out_target),
                     },
                 )
 
@@ -559,11 +642,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         server_sem.release()
 
                 return StreamingResponse(
-                    stream_email_pdf(),
+                    _tee_to_s3(stream_email_pdf(), s3_out_target, s),
                     media_type="application/pdf",
                     headers={
                         "X-Request-ID": rid,
                         "Content-Type": "application/pdf",
+                        **_s3_output_headers(s3_out_target),
                     },
                 )
 
@@ -628,9 +712,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "X-Request-ID": rid,
                 "Content-Type": "application/pdf",
                 **rate_headers,
+                **_s3_output_headers(s3_out_target),
             }
             return StreamingResponse(
-                stream(),
+                _tee_to_s3(stream(), s3_out_target, s),
                 media_type="application/pdf",
                 headers=headers,
             )
@@ -708,6 +793,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
             )
         return JSONResponse(content={"request_id": request_id, **jp.to_dict()})
+
+    @v1.get("/downloads/presign")
+    async def presign_download(bucket: str, key: str) -> JSONResponse:
+        """Mint a short-TTL presigned GET URL for an S3 output object.
+
+        The service owns the S3 credentials (IRSA); clients never see them,
+        only a time-boxed URL. The output-bucket allowlist is enforced inside
+        s3_client BEFORE signing. A fresh URL is minted per call because
+        presigned URLs expire — that is why this is a callable endpoint rather
+        than a one-shot header on /convert.
+        """
+        if not s.s3_enabled:
+            raise S3DisabledError()
+        url = s3_client.generate_presigned_get_url(bucket, key, s)
+        expires_at = datetime.now(UTC) + timedelta(seconds=s.s3_presign_ttl_seconds)
+        oc_logging.emit_event("s3_presign", level="info", bucket=bucket, key=key)
+        return JSONResponse(
+            content={
+                "download_url": url,
+                "bucket": bucket,
+                "key": key,
+                "expires_in_seconds": s.s3_presign_ttl_seconds,
+                "expires_at": expires_at.isoformat(),
+            }
+        )
 
     app.include_router(v1)
     return app
