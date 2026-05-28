@@ -966,7 +966,14 @@ def _docker_monitor() -> dict:
 
                     mem_bytes = int(s["mem_bytes"])
                     mem_max = int(s["mem_max_bytes"])
-                    mem_pct = (mem_bytes / mem_max * 100.0) if mem_max > 0 else 0.0
+                    # cgroup v2 memory.current can briefly exceed memory.max
+                    # during page reclaim (kernel accounts pending evictions
+                    # before they're freed). Cap display at 100% so the UI
+                    # doesn't show physically-impossible 100.3% / 102% etc.
+                    # The raw bytes string above is unaffected, so power
+                    # users can still see the exact value.
+                    raw_pct = (mem_bytes / mem_max * 100.0) if mem_max > 0 else 0.0
+                    mem_pct = min(100.0, raw_pct)
                     mem_usage_str = (
                         f"{_fmt_bytes_mib(mem_bytes)} / {_fmt_bytes_mib(mem_max)}"
                         if mem_max > 0
@@ -2399,12 +2406,62 @@ def live_charts():
                 f'<span style="opacity:0.6;">data kept for 30 min</span></div>'
             )
     else:
+        # UI-local state is empty (no UI-initiated conversions this session).
+        # Fall back to the API-wide signal: /v1/jobs/active for any in-flight
+        # cross-service conversions, then /v1/conversions for the most-recent
+        # completed (covers classification-service flows). This was added to
+        # close the gap where Memory/Timing/Gantt charts stayed empty even
+        # though cross-service conversions were running.
         rid = None
         label = (
             '<div style="font-size:0.85rem;opacity:0.6;margin-top:0.6rem;'
             'margin-bottom:-0.3rem;">📊 Awaiting first conversion · '
             "charts will populate live</div>"
         )
+        try:
+            r = _SESSION.get(f"{API_URL}/v1/jobs/active", timeout=2)
+            if r.ok:
+                jobs = r.json().get("jobs") or []
+                if jobs:
+                    # Pick the one most recently started (smallest elapsed_s)
+                    jobs.sort(key=lambda j: j.get("elapsed_s", 0))
+                    rid = jobs[0].get("request_id")
+                    label = (
+                        f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
+                        f'margin-bottom:-0.3rem;">📊 Live · '
+                        f'<code style="font-size:0.8rem;">{rid}</code> · '
+                        f'{jobs[0].get("phase", "running")} · '
+                        f'<span style="opacity:0.6;">cross-service / no UI session</span></div>'
+                    )
+            if rid is None:
+                # No active job — pick the newest entry from the ring buffer.
+                # Heartbeats + timings are kept ~30min by the API, so a
+                # just-completed cross-service conversion still has data.
+                r2 = _SESSION.get(
+                    f"{API_URL}/v1/conversions",
+                    params={"limit": 1, "filter": "all"},
+                    timeout=2,
+                )
+                if r2.ok:
+                    entries = r2.json().get("entries") or []
+                    if entries:
+                        rid = entries[0].get("request_id")
+                        name = (
+                            entries[0].get("input_filename")
+                            or entries[0].get("output_s3_uri")
+                            or rid
+                        )
+                        dur_ms = entries[0].get("duration_ms") or 0
+                        label = (
+                            f'<div style="font-size:0.85rem;opacity:0.7;margin-top:0.6rem;'
+                            f'margin-bottom:-0.3rem;">📊 Last completed · '
+                            f'<code style="font-size:0.8rem;">{rid}</code> · '
+                            f'{name} · {dur_ms / 1000:.1f}s · '
+                            f'<span style="opacity:0.6;">cross-service / no UI session</span></div>'
+                        )
+        except (requests.RequestException, ValueError, KeyError):
+            # Soft failure: keep the "awaiting" placeholder
+            pass
 
     _slot_chart_label.markdown(label, unsafe_allow_html=True)
 
