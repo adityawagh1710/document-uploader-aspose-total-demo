@@ -46,7 +46,20 @@ How office-convert plugs into the broader Opus 2 system. Maintained as a peer-of
 
 | Date | classification HEAD | office-convert HEAD | Result |
 |---|---|---|---|
-| 2026-05-28 | `feat/auto-convert-integration` (branches 02-07 merged) | `feat/01-cross-service-s3-grant-classification` + dev05 deploy | IAM simulator green for all 4 access matrix cells; pod env has both allowlists |
+| 2026-05-28 (morning) | `feat/auto-convert-integration` (branches 02-07 merged) | `feat/01-cross-service-s3-grant-classification` + dev05 deploy | IAM simulator green for all 4 access matrix cells; pod env has both allowlists |
+| 2026-05-28 (afternoon) | full pipeline deployed end-to-end on dev05 | main `d535452` (with cross-service IAM/ConfigMap live) | **8 real Office files converted via classification → our `/v1/convert`**. Per-format performance: DOCX 4.7–7.4s · PPT(legacy) 3.7–12.5s · XLSX 19.4s · ODS 0.4s · legacy-DOC 26.4s (xlsx-probe → docx-fallback walked). All `200 OK`. Synthetic 128-byte OLE2 returned `422 input_unprocessable` cleanly. No DLQ traffic on classification's side. |
+
+### Live verification — what office-convert delivered for the classification pipeline
+
+- ✓ `s3_input` GET on `classification-ui-dev05/ui/*` worked (otherwise we'd have seen 403/404 from S3, not Aspose conversions)
+- ✓ `s3_output` PUT on `classification-ui-dev05/converted/*` worked — `s3_output_uploaded` events logged for each successful conversion
+- ✓ `X-Request-ID` + `X-S3-Output-{Bucket,Key}` response headers populated correctly — classification's worker captured them on the DDB row
+- ✓ Format-retry path exercised (`sample_large.doc` probed as xlsx, failed in 32ms, fell back to docx — converted successfully)
+- ✓ All 5 vendored Aspose paths exercised: Words (DOCX), Slides (PPT), Cells (XLSX + ODS), and DOCX via legacy-DOC fallback
+- ✓ Fork-after-load mode (DOCX/PPT) AND independent-pool mode (XLSX/ODS) both ran cleanly under the 4Gi pod cap with no OOM
+- ✓ 422 `input_unprocessable` returned correctly on a synthetic fixture — proves the error envelope shape (`{failure_class, detail}`) the worker depends on
+
+Known benign: fontconfig warnings on each per-format Aspose worker init (read-only rootfs prevents fontconfig cache; Aspose falls back to bundled substitutions — PDFs render correctly).
 
 ---
 
