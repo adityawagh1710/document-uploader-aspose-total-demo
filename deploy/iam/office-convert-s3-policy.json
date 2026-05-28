@@ -18,6 +18,18 @@
       "Effect": "Allow",
       "Action": "s3:GetObject",
       "Resource": "arn:aws:s3:::office-convert-dev-sandbox-output/*"
+    },
+    {
+      "Sid": "ReadClassificationInputs",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::classification-ui-dev05/ui/*"
+    },
+    {
+      "Sid": "WriteClassificationOutputs",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:AbortMultipartUpload"],
+      "Resource": "arn:aws:s3:::classification-ui-dev05/converted/*"
     }
   ]
 }
