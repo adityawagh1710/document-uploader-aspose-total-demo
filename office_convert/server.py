@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -985,6 +986,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Streamlit aesthetic.
         """
         return HTMLResponse(_DASHBOARD_HTML)
+
+    @v1.get("/conversions/stats")
+    async def conversions_stats() -> JSONResponse:
+        """Aggregate stats over the recent-conversions ring buffer.
+
+        Used by the Streamlit UI's Per-Format Performance panel — which
+        previously only counted UI-initiated conversions and so showed
+        "—" for cross-service flows. Server-side aggregation means both
+        sources land in the same numbers.
+
+        Per-format aggregates: count (successes only — failures excluded
+        from latency stats), avg_ms, p95_ms. Includes a separate totals
+        block carrying the success/failure split.
+        """
+        snap = default_store().snapshot()
+        per_format: dict[str, dict[str, float | int]] = {}
+        totals = {"count": 0, "successes": 0, "failures": 0}
+        per_fmt_times: dict[str, list[int]] = {}
+
+        for r in snap:
+            totals["count"] += 1
+            if r.status == "failed":
+                totals["failures"] += 1
+                continue
+            totals["successes"] += 1
+            if not r.duration_ms:
+                continue
+            per_fmt_times.setdefault(r.format, []).append(r.duration_ms)
+
+        for fmt, times in per_fmt_times.items():
+            times_sorted = sorted(times)
+            avg_ms = sum(times) / len(times) if times else 0
+            # p95 — nearest-rank (ceil variant). For n samples, p95_idx =
+            # min(n-1, ceil(0.95*n) - 1). Ceil ensures small-sample sets
+            # (n < 20) don't collapse the p95 to the median.
+            n = len(times_sorted)
+            p95_idx = min(n - 1, max(0, math.ceil(0.95 * n) - 1)) if n else 0
+            p95_ms = times_sorted[p95_idx] if times_sorted else 0
+            per_format[fmt] = {
+                "count": len(times),
+                "avg_ms": int(avg_ms),
+                "p95_ms": int(p95_ms),
+            }
+
+        return JSONResponse(content={"per_format": per_format, "totals": totals})
 
     @v1.get("/jobs/active")
     async def list_active_jobs() -> JSONResponse:
