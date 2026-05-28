@@ -30,12 +30,23 @@ import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 API_URL = os.environ.get("API_URL", "http://localhost:8080")
+# Browser-facing API URL. Distinct from API_URL because the UI pod's
+# server-side Python calls can use the in-cluster service DNS
+# (http://office-convert:80 on EKS, http://office-convert:8080 on compose),
+# but iframes embedded in the Streamlit page are loaded by the OPERATOR's
+# browser, which cannot resolve in-cluster DNS. PUBLIC_API_URL must be the
+# externally-reachable URL the browser uses:
+#   compose: http://localhost:8080
+#   EKS dev05: https://office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com
+# Falls back to API_URL when unset (single-origin local dev).
+PUBLIC_API_URL = os.environ.get("PUBLIC_API_URL", API_URL)
 CONVERT_URL = f"{API_URL}/v1/convert"
 HEALTH_URL = f"{API_URL}/health"  # unversioned by convention (orchestrator probe)
 HEARTBEATS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/heartbeats
 PROGRESS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/progress
 TIMINGS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/timings
 PRESIGN_URL = f"{API_URL}/v1/downloads/presign"  # GET ?bucket=&key=
+DASHBOARD_URL = f"{PUBLIC_API_URL}/v1/dashboard"  # browser-facing iframe target
 
 # S3 output controls. When enabled, the upload panel shows a "store to S3"
 # toggle and Conversion History offers a presigned download link.
@@ -2443,8 +2454,13 @@ live_charts()
 # self-contained JS owns its own update loop independent of Streamlit's
 # fragment cadence (and a future swap to HTMX/Next.js doesn't touch
 # the Streamlit code).
+#
+# CRITICAL: the iframe is loaded BY THE BROWSER, not by the Streamlit
+# server, so the URL must be browser-resolvable. Use PUBLIC_API_URL,
+# not API_URL. On EKS API_URL=http://office-convert:80 (in-cluster
+# only); without PUBLIC_API_URL the iframe silently fails to load.
 st.components.v1.iframe(
-    f"{API_URL}/v1/dashboard",
+    DASHBOARD_URL,
     height=760,
     scrolling=True,
 )
