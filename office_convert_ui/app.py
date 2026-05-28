@@ -2437,6 +2437,18 @@ if _snap_active is not None:
     conversion_status()
 live_charts()
 
+# Live dashboard panel — Active Queue + Recent Conversions, served from the
+# FastAPI side at /v1/dashboard. Always visible, polls /v1/jobs/active +
+# /v1/conversions client-side. Embedded as an iframe so the dashboard's
+# self-contained JS owns its own update loop independent of Streamlit's
+# fragment cadence (and a future swap to HTMX/Next.js doesn't touch
+# the Streamlit code).
+st.components.v1.iframe(
+    f"{API_URL}/v1/dashboard",
+    height=760,
+    scrolling=True,
+)
+
 # Action block — only the upload/start UI lives below the file picker.
 # Stats display above is independent of upload state.
 if uploaded_file:
