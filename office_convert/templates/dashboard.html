@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>office-convert — Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   office-convert dashboard
+   ============================================================
+   Two panels:
+     1. Active Queue — horizontal cards, animated, polls /v1/jobs/active
+        every 1.5s; cards slide in/out as jobs start/complete.
+     2. Recent Conversions — paginated table, polls /v1/conversions every 5s
+        and on user interaction.
+
+   Designed to be embedded as an iframe inside the Streamlit UI OR
+   navigated to directly at /v1/dashboard.
+
+   Palette + typography match the existing Streamlit dashboard
+   (dark + cyan accent, Inter sans / JetBrains Mono numeric).
+*/
+
+:root {
+  --bg-0: #0a0b0e;
+  --bg-1: #0f1115;
+  --bg-2: #15181f;
+  --bg-3: #1c2029;
+  --bg-hover: #232732;
+  --border: #2a2f3a;
+  --border-hi: #3a4050;
+  --border-lo: #1f232c;
+
+  --text-0: #e8eaef;
+  --text-1: #b4b8c1;
+  --text-2: #7c8290;
+  --text-3: #565b66;
+
+  --cyan: #4dd0c1;
+  --cyan-dim: rgba(77, 208, 193, 0.18);
+  --cyan-fade: rgba(77, 208, 193, 0.06);
+
+  --emerald: #4ecb8b;
+  --amber: #e0b25b;
+  --red: #e87a6d;
+  --violet: #a78bfa;
+  --blue: #6ab0ec;
+
+  --shadow-card: 0 1px 0 0 rgba(255,255,255,0.04) inset, 0 0 0 1px var(--border);
+  --shadow-pop: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px var(--border-hi);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: 'Inter', -apple-system, system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  font-feature-settings: 'cv11', 'ss03';
+  -webkit-font-smoothing: antialiased;
+  color: var(--text-0);
+  background: var(--bg-0);
+  background-image:
+    radial-gradient(ellipse 800px 600px at 20% -10%, rgba(77,208,193,0.06), transparent),
+    radial-gradient(ellipse 600px 400px at 80% 110%, rgba(167,139,250,0.05), transparent);
+  background-attachment: fixed;
+  padding: 32px 28px 80px;
+}
+
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+.section-head {
+  display: flex; align-items: center; gap: 12px;
+  margin: 28px 0 12px;
+  padding-bottom: 8px;
+}
+.section-head:first-child { margin-top: 0; }
+.section-head h2 {
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-2);
+}
+.section-head .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 0 0 var(--cyan);
+  animation: pulse 2s infinite ease-out;
+}
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(77,208,193,0.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(77,208,193,0); }
+  100% { box-shadow: 0 0 0 0 rgba(77,208,193,0); }
+}
+.section-head .count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-3);
+  font-feature-settings: 'tnum';
+}
+.section-head .spacer { flex: 1; }
+
+/* ============================================================
+   ACTIVE QUEUE
+   ============================================================ */
+#queue-strip {
+  display: flex; gap: 12px;
+  overflow-x: auto;
+  padding: 4px 0 12px;
+  min-height: 158px;
+}
+#queue-strip::-webkit-scrollbar { height: 0; }
+
+.queue-card {
+  flex: 0 0 320px;
+  background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+  position: relative; overflow: hidden;
+  animation: slide-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition: transform 200ms ease, opacity 200ms ease, box-shadow 200ms ease;
+}
+.queue-card:hover { box-shadow: var(--shadow-pop); transform: translateY(-1px); }
+.queue-card.leaving { animation: slide-out 400ms cubic-bezier(0.6, 0, 0.7, 0.2) forwards; }
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(40px) scale(0.96); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes slide-out {
+  to { opacity: 0; transform: translateY(20px) scale(0.96); }
+}
+
+.queue-card::before {
+  content: '';
+  position: absolute; left: 0; top: 16px; bottom: 16px; width: 2px;
+  background: linear-gradient(180deg, transparent, var(--cyan), transparent);
+  opacity: 0.7;
+  animation: seam-shift 3s ease-in-out infinite;
+}
+@keyframes seam-shift {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
+.queue-card .row1 { display: flex; align-items: center; gap: 10px; }
+.queue-card .badge {
+  width: 28px; height: 28px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.04em;
+  background: var(--bg-3); color: var(--text-2);
+}
+.queue-card .rid {
+  flex: 1; font-weight: 500; font-size: 13px; color: var(--text-0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.queue-card .stage {
+  font-size: 11px; color: var(--text-1);
+  display: flex; align-items: center; gap: 6px;
+}
+.queue-card .stage .pin {
+  display: inline-block; width: 4px; height: 4px; border-radius: 50%;
+  background: var(--cyan);
+  animation: blink 1.4s infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.queue-card .progress {
+  height: 4px; border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+  position: relative;
+}
+.queue-card .progress .fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, var(--cyan), #6ee0d2);
+  border-radius: 2px;
+  transition: width 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.queue-card .progress .fill::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  animation: shimmer 1.8s infinite;
+}
+@keyframes shimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(300%); }
+}
+
+.queue-card .meta {
+  display: flex; justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.queue-card .meta .chunks { color: var(--cyan); }
+
+.queue-empty {
+  flex: 1; min-height: 130px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 6px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.queue-empty .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--bg-3); animation: pulse-soft 2s infinite; }
+@keyframes pulse-soft { 0%, 100% { background: var(--bg-3); } 50% { background: var(--border); } }
+
+/* ============================================================
+   RECENT PANEL
+   ============================================================ */
+#recent-panel {
+  background: var(--bg-1);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.recent-header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-lo);
+  background: linear-gradient(180deg, var(--bg-2), transparent);
+}
+.recent-header h3 {
+  font-size: 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px;
+}
+.recent-header .total { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-3); font-weight: 400; }
+.recent-header .spacer { flex: 1; }
+.chips { display: flex; gap: 4px; }
+.chip {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-family: 'Inter', sans-serif;
+  font-size: 11px; font-weight: 500;
+  padding: 4px 10px; border-radius: 999px;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.chip:hover { background: var(--bg-hover); color: var(--text-0); border-color: var(--border-hi); }
+.chip.active {
+  background: var(--text-0); color: var(--bg-0);
+  border-color: var(--text-0);
+}
+
+#recent-rows .row {
+  display: grid;
+  grid-template-columns: 36px 1fr 110px 80px 90px 96px 110px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-lo);
+  transition: background 120ms ease;
+  animation: row-fade-in 420ms ease both;
+}
+@keyframes row-fade-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#recent-rows .row:last-child { border-bottom: none; }
+#recent-rows .row:hover { background: var(--bg-2); }
+#recent-rows .row.new {
+  background: linear-gradient(90deg, rgba(77,208,193,0.08), transparent 60%);
+  animation: row-fade-in 420ms ease both, new-row-fade 2400ms ease forwards;
+}
+@keyframes new-row-fade { to { background: transparent; } }
+
+.row .icon {
+  width: 32px; height: 32px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; font-weight: 700;
+  background: var(--bg-3); color: var(--text-2);
+}
+.icon.docx { color: var(--blue); background: rgba(106,176,236,0.12); }
+.icon.pptx { color: var(--amber); background: rgba(224,178,91,0.12); }
+.icon.xlsx { color: var(--emerald); background: rgba(78,203,139,0.12); }
+.icon.pdf  { color: var(--red); background: rgba(232,122,109,0.12); }
+.icon.eml  { color: var(--violet); background: rgba(167,139,250,0.12); }
+.icon.img,
+.icon.png, .icon.jpg, .icon.jpeg, .icon.tiff, .icon.tif, .icon.gif, .icon.bmp, .icon.webp, .icon.svg, .icon.odg {
+  color: #d4d44a; background: rgba(212,212,74,0.12);
+}
+
+.row .name-cell { min-width: 0; }
+.row .name {
+  font-weight: 500; color: var(--text-0); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row .sub {
+  margin-top: 2px;
+  font-size: 11px; color: var(--text-2);
+  display: flex; gap: 6px; align-items: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row .sub .via-tag {
+  color: var(--cyan);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; font-weight: 500;
+  padding: 1px 6px; border-radius: 3px;
+  background: var(--cyan-fade); border: 1px solid var(--cyan-dim);
+  white-space: nowrap;
+}
+
+.row .time, .row .duration, .row .size {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.row .duration, .row .size { text-align: right; }
+
+.status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 500;
+  padding: 3px 9px; border-radius: 999px;
+  border: 1px solid; background: var(--bg-2);
+}
+.status .dot { width: 6px; height: 6px; border-radius: 50%; }
+.status.ok    { color: var(--emerald); border-color: rgba(78,203,139,0.3); }
+.status.ok .dot { background: var(--emerald); box-shadow: 0 0 6px rgba(78,203,139,0.5); }
+.status.fail  { color: var(--red); border-color: rgba(232,122,109,0.3); }
+.status.fail .dot { background: var(--red); }
+
+.actions { display: flex; gap: 6px; justify-content: flex-end; }
+.btn {
+  background: transparent;
+  border: 1px solid var(--border-hi);
+  color: var(--text-1);
+  font-family: 'Inter', sans-serif;
+  font-size: 11px; font-weight: 500;
+  padding: 4px 10px; border-radius: 6px;
+  cursor: pointer;
+  transition: all 150ms ease;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn:hover { background: var(--bg-hover); color: var(--text-0); border-color: var(--text-1); }
+.btn.primary {
+  color: var(--cyan);
+  border-color: rgba(77,208,193,0.4);
+  background: var(--cyan-fade);
+}
+.btn.primary:hover { background: rgba(77,208,193,0.15); border-color: var(--cyan); }
+
+.recent-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px;
+  background: var(--bg-2);
+  border-top: 1px solid var(--border-lo);
+}
+.page-info {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.page-info b { color: var(--text-0); font-weight: 600; }
+.page-nav { display: flex; gap: 4px; align-items: center; }
+.nav-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  min-width: 28px; padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 150ms ease;
+  font-variant-numeric: tabular-nums;
+}
+.nav-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-0); }
+.nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.stale-banner {
+  margin-top: 8px; padding: 8px 14px; border-radius: 8px;
+  background: rgba(224,178,91,0.08); border: 1px solid rgba(224,178,91,0.25);
+  color: var(--amber); font-size: 11px;
+  display: none;
+}
+.stale-banner.show { display: block; animation: row-fade-in 240ms ease; }
+</style>
+</head>
+<body>
+
+<div class="section-head">
+  <span class="dot"></span>
+  <h2>Active Queue</h2>
+  <span class="count" id="queue-count">—</span>
+  <div class="spacer"></div>
+  <span class="mono" style="color: var(--text-3); font-size: 11px;" id="now">--:--:--</span>
+</div>
+
+<div id="queue-strip">
+  <div class="queue-empty"><div class="pulse"></div><div>loading…</div></div>
+</div>
+
+<div class="section-head">
+  <span class="dot"></span>
+  <h2>Recent Conversions</h2>
+  <span class="count" id="recent-total">—</span>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip active" data-filter="all">All</button>
+    <button class="chip" data-filter="ui">From UI</button>
+    <button class="chip" data-filter="cross">Cross-service</button>
+    <button class="chip" data-filter="failed">Failed</button>
+  </div>
+</div>
+
+<div class="stale-banner" id="stale-banner">
+  Older entries no longer in buffer — showing latest.
+</div>
+
+<div id="recent-panel">
+  <div id="recent-rows">
+    <div class="row" style="grid-template-columns: 1fr; color: var(--text-3); justify-self: center;">
+      <div style="padding: 24px; text-align: center;">loading…</div>
+    </div>
+  </div>
+  <div class="recent-footer">
+    <div class="page-info" id="page-info">—</div>
+    <div class="page-nav">
+      <button class="nav-btn" id="prev-btn" disabled>‹</button>
+      <button class="nav-btn" id="next-btn" disabled>›</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   Live data wiring — polls /v1/jobs/active + /v1/conversions
+   ============================================================
+   Cadences:
+     Active queue: every 1.5s (in-flight state changes fast)
+     Recent panel: every 5s + on user interaction (filter / pagination)
+*/
+
+// API base — empty string means same origin as the page (works when
+// /v1/dashboard is served by FastAPI directly OR via iframe).
+const API = "";
+
+const queueStrip = document.getElementById('queue-strip');
+const recentRows = document.getElementById('recent-rows');
+const recentTotal = document.getElementById('recent-total');
+const pageInfo = document.getElementById('page-info');
+const queueCount = document.getElementById('queue-count');
+const nowEl = document.getElementById('now');
+const prevBtn = document.getElementById('prev-btn');
+const nextBtn = document.getElementById('next-btn');
+const staleBanner = document.getElementById('stale-banner');
+
+// Pagination state
+const cursorStack = [];          // [cursor1, cursor2, ...] for back-navigation
+let currentCursor = null;        // cursor of current page, null = first page
+let currentFilter = "all";
+let lastFetchedNextCursor = null;
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function fmtTimeNow() {
+  const d = new Date();
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function fmtRel(ts) {
+  const ms = Date.now() - (ts * 1000);
+  if (ms < 1000) return 'just now';
+  if (ms < 60000) return `${Math.floor(ms/1000)} sec ago`;
+  if (ms < 3600000) return `${Math.floor(ms/60000)} min ago`;
+  return `${Math.floor(ms/3600000)}h ago`;
+}
+function fmtDur(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms/1000).toFixed(1)}s`;
+  return `${Math.floor(ms/60000)}m ${Math.floor((ms%60000)/1000)}s`;
+}
+function fmtBytes(b) {
+  if (b == null) return '—';
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b/1024).toFixed(0)} KB`;
+  return `${(b/1048576).toFixed(1)} MB`;
+}
+function fmtName(entry) {
+  if (entry.input_filename) return entry.input_filename;
+  if (entry.output_s3_uri) {
+    // s3://bucket/key/.../file.pdf — show just the trailing key
+    const m = entry.output_s3_uri.match(/s3:\/\/[^/]+\/(.+)$/);
+    return m ? m[1] : entry.output_s3_uri;
+  }
+  return entry.request_id;
+}
+function viaServiceFromS3Uri(uri) {
+  if (!uri) return null;
+  const m = uri.match(/s3:\/\/([^/]+)\//);
+  if (!m) return null;
+  // Derive service name from bucket prefix; classification-ui-dev05 → "classification-service"
+  if (m[1].startsWith('classification-')) return 'classification-service';
+  return m[1];
+}
+function fmtClass(fmt) {
+  // CSS class hint for the icon color; falls back to .img for anything image-ish
+  return ['docx','pptx','xlsx','pdf','eml'].includes(fmt) ? fmt : 'img';
+}
+
+/* ---- Active queue ---- */
+
+async function fetchActive() {
+  try {
+    const r = await fetch(API + '/v1/jobs/active', { cache: 'no-store' });
+    if (!r.ok) throw new Error('status ' + r.status);
+    const data = await r.json();
+    renderQueue(data.jobs || []);
+  } catch (e) {
+    // Soft failure: leave previous render in place, just log to console
+    console.warn('fetchActive failed:', e);
+  }
+}
+
+function renderQueue(jobs) {
+  queueCount.textContent = jobs.length === 0 ? 'queue empty' : `${jobs.length} in-flight`;
+  if (jobs.length === 0) {
+    if (!queueStrip.querySelector('.queue-empty')) {
+      queueStrip.innerHTML = '<div class="queue-empty"><div class="pulse"></div><div>queue empty — waiting for the next job</div></div>';
+    }
+    return;
+  }
+  const placeholder = queueStrip.querySelector('.queue-empty');
+  if (placeholder) placeholder.remove();
+
+  const wantedIds = new Set(jobs.map(j => j.request_id));
+  // Remove cards not in active anymore (slide-out)
+  for (const el of Array.from(queueStrip.children)) {
+    if (el.dataset.id && !wantedIds.has(el.dataset.id)) {
+      el.classList.add('leaving');
+      setTimeout(() => el.remove(), 400);
+    }
+  }
+  // Add new cards, update existing
+  jobs.forEach(job => {
+    const id = job.request_id;
+    let card = queueStrip.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'queue-card';
+      card.dataset.id = id;
+      card.innerHTML = `
+        <div class="row1">
+          <div class="badge">RID</div>
+          <div class="rid">${id}</div>
+        </div>
+        <div class="stage"><span class="pin"></span><span class="stage-text"></span></div>
+        <div class="progress"><div class="fill" style="width: 0%"></div></div>
+        <div class="meta">
+          <span class="elapsed">—</span>
+          <span class="chunks">—</span>
+        </div>
+      `;
+      queueStrip.appendChild(card);
+    }
+    card.querySelector('.stage-text').textContent = job.phase || 'running';
+    card.querySelector('.progress .fill').style.width = `${Math.max(0, Math.min(99, (job.weighted_percent || 0) * 100)).toFixed(1)}%`;
+    card.querySelector('.elapsed').textContent = fmtDur(Math.round((job.elapsed_s || 0) * 1000));
+    const chunks = (job.total_chunks || 0) > 0
+      ? `${job.chunks_rendered || 0}/${job.total_chunks}`
+      : '—';
+    card.querySelector('.chunks').textContent = chunks;
+  });
+}
+
+/* ---- Recent panel ---- */
+
+async function fetchRecent() {
+  try {
+    const params = new URLSearchParams({ filter: currentFilter, limit: '20' });
+    if (currentCursor) params.set('cursor', currentCursor);
+    const r = await fetch(`${API}/v1/conversions?${params}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('status ' + r.status);
+    const data = await r.json();
+    renderRecent(data);
+  } catch (e) {
+    console.warn('fetchRecent failed:', e);
+  }
+}
+
+function renderRecent(data) {
+  recentTotal.textContent = `${data.buffer_size} in buffer`;
+  staleBanner.classList.toggle('show', !!data.stale_cursor);
+  if (data.stale_cursor) {
+    // Reset pagination
+    cursorStack.length = 0;
+    currentCursor = null;
+  }
+
+  lastFetchedNextCursor = data.next_cursor;
+  nextBtn.disabled = !data.has_more;
+  prevBtn.disabled = cursorStack.length === 0 && currentCursor === null;
+
+  const entries = data.entries || [];
+  if (entries.length === 0) {
+    recentRows.innerHTML = `
+      <div class="row" style="grid-template-columns: 1fr;">
+        <div style="padding: 24px; text-align: center; color: var(--text-3);">no conversions yet</div>
+      </div>`;
+    pageInfo.textContent = `0 in buffer`;
+    return;
+  }
+
+  // Render rows
+  recentRows.innerHTML = '';
+  entries.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const isCross = entry.source === 'cross';
+    const subParts = [];
+    if (isCross) {
+      const via = viaServiceFromS3Uri(entry.output_s3_uri);
+      if (via) subParts.push(`<span class="via-tag">via ${via}</span>`);
+      if (entry.output_s3_uri) subParts.push(`<span>· ${entry.output_s3_uri.replace(/^s3:\/\//, 's3://')}</span>`);
+    } else {
+      const bits = ['via UI'];
+      if (entry.page_count) bits.push(`${entry.page_count} pages`);
+      subParts.push(`<span>${bits.join(' · ')}</span>`);
+    }
+    const statusCls = entry.status === 'success' ? 'ok' : 'fail';
+    const statusLabel = entry.status === 'success' ? 'ok' : 'failed';
+    row.innerHTML = `
+      <div class="icon ${fmtClass(entry.format)}">${(entry.format || '?').toUpperCase()}</div>
+      <div class="name-cell">
+        <div class="name">${fmtName(entry)}</div>
+        <div class="sub">${subParts.join(' ')}</div>
+      </div>
+      <div class="time">${fmtRel(entry.completion_ts)}</div>
+      <div class="duration">${entry.duration_ms ? fmtDur(entry.duration_ms) : '—'}</div>
+      <div class="size">${fmtBytes(entry.output_size_bytes)}</div>
+      <div><span class="status ${statusCls}"><span class="dot"></span> ${statusLabel}</span></div>
+      <div class="actions">${
+        entry.status === 'failed'
+          ? `<a class="btn" title="${(entry.error_code || '')}">${entry.error_code || 'failed'}</a>`
+          : (entry.output_s3_uri
+              ? renderDownloadLink(entry.output_s3_uri)
+              : '<a class="btn primary">Download</a>')
+      }</div>
+    `;
+    recentRows.appendChild(row);
+  });
+
+  const startIdx = cursorStack.length * 20 + 1;
+  const endIdx = startIdx + entries.length - 1;
+  pageInfo.textContent = `showing ${startIdx}–${endIdx} of ${data.buffer_size}`;
+}
+
+function renderDownloadLink(s3uri) {
+  const m = s3uri.match(/s3:\/\/([^/]+)\/(.+)$/);
+  if (!m) return '<a class="btn primary">Download</a>';
+  const params = new URLSearchParams({ bucket: m[1], key: m[2] });
+  return `<a class="btn primary" href="${API}/v1/downloads/presign?${params}" target="_blank" rel="noopener">Presign</a>`;
+}
+
+/* ---- Wire up controls ---- */
+
+document.getElementById('chips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip');
+  if (!chip) return;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  currentFilter = chip.dataset.filter;
+  // Reset pagination
+  cursorStack.length = 0;
+  currentCursor = null;
+  fetchRecent();
+});
+
+prevBtn.addEventListener('click', () => {
+  if (cursorStack.length === 0) {
+    currentCursor = null;
+  } else {
+    currentCursor = cursorStack.pop();
+    if (cursorStack.length === 0 && currentCursor === null) currentCursor = null;
+  }
+  fetchRecent();
+});
+
+nextBtn.addEventListener('click', () => {
+  if (!lastFetchedNextCursor) return;
+  cursorStack.push(currentCursor);  // push current so prev can rewind
+  currentCursor = lastFetchedNextCursor;
+  fetchRecent();
+});
+
+/* ---- Boot loops ---- */
+
+setInterval(() => { nowEl.textContent = fmtTimeNow(); }, 1000);
+
+fetchActive();
+fetchRecent();
+setInterval(fetchActive, 1500);
+setInterval(fetchRecent, 5000);
+</script>
+
+</body>
+</html>

@@ -56,6 +56,11 @@ from office_convert.types import (
 log = logging.getLogger(__name__)
 
 
+# Dashboard HTML — loaded once at module import (no need to re-read per
+# request). See office_convert/templates/dashboard.html.
+_DASHBOARD_HTML = (Path(__file__).parent / "templates" / "dashboard.html").read_text()
+
+
 _LANDING_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -968,6 +973,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "buffer_size": page.buffer_size,
             }
         )
+
+    @v1.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+    async def dashboard() -> HTMLResponse:
+        """Live dashboard: active queue + recent-conversions panel.
+
+        Single self-contained HTML page that polls /v1/jobs/active and
+        /v1/conversions client-side. Open at /v1/dashboard or embed via
+        iframe in the Streamlit UI (st.components.html with src=API_URL +
+        "/v1/dashboard"). Dark theme + cyan accent matches the existing
+        Streamlit aesthetic.
+        """
+        return HTMLResponse(_DASHBOARD_HTML)
 
     @v1.get("/jobs/active")
     async def list_active_jobs() -> JSONResponse:
