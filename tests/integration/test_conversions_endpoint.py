@@ -62,11 +62,13 @@ def _clear_stores() -> None:
     for the duration of the pytest worker process)."""
     default_store().clear()
     jps = job_progress_store()
-    for rid in list(jps._store.keys()):  # noqa: SLF001 — test-only access
+    # `_store` access is test-only — ruff's SLF001 rule isn't enabled in
+    # this project's config, so a noqa comment would be flagged (RUF100).
+    for rid in list(jps._store.keys()):
         jps.forget(rid)
     yield
     default_store().clear()
-    for rid in list(jps._store.keys()):  # noqa: SLF001
+    for rid in list(jps._store.keys()):
         jps.forget(rid)
 
 
