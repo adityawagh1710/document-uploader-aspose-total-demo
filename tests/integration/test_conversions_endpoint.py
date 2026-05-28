@@ -54,11 +54,20 @@ def client(tmp_path: Path) -> TestClient:
 
 @pytest.fixture(autouse=True)
 def _clear_stores() -> None:
-    """Each test starts with empty ring + empty job_progress store."""
+    """Each test starts with empty ring + empty job_progress store.
+
+    JobProgressStore has no clear() method; iterate its internal dict and
+    forget each entry. Otherwise tests that populate it leak into other
+    tests that expect /v1/jobs/active to be empty (the singleton lives
+    for the duration of the pytest worker process)."""
     default_store().clear()
-    # job_progress_store has no clear(); we forget by rid in tests that use it
+    jps = job_progress_store()
+    for rid in list(jps._store.keys()):  # noqa: SLF001 — test-only access
+        jps.forget(rid)
     yield
     default_store().clear()
+    for rid in list(jps._store.keys()):  # noqa: SLF001
+        jps.forget(rid)
 
 
 def _rec(
@@ -212,6 +221,168 @@ def test_conversions_malformed_cursor_treated_as_no_cursor(client: TestClient) -
     data = r.json()
     assert len(data["entries"]) == 1
     assert data["stale_cursor"] is False
+
+
+# ---- /v1/conversions/stats --------------------------------------------------
+
+
+def test_stats_empty_buffer(client: TestClient) -> None:
+    r = client.get("/v1/conversions/stats")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["per_format"] == {}
+    assert data["totals"] == {"count": 0, "successes": 0, "failures": 0}
+
+
+def test_stats_aggregates_per_format(client: TestClient) -> None:
+    store = default_store()
+    # 3 docx successes, 2 pptx successes, 1 docx failure
+    store.record(
+        ConversionRecord(
+            request_id="d1",
+            completion_ts=100.0,
+            source="ui",
+            input_filename="a.docx",
+            format="docx",
+            page_count=1,
+            duration_ms=1000,
+            status="success",
+            error_code=None,
+            output_s3_uri=None,
+            output_size_bytes=4096,
+        )
+    )
+    store.record(
+        ConversionRecord(
+            request_id="d2",
+            completion_ts=110.0,
+            source="ui",
+            input_filename="b.docx",
+            format="docx",
+            page_count=1,
+            duration_ms=2000,
+            status="success",
+            error_code=None,
+            output_s3_uri=None,
+            output_size_bytes=4096,
+        )
+    )
+    store.record(
+        ConversionRecord(
+            request_id="d3",
+            completion_ts=120.0,
+            source="cross",
+            input_filename=None,
+            format="docx",
+            page_count=2,
+            duration_ms=3000,
+            status="success",
+            error_code=None,
+            output_s3_uri="s3://test/k",
+            output_size_bytes=4096,
+        )
+    )
+    store.record(
+        ConversionRecord(
+            request_id="p1",
+            completion_ts=130.0,
+            source="ui",
+            input_filename="x.pptx",
+            format="pptx",
+            page_count=5,
+            duration_ms=5000,
+            status="success",
+            error_code=None,
+            output_s3_uri=None,
+            output_size_bytes=8192,
+        )
+    )
+    store.record(
+        ConversionRecord(
+            request_id="p2",
+            completion_ts=140.0,
+            source="ui",
+            input_filename="y.pptx",
+            format="pptx",
+            page_count=5,
+            duration_ms=7000,
+            status="success",
+            error_code=None,
+            output_s3_uri=None,
+            output_size_bytes=8192,
+        )
+    )
+    store.record(
+        ConversionRecord(
+            request_id="dfail",
+            completion_ts=150.0,
+            source="ui",
+            input_filename="bad.docx",
+            format="docx",
+            page_count=None,
+            duration_ms=500,
+            status="failed",
+            error_code="render_failed",
+            output_s3_uri=None,
+            output_size_bytes=None,
+        )
+    )
+
+    r = client.get("/v1/conversions/stats")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["totals"] == {"count": 6, "successes": 5, "failures": 1}
+
+    # docx: 3 successes, avg = (1000+2000+3000)/3 = 2000, p95 ≈ 3000
+    assert data["per_format"]["docx"]["count"] == 3
+    assert data["per_format"]["docx"]["avg_ms"] == 2000
+    assert data["per_format"]["docx"]["p95_ms"] == 3000
+
+    # pptx: 2 successes, avg = 6000, p95 ≈ 7000
+    assert data["per_format"]["pptx"]["count"] == 2
+    assert data["per_format"]["pptx"]["avg_ms"] == 6000
+    assert data["per_format"]["pptx"]["p95_ms"] == 7000
+
+
+def test_stats_excludes_failed_from_latency_but_counts_in_totals(client: TestClient) -> None:
+    """Failed conversions don't pollute the avg/p95 (their duration would
+    be the time-to-fail, not the typical success path), but they DO show
+    up in the totals counters so the panel reflects all activity."""
+    store = default_store()
+    store.record(
+        ConversionRecord(
+            request_id="ok1",
+            completion_ts=100.0,
+            source="ui",
+            input_filename="a.docx",
+            format="docx",
+            page_count=1,
+            duration_ms=1000,
+            status="success",
+            error_code=None,
+            output_s3_uri=None,
+            output_size_bytes=4096,
+        )
+    )
+    store.record(
+        ConversionRecord(
+            request_id="fail1",
+            completion_ts=110.0,
+            source="ui",
+            input_filename="b.docx",
+            format="docx",
+            page_count=None,
+            duration_ms=999999,  # would skew avg if counted
+            status="failed",
+            error_code="subdivision_floor",
+            output_s3_uri=None,
+            output_size_bytes=None,
+        )
+    )
+    data = client.get("/v1/conversions/stats").json()
+    assert data["totals"] == {"count": 2, "successes": 1, "failures": 1}
+    assert data["per_format"]["docx"]["count"] == 1
+    assert data["per_format"]["docx"]["avg_ms"] == 1000  # only the success counted
 
 
 # ---- /v1/jobs/active --------------------------------------------------------

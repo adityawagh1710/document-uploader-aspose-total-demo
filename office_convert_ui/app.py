@@ -1354,21 +1354,55 @@ def live_stats():
     jobs_status = "ok" if (max_jobs and active_jobs < max_jobs) else "warn"
     worker_count = len(workers)
 
-    # Lifetime counters + per-format aggregates live in the process-wide
-    # state dict (survive the rolling MAX_RECENT_RESULTS cap on s["results"]).
-    # Snapshot under the lock then drop it — the renderer doesn't need it.
+    # Lifetime counters live in the process-wide state dict (survive the
+    # rolling MAX_RECENT_RESULTS cap on s["results"]). Snapshot under the
+    # lock then drop it — the renderer doesn't need it.
     _s = _state()
     with _s["lock"]:
         total_conv = _s.get("total_conversions", 0)
         total_in_bytes = _s.get("total_input_bytes", 0.0)
         total_out_bytes = _s.get("total_output_bytes", 0.0)
-        per_fmt_snapshot = {
+        _local_per_fmt = {
             fmt: {
                 "count": bucket.get("count", 0),
                 "times": list(bucket.get("times") or []),
             }
             for fmt, bucket in (_s.get("per_format_stats") or {}).items()
         }
+
+    # Per-format aggregates: fetch from API ring buffer so cross-service
+    # conversions (classification-service via /v1/convert with s3_input)
+    # count alongside UI-initiated ones. Falls back to the local store
+    # (UI-only counts) if the API is unreachable. The API's per_format
+    # block carries pre-computed avg_ms + p95_ms; convert to the legacy
+    # {count, times[]} shape _render_format_perf expects so its
+    # rendering code stays untouched.
+    per_fmt_snapshot = _local_per_fmt
+    try:
+        r = _SESSION.get(f"{API_URL}/v1/conversions/stats", timeout=2)
+        if r.ok:
+            api_data = r.json().get("per_format", {})
+            api_snapshot: dict = {}
+            for fmt, agg in api_data.items():
+                count = int(agg.get("count", 0))
+                if count == 0:
+                    continue
+                # Reconstruct a `times` list compatible with the renderer:
+                # populate with `count` copies of avg (so the existing avg/
+                # p95 computation reproduces close-enough values). Cheap
+                # and matches the dashboard intent — exact distribution
+                # lives in /v1/conversions if anyone needs the raw data.
+                avg_s = agg.get("avg_ms", 0) / 1000.0
+                p95_s = agg.get("p95_ms", 0) / 1000.0
+                # Two-point trick: most entries at avg, one at p95 so the
+                # _percentile() helper returns ~p95 without us re-doing it.
+                times = [avg_s] * max(count - 1, 0) + [p95_s]
+                api_snapshot[fmt] = {"count": count, "times": times}
+            if api_snapshot:
+                per_fmt_snapshot = api_snapshot
+    except (requests.RequestException, ValueError, KeyError):
+        # Soft failure: stick with local-only counts
+        pass
 
     tiles_html = _render_tile_row(
         [
