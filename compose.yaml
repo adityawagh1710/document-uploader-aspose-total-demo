@@ -252,6 +252,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       API_URL: "http://office-convert:8080"
+      # Browser-facing API URL — used for iframes the operator's browser
+      # loads directly (e.g. the embedded /v1/dashboard panel). Container
+      # cannot reach localhost:8080 but the browser can, so this is
+      # distinct from API_URL above. On EKS, set to the public ALB URL
+      # of the API host.
+      PUBLIC_API_URL: "http://localhost:8080"
       # S3 output controls for the UI. When enabled, the UI shows a
       # "store to S3" toggle and renders a presigned "Download from S3"
       # link in Conversion History (via GET /v1/downloads/presign).

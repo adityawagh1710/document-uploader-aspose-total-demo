@@ -34,6 +34,16 @@ spec:
             # browsing the (eventual) UI NLB.
             - name: API_URL
               value: "http://{{ include "office-convert.fullname" . }}:{{ .Values.service.port }}"
+            # Browser-facing API URL — used for iframes the operator's
+            # browser loads directly (e.g. /v1/dashboard embedded panel).
+            # The browser can't resolve the in-cluster service DNS in
+            # API_URL above, so PUBLIC_API_URL must be the external ALB
+            # hostname of the API Ingress. Configure in values.yaml as
+            # `ui.publicApiUrl`. Defaults to API_URL (single-origin local
+            # dev); set explicitly for any deployment where API and UI
+            # live on different hostnames.
+            - name: PUBLIC_API_URL
+              value: {{ .Values.ui.publicApiUrl | default (printf "http://%s:%v" (include "office-convert.fullname" .) .Values.service.port) | quote }}
             - name: STREAMLIT_SERVER_HEADLESS
               value: "true"
             # XSRF off: port-forward changes the origin and Streamlit's default

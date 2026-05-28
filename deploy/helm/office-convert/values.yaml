@@ -190,6 +190,21 @@ ingress:
 # charts + heartbeats + progress all work because they come from the API.
 ui:
   enabled: true
+  # Browser-facing API URL — used for iframes the operator's browser
+  # loads directly (e.g. /v1/dashboard embedded panel). The browser
+  # cannot resolve the in-cluster service DNS the UI pod uses for its
+  # own server-side calls (`API_URL`), so this must be the external ALB
+  # hostname of the API Ingress.
+  #
+  # Defaults to empty → fall through to the in-cluster service URL,
+  # which is correct ONLY for single-origin local-port-forward dev.
+  # On dev05, set this in your overlay:
+  #   ui:
+  #     publicApiUrl: "https://office-convert-api-dev-sandbox-v1.dev05.k8s.opus2dev.com"
+  # OR (image-only roll path) `kubectl set env deploy/office-convert-ui
+  # PUBLIC_API_URL=https://...` to preserve live patches per the
+  # deploy-workflow carve-out.
+  publicApiUrl: ""
   image:
     # Filled in at install time:
     #   --set ui.image.repository=<acct>.dkr.ecr.<region>.amazonaws.com/office-convert-ui
