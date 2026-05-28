@@ -113,6 +113,21 @@ class JobProgressStore:
         with self._lock:
             self._store.pop(rid, None)
 
+    def active(self) -> list[tuple[str, JobProgress]]:
+        """Snapshot of all currently-active (non-complete) jobs.
+
+        Used by GET /v1/jobs/active to power the dashboard's in-flight
+        queue strip. Returns deep copies (via JobProgress(**asdict(jp)))
+        so callers don't see mutations mid-iteration."""
+        now = time.monotonic()
+        with self._lock:
+            self._evict_locked(now)
+            return [
+                (rid, JobProgress(**asdict(jp)))
+                for rid, jp in self._store.items()
+                if jp.phase != "complete"
+            ]
+
 
 _singleton: JobProgressStore | None = None
 _singleton_lock = threading.Lock()
