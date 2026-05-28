@@ -46,6 +46,7 @@ from office_convert.errors import (
 from office_convert.license import LicenseManager
 from office_convert.probe import ACCEPTED_FORMATS, detect_format
 from office_convert.rate_limit import RateLimiter, client_id_for
+from office_convert.recent import ConversionRecord, default_store
 from office_convert.types import (
     ConversionOptions,
     Diagnostic,
@@ -277,6 +278,42 @@ def _s3_output_headers(target: tuple[str, str] | None) -> dict[str, str]:
     return {"X-S3-Output-Bucket": target[0], "X-S3-Output-Key": target[1]}
 
 
+def _build_record(
+    *,
+    request_id: str,
+    t0: float,
+    source: str,
+    input_filename: str | None,
+    fmt: str,
+    s3_out_target: tuple[str, str] | None,
+    status: str,
+    error_code: str | None,
+    output_size_bytes: int | None,
+) -> ConversionRecord:
+    """Construct a ConversionRecord for the recent-conversions ring buffer.
+
+    Called from each /v1/convert streaming generator's finally: block (the
+    semaphore-release site, where success vs failure is observable) and from
+    the first_chunk pre-stream failure branch in the main Aspose path.
+
+    `duration_ms` is the monotonic delta from route entry (t0 captured before
+    rate-limit + semaphore acquire) — full server-observed wall time.
+    """
+    return ConversionRecord(
+        request_id=request_id,
+        completion_ts=time.time(),
+        source=source,  # type: ignore[arg-type]
+        input_filename=input_filename,
+        format=fmt,
+        page_count=None,
+        duration_ms=int((time.monotonic() - t0) * 1000),
+        status=status,  # type: ignore[arg-type]
+        error_code=error_code,
+        output_s3_uri=f"s3://{s3_out_target[0]}/{s3_out_target[1]}" if s3_out_target else None,
+        output_size_bytes=output_size_bytes,
+    )
+
+
 async def _tee_to_s3(
     inner: AsyncIterator[bytes],
     target: tuple[str, str] | None,
@@ -412,6 +449,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> StreamingResponse:
         rid = oc_logging.current_request_id.get()
         oc_logging.emit_event("request_received", level="info")
+
+        # Recent-conversions ring buffer hook — captured at route entry so
+        # `duration_ms` reflects full server-observed wall time (including
+        # rate-limit queue + semaphore wait + body read + conversion). Both
+        # the success path (each stream*() generator's finally:) and the
+        # main-Aspose pre-stream-failure path (first_chunk except) record
+        # via _build_record(). Pre-validation failures (rate limit, busy,
+        # license expired, S3 disabled, missing/conflicting input) do NOT
+        # record — they fail before format is known.
+        t0 = time.monotonic()
+        recent_source: str = "cross" if s3_input else "ui"
+        recent_store = default_store()
 
         # Per-IP rate limit (token bucket). Runs BEFORE semaphore acquire so
         # 429s don't briefly hold a job slot.
@@ -588,14 +637,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     raise
 
                 async def stream_libreoffice() -> AsyncIterator[bytes]:
+                    status = "failed"
+                    error_code: str | None = "stream_aborted"
+                    out_size = 0
                     try:
                         async with aiofiles.open(pdf_path, "rb") as fh:
                             while True:
                                 block = await fh.read(64 * 1024)
                                 if not block:
                                     break
+                                out_size += len(block)
                                 yield block
+                        status = "success"
+                        error_code = None
+                    except ConversionError as e:
+                        error_code = e.failure_class.value
+                        raise
                     finally:
+                        recent_store.record(
+                            _build_record(
+                                request_id=rid,
+                                t0=t0,
+                                source=recent_source,
+                                input_filename=source_filename,
+                                fmt=fmt,
+                                s3_out_target=s3_out_target,
+                                status=status,
+                                error_code=error_code,
+                                output_size_bytes=out_size if status == "success" else None,
+                            )
+                        )
                         shutil.rmtree(scratch_dir, ignore_errors=True)
                         state["active_jobs"] -= 1
                         server_sem.release()
@@ -629,14 +700,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     raise
 
                 async def stream_email_pdf() -> AsyncIterator[bytes]:
+                    status = "failed"
+                    error_code: str | None = "stream_aborted"
+                    out_size = 0
                     try:
                         async with aiofiles.open(pdf_path, "rb") as fh:
                             while True:
                                 block = await fh.read(64 * 1024)
                                 if not block:
                                     break
+                                out_size += len(block)
                                 yield block
+                        status = "success"
+                        error_code = None
+                    except ConversionError as e:
+                        error_code = e.failure_class.value
+                        raise
                     finally:
+                        recent_store.record(
+                            _build_record(
+                                request_id=rid,
+                                t0=t0,
+                                source=recent_source,
+                                input_filename=source_filename,
+                                fmt=fmt,
+                                s3_out_target=s3_out_target,
+                                status=status,
+                                error_code=error_code,
+                                output_size_bytes=out_size if status == "success" else None,
+                            )
+                        )
                         shutil.rmtree(scratch_dir, ignore_errors=True)
                         state["active_jobs"] -= 1
                         server_sem.release()
@@ -684,20 +777,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 first_chunk = await gen.__anext__()
             except StopAsyncIteration:
                 first_chunk = b""
-            except BaseException:
+            except BaseException as exc:
                 # Generator failed before yielding — scratch needs cleanup
                 # here because stream() never gets a chance to run. The outer
-                # except handles semaphore release.
+                # except handles semaphore release. Record a failed entry
+                # for the dashboard since format detection succeeded.
+                err_code = (
+                    exc.failure_class.value if isinstance(exc, ConversionError) else "render_failed"
+                )
+                recent_store.record(
+                    _build_record(
+                        request_id=rid,
+                        t0=t0,
+                        source=recent_source,
+                        input_filename=source_filename,
+                        fmt=fmt,
+                        s3_out_target=s3_out_target,
+                        status="failed",
+                        error_code=err_code,
+                        output_size_bytes=None,
+                    )
+                )
                 shutil.rmtree(scratch_dir, ignore_errors=True)
                 raise
 
             async def stream() -> AsyncIterator[bytes]:
+                status = "failed"
+                error_code: str | None = "stream_aborted"
+                out_size = 0
                 try:
                     if first_chunk:
+                        out_size += len(first_chunk)
                         yield first_chunk
                     async for block in gen:
+                        out_size += len(block)
                         yield block
+                    status = "success"
+                    error_code = None
+                except ConversionError as e:
+                    error_code = e.failure_class.value
+                    raise
                 finally:
+                    # Recent-conversions ring buffer
+                    recent_store.record(
+                        _build_record(
+                            request_id=rid,
+                            t0=t0,
+                            source=recent_source,
+                            input_filename=source_filename,
+                            fmt=fmt,
+                            s3_out_target=s3_out_target,
+                            status=status,
+                            error_code=error_code,
+                            output_size_bytes=out_size if status == "success" else None,
+                        )
+                    )
                     # Cleanup scratch + release semaphore
                     shutil.rmtree(scratch_dir, ignore_errors=True)
                     state["active_jobs"] -= 1
