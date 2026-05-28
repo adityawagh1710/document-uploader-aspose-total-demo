@@ -1,0 +1,39 @@
+# Helm values overlay for the cross-service S3 integration with the
+# classification-service (see deploy/iam/README.md "Cross-service grant").
+#
+# Pass this overlay alongside the standard deploy flags so the API pod
+# accepts `s3_input` URLs pointing at the classification-service's bucket
+# AND writes the converted PDF back to that bucket under `converted/`:
+#
+#   HELM_EXTRA_ARGS="--values deploy/helm/office-convert/values-classification-fanout.yaml \
+#     --set serviceAccount.roleArn=arn:aws:iam::537462380503:role/office-convert-dev-s3 \
+#     --set s3.region=eu-west-1" \
+#     make deploy-dev
+#
+# The IAM role `office-convert-dev-s3` must already include the
+# `ReadClassificationInputs` + `WriteClassificationOutputs` statements
+# (re-applied via `aws iam put-role-policy` after the policy JSON change
+# in this PR — see deploy/iam/README.md §Cross-service grant).
+#
+# `defaultOutputBucket` is left at office-convert's own bucket: callers
+# from classification-service pass an explicit `s3_output=s3://classification-ui-dev05/converted/<docId>.pdf`
+# in their request, so the default only matters for callers that DON'T
+# specify a sink (UI-initiated conversions, e2e tests).
+
+s3:
+  enabled: true
+  region: "eu-west-1"
+  # Comma-separated: office-convert's own input bucket PLUS classification's
+  # bucket so callers can pass `s3://classification-ui-dev05/ui/<docId>/<name>`
+  # as `s3_input`.
+  inputBucketsAllowlist: "office-convert-dev-sandbox-input,classification-ui-dev05"
+  # Comma-separated: office-convert's own output bucket PLUS classification's
+  # bucket so callers can pass `s3://classification-ui-dev05/converted/<docId>.pdf`
+  # as `s3_output`.
+  outputBucketsAllowlist: "office-convert-dev-sandbox-output,classification-ui-dev05"
+  # Unchanged — bucket-only `s3_output` (no key) still uses office-convert's
+  # own bucket. Classification always supplies an explicit key, so this
+  # default doesn't apply to the cross-service flow.
+  defaultOutputBucket: "office-convert-dev-sandbox-output"
+  presignTtlSeconds: 900
+  outputKeyTemplate: "pdf/{request_id}.pdf"
