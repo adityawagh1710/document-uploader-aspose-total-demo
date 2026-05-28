@@ -928,6 +928,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return JSONResponse(content={"request_id": request_id, **jp.to_dict()})
 
+    @v1.get("/conversions")
+    async def list_conversions(
+        cursor: str | None = None,
+        limit: int = 20,
+        filter: str = "all",
+    ) -> JSONResponse:
+        """Paginated feed of recently-completed conversions for the dashboard.
+
+        Backed by the in-process `RecentStore` ring buffer (default maxlen
+        200). Cross-service (s3_input) and UI-initiated conversions share the
+        same shape — both reach the capture site in /v1/convert with rich
+        metadata. Lost on pod restart; multi-replica deploy would invalidate
+        this design (per the office-hours design doc tripwire).
+        """
+        from office_convert.recent import Cursor, matches, paginate
+
+        # Validate + clamp inputs (FastAPI's path/query validation could do
+        # this, but the endpoint stays small without Pydantic models).
+        max_limit = 100
+        if limit < 1:
+            limit = 1
+        elif limit > max_limit:
+            limit = max_limit
+        if filter not in ("all", "ui", "cross", "failed"):
+            filter = "all"
+
+        store = default_store()
+        snap = store.snapshot()
+        filtered = [r for r in snap if matches(r, filter)]  # type: ignore[arg-type]
+        cur = Cursor.decode(cursor) if cursor else None
+        page = paginate(filtered, cur, limit, buffer_size=store.size())
+        return JSONResponse(
+            content={
+                "entries": [r.to_dict() for r in page.entries],
+                "next_cursor": page.next_cursor,
+                "has_more": page.has_more,
+                "stale_cursor": page.stale_cursor,
+                "buffer_size": page.buffer_size,
+            }
+        )
+
+    @v1.get("/jobs/active")
+    async def list_active_jobs() -> JSONResponse:
+        """Snapshot of all currently-active (non-complete) conversion jobs.
+
+        Powers the dashboard's in-flight queue strip. Reads from the
+        process-wide JobProgressStore. Returns request_id + JobProgress
+        fields only (no format/filename — those aren't carried through the
+        progress store today; richer metadata can be added in a follow-up
+        without changing this endpoint's shape if extra fields appear).
+        """
+        from office_convert.job_progress import job_progress_store
+
+        jobs = [{"request_id": rid, **jp.to_dict()} for rid, jp in job_progress_store().active()]
+        return JSONResponse(content={"jobs": jobs})
+
     @v1.get("/downloads/presign")
     async def presign_download(bucket: str, key: str) -> JSONResponse:
         """Mint a short-TTL presigned GET URL for an S3 output object.
