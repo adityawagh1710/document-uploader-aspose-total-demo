@@ -502,9 +502,13 @@ function viaServiceFromS3Uri(uri) {
   if (!uri) return null;
   const m = uri.match(/s3:\/\/([^/]+)\//);
   if (!m) return null;
-  // Derive service name from bucket prefix; classification-ui-dev05 → "classification-service"
+  // Derive service name from bucket prefix. classification-ui-dev05 →
+  // "classification-service" is the only currently-known cross-service
+  // caller; fall back to a generic "API" label for everything else (since
+  // surfacing the raw bucket name conflates "output bucket happens to be
+  // office-convert's own sandbox" with "true cross-service call").
   if (m[1].startsWith('classification-')) return 'classification-service';
-  return m[1];
+  return 'API';
 }
 function fmtClass(fmt) {
   // CSS class hint for the icon color; falls back to .img for anything image-ish
@@ -528,9 +532,10 @@ async function fetchActive() {
 function renderQueue(jobs) {
   queueCount.textContent = jobs.length === 0 ? 'queue empty' : `${jobs.length} in-flight`;
   if (jobs.length === 0) {
-    if (!queueStrip.querySelector('.queue-empty')) {
-      queueStrip.innerHTML = '<div class="queue-empty"><div class="pulse"></div><div>queue empty — waiting for the next job</div></div>';
-    }
+    // Unconditionally re-render the empty state so the initial "loading…"
+    // placeholder gets replaced. Idempotent — browser collapses identical
+    // innerHTML assignments to no-op.
+    queueStrip.innerHTML = '<div class="queue-empty"><div class="pulse"></div><div>queue empty — waiting for the next job</div></div>';
     return;
   }
   const placeholder = queueStrip.querySelector('.queue-empty');
