@@ -117,3 +117,4 @@ deploy/logs/
 *~
 .DS_Store
 Thumbs.db
+.gstack/
