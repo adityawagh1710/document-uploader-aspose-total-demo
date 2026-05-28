@@ -18,6 +18,12 @@
 # All targets in the Makefile also work — they delegate to compose where
 # appropriate. Compose is canonical; Make is convenience.
 
+# Pin the project name so it doesn't change if this directory is renamed.
+# Container names (set via container_name:) are global to the daemon; without
+# a pinned project name, renaming the host dir causes "container already in
+# use" collisions on the next `docker compose up` (see 2026-05-28 incident).
+name: office-convert
+
 services:
 
   # ============================================================
