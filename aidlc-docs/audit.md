@@ -2222,3 +2222,15 @@ Two doc-quality observations worth keeping:
 - ECR scan posture is in a steady state: apt-get upgrade picks up Debian fixes as they ship; remaining unfixed CVEs are tracked but not exploitable in our threat model. Ubuntu 24.04 / Wolfi swap evaluated and declined.
 
 ---
+
+## Go Orchestrator Migration — Plan Drafted (proposed, not approved)
+**Timestamp**: 2026-05-29T19:38:47+05:30
+**User Input**: "migration plan + effort estimate + aidlc and docs + what gains will achieve out with go lang ?" → (after presenting the analysis) "Yes" (draft the plan doc + aidlc-state/audit entries)
+**AI Response**:
+  - Created `aidlc-docs/construction/plans/go-orchestrator-migration-plan.md` (plan-doc style, Status = "Proposed — NOT approved. Discussion artifact only; no code authored"). Covers: goal, what-does-not-change, architecture, package layout, 8-phase contract-frozen plan, concurrency mapping (forked-pool seq-demux, errgroup fan-out, io.Copy streaming), the 4 observability-store mappings, UI impact, ~9.5–12.5 person-week effort estimate, AI-DLC doc impact, gains-vs-costs ledger, recommendation, and approval-gate open questions.
+  - Appended "Go orchestrator migration — PROPOSED, not approved (2026-05-29)" section to `aidlc-state.md`. Recorded Q8 as *reconsidered, not flipped* — stays `A (Python)` pending approval.
+  - This audit entry.
+  - No code authored. No `office_convert/` change. C++ workers, Streamlit UI, Helm chart untouched.
+**Context**: CONSTRUCTION-phase tech-stack exploration. Requirements stable (FR/NFR, HTTP contract, failure taxonomy preserved), so INCEPTION artifacts out of scope. Key conclusions captured for any future approval gate: Go cannot be the Aspose engine (no native SDK — C++ workers stay); latency essentially unchanged (render-bound); gains are operational (footprint, single binary, no-GIL concurrency); ROI marginal for this working/tested/deployed system; the higher-leverage lever remains the Aspose engine edition (C++ → C#/.NET or Java). Both gating extensions (PBT, security-baseline) still apply to any future implementation.
+
+---
