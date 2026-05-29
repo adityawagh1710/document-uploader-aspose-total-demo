@@ -885,3 +885,20 @@ Also ran a Ubuntu 24.04 / Ubuntu Pro / Wolfi swap analysis. Recommendation: **do
 Full analysis preserved in [[reference-image-security-scanning]] §"Ubuntu 24.04 swap analysis".
 
 **Local docker housekeeping**: rebuilt API + UI images (all cache hits after the initial rebuild post-dedup), pruned build cache, deleted dangling layers. ~12 GB host disk reclaimed cumulatively across the session.
+
+### Go orchestrator migration — PROPOSED, not approved (2026-05-29)
+
+User explored re-implementing the Python orchestrator (`office_convert/*.py`, ~9.1k LOC) in Go. Scoped into `construction/plans/go-orchestrator-migration-plan.md`. **Discussion artifact only — no code authored, no decision made.**
+
+Framing: this is a **CONSTRUCTION-phase tech-stack swap, not a requirements change**. FR-1…FR-10, NFR-1…NFR-8, the HTTP contract, and the failure taxonomy are preserved byte-for-byte. The C++ workers (`worker_cpp/`), the JSON-stdio protocol, the Streamlit UI, and the Helm chart do **not** change.
+
+**Q8 reconsidered (NOT flipped):** the original answer was `A (Python)` (requirement-verification-questions.md). Go is recorded as a *proposed alternative*, pending the approval-gate open questions in the plan doc. Q8 stays `A (Python)` until/unless approved.
+
+Key findings:
+- **Go cannot be the Aspose engine** — no native Go SDK. Go shells out to the same C++ workers. The migration does **nothing** about the project's actual complexity source (the 5-binary CodePorting split, fork-unsafe Cells, scaffolded Aspose calls).
+- **Latency essentially unchanged** — render-bound (seconds-to-minutes); orchestrator overhead already negligible. Gains are operational (static binary ~15–35 MB vs ~150–250 MB runtime layer, interpreter-free deploy, no GIL, cleaner concurrency), not user-facing speed.
+- **Effort ~9.5–12.5 person-weeks** to parity-with-tests; phase 6 (rebuild the 235 tests) is the dominant, easy-to-underestimate line item.
+- **UI survives untouched** (option 1) if Go honours the endpoint contract + serves the `/v1/dashboard`+landing HTML; must preserve `PUBLIC_API_URL` vs `API_URL` and the cross-service API-wide fallback signals.
+- **Recommendation:** marginal ROI for this working/tested/deployed system unless single-binary footprint is a stated goal. Higher-leverage lever remains the Aspose **engine edition** (C++ → C#/.NET or Java).
+
+Gating extensions both still apply on any future implementation: PBT (properties re-expressed in `pgregory.net/rapid`) and security-baseline (re-verify; easier on distroless/scratch).
