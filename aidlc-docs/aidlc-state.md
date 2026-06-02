@@ -902,3 +902,42 @@ Key findings:
 - **Recommendation:** marginal ROI for this working/tested/deployed system unless single-binary footprint is a stated goal. Higher-leverage lever remains the Aspose **engine edition** (C++ → C#/.NET or Java).
 
 Gating extensions both still apply on any future implementation: PBT (properties re-expressed in `pgregory.net/rapid`) and security-baseline (re-verify; easier on distroless/scratch).
+
+### Go orchestrator migration — APPROVED, BACKEND ONLY (2026-06-02)
+
+User approved proceeding: *"Lets to with GO change in BE only no nothing changes in UI."* The 2026-05-29 plan moves from PROPOSED to **APPROVED**.
+
+**Q8 FLIPPED: A (Python) → B (Go)** for the orchestrator layer. Scope is **backend only**:
+- **Changes**: `office_convert/*.py` (6,345 LOC) → Go under `cmd/orchestrator` + `internal/*`.
+- **Unchanged**: `worker_cpp/` (5 per-product binaries + JSON-stdio protocol), `office_convert_ui/` (Streamlit, **explicitly out of scope per user**), `deploy/helm/`, all INCEPTION + functional-design artifacts.
+
+**Review findings folded into scope** (see audit 2026-06-02):
+- The **footprint gain is overstated** — LibreOffice + Aspose native userland in the runtime image forecloses scratch/distroless; net saving ≈ Python interpreter layer only. The migration's justification is therefore *interpreter-free deploy + cleaner concurrency + thread-safe stores*, NOT a 10× image shrink. The plan doc's gains ledger should be corrected.
+- Cutover (phase 8) must be **shadow-traffic or hard-swap**, never live A/B — in-memory observability + recent-conversion ring buffers are per-process and split-brain by construction.
+
+**Progress**: branch `feat/go-orchestrator`. Phase 0 (scaffold + contract freeze) underway — Go module, package skeleton, `contract-freeze.md` (14-endpoint parity oracle), `internal/types/types.go` ported. Phase 1 (pure logic) started.
+
+**Gating extensions still apply**: PBT re-expressed in `pgregory.net/rapid`; security-baseline re-verified (non-root / read-only-root / cap-drop / no-secrets).
+
+**Progress checkpoint (2026-06-02) — Phases 0–4 COMPLETE** (~4,100 LOC Go + ~540 LOC tests, all build/vet/test green; no commits yet, all uncommitted on `feat/go-orchestrator`):
+- **Phase 0**: module + skeleton + `contract-freeze.md`.
+- **Phase 1** (pure logic): `types`, `planner` (chunk_planner verbatim + invariant tests), `oerrors` (full error hierarchy), `config` (env parse + validation bounds), `license` (XML expiry + classify), `cache` (atomic write/get/put/clear), `probe` detect_format + ParseProbeJSON, `csvinput` (CSV→XLSX).
+- **Phase 2** (worker): `worker` package — one-shot `RunWorker` + prlimit + exit-code mapping; `WorkerPool` (N independent, channel checkout); `ForkedPoolLeader` seq-demux (`map[int]chan` + reader goroutine + mutex, the asyncio.Future→channel mapping); `ForkedWorkerPool`; `PoolModeAvailable`/`ForkAfterLoadEnabled` (xlsx fork-unsafe carve-out preserved).
+- **Phase 3** (merge+orchestrator): `qpdf` streaming concat (io.MultiWriter cache tee); `probe.Probe`/`ProbeLite` (two-tier + format-mismatch retry); `orchestrator.ConvertJob` (probe→plan→dispatch→merge→stream, pool + one-shot paths, OOM subdivision recursion, bounded fan-out preserving order, GIL→mutex counters).
+- **Phase 4** (obs): `obs` package — `RingStore` (heartbeats/timings) + `JobProgressStore` (weighted %) + `RecentStore` + cursor pagination, **all with explicit mutexes** (the GIL→lock correctness rule), tests for weighting/monotonic-load/pagination/stale-cursor.
+- **Phase 5 COMPLETE (2026-06-02)** — full server + supporting modules ported (~5,970 LOC non-test + ~690 test, whole module `go build`/`go vet`/`go test` green; `cmd/orchestrator` binary builds at 16 MB):
+  - `ratelimit` (token bucket + LRU + XFF client id), `containerstats` (cgroup v1/v2 + /proc worker walk), `libreoffice` (soffice subprocess), `email` (3-stage EML→MHT→PDF via worker.RunWorker), `s3` (pure URL/allowlist/target helpers + **real aws-sdk-go-v2** Download/Upload/Presign in `aws.go`).
+  - `server`: net/http (Go 1.22 method+wildcard routing) for all 14 routes; request-id middleware; error→HTTP Diagnostic mapping with Retry-After/X-RateLimit headers; **deferred-status streamWriter** (status line held until first body byte so pre-stream errors still return JSON — the Python "materialize first chunk" trick); S3 tee via io.MultiWriter; recent-conversion capture; health checker; dashboard + landing HTML via `go:embed`.
+  - `cmd/orchestrator/main.go`: wires config→logging→license→cache→stores→s3→server, serves :8080, graceful shutdown.
+  - **2 external deps total**: aws-sdk-go-v2 (s3/config/manager) + smithy-go. Everything else stdlib.
+  - HTTP contract tests (httptest): health shape, dashboard/landing served, conversions pagination, presign-disabled→s3_disabled, convert→missing_file, unknown-job progress.
+  - **Build note**: the repo's `vendor/` (Aspose C++ libs) collides with Go's vendor-mode auto-detect; builds require `-mod=mod` (set via `go env -w GOFLAGS=-mod=mod` locally; the Phase 7 Dockerfile/Makefile Go target must pass it explicitly).
+  - **Footprint finding reinforced**: the Go binary is 16 MB, but it's dominated by aws-sdk-go-v2 — and the runtime image is still dominated by Aspose + LibreOffice regardless. Confirms the plan-review point that the "10× image shrink" gain was illusory for this image.
+- **Phase 6 COMPLETE in-repo (2026-06-02)** — parity tests for everything provable without Aspose/qpdf/Python (~1,050 test LOC total, whole module green). See `go-orchestrator/parity-testing.md`.
+  - **rapid PBT** (`planner`): complete-cover, maxPages, subdivision halving + floor, ChunkSHA256 determinism — the Python `hypothesis` properties re-expressed.
+  - **Fake worker binary** (`worker/testdata/fakeworker`) speaking the real JSON-stdio protocol → integration tests drive the **real** ForkedPoolLeader seq-demux, WorkerPool channel-checkout, prlimit spawn, stderr-heartbeat→store tailing, and exit-137→OOM mapping. This behaviorally validates the High-difficulty Phase 2 code that was previously "compiles only."
+  - **Fake qpdf** → `qpdf` wrapper streaming/tee/error-map/cleanup tests.
+  - **httptest** server contract tests (health/dashboard/conversions/presign/missing-file/progress).
+  - **Deferred (needs infra this box lacks)**: the **golden-fixture byte-diff vs live Python** (needs qpdf + a running Python instance) — this is the Phase 6 *exit criterion* and must run in CI before cutover; full ConvertJob e2e through real qpdf (no qpdf binary here — covered in the Phase 7 container); testcontainers e2e with the licensed Aspose binaries. Harness fully specified in `parity-testing.md`.
+- **Phase 7 COMPLETE + VALIDATED (2026-06-02)** — `Dockerfile.go` (C++ builder unchanged + Go builder + Python-free `debian-slim` runtime), `make build-go`/`test-go`/`run-go`, Helm needs no change (image-only roll). `make build-go` produced `office-convert:go` (5.18 GB, Aspose/LibreOffice-dominated). **Ran end-to-end on the image**: DOCX/PDF/XLSX/PPTX/EML/CSV all returned valid %PDF against the real Aspose workers + qpdf; `/v1/conversions` recorded all 6. Doc: `go-orchestrator/containerize-deploy.md`. Also fixed pre-existing `make qa` (fastapi pin → 237 passed/1 skipped, green).
+- **Remaining: Phase 8 only** (cutover — push `office-convert:go` to ECR, run the golden-fixture parity diff against the image, then shadow-traffic or hard-swap on dev05; never live A/B). Everything through Phase 7 is built, tested, qa-green, and proven to convert every format end-to-end. All uncommitted on `feat/go-orchestrator`.
