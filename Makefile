@@ -21,9 +21,11 @@
 SHELL                 := /bin/bash
 PROJECT_DIR           ?= $(shell pwd)
 IMAGE_PROD            ?= office-convert:dev
+IMAGE_GO              ?= office-convert:go
 IMAGE_UI              ?= office-convert-ui:dev
 IMAGE_TEST            ?= office-convert:test
 IMAGE_SMOKE_WORDS     ?= office-convert-smoke-words:dev
+GO_IMAGE              ?= golang:1.26-bookworm
 CONTAINER_NAME        ?= office-convert-dev
 SMOKE_OUT_DIR         ?= /tmp/oc-smoke
 PORT                  ?= 8080
@@ -81,6 +83,40 @@ build-test: ## BUILD test-runner image (Python + dev deps; no Aspose needed)
 	@printf "$(GREEN)Building test image $(IMAGE_TEST)...$(RESET)\n"
 	docker build -t $(IMAGE_TEST) -f Dockerfile.test .
 	@printf "$(GREEN)Done. Run:$(RESET) make test\n"
+
+.PHONY: build-go test-go run-go
+build-go: check-vendor check-license ## BUILD Go orchestrator image (needs vendor/aspose/; runtime is Python-free)
+	@printf "$(GREEN)Building Go image $(IMAGE_GO)...$(RESET)\n"
+	docker build -t $(IMAGE_GO) -f go.Dockerfile .
+	@printf "$(GREEN)Done. Run:$(RESET) make run-go\n"
+
+test-go: ## TEST run the Go unit + property + integration suites (no Aspose needed; installs prlimit for worker tests)
+	@printf "$(GREEN)Running Go tests in $(GO_IMAGE)...$(RESET)\n"
+	docker run --rm -v $(PROJECT_DIR):/src -w /src $(GO_IMAGE) \
+		sh -c "apt-get update -qq && apt-get install -y -qq util-linux >/dev/null && GOFLAGS=-mod=mod go test ./internal/... ./cmd/..."
+
+run-go: check-license ## RUN the Go image locally on $(PORT) (foreground; license bind-mounted, hardened posture)
+	@printf "$(GREEN)Starting $(IMAGE_GO) on http://localhost:$(PORT) (Ctrl-C to stop)...$(RESET)\n"
+	# -m/--memory-swap mirror the prod compose posture (4 GiB RAM + 2 GiB swap).
+	#   WITHOUT a memory limit the cgroup reports "unlimited", so /v1/stats
+	#   returns mem_max_bytes=0 and the UI's memory gauge has no denominator
+	#   (shows blank). The limit makes memory utilization render.
+	# WORKER_RAM_BYTES=6 GiB matches memswap_limit so prlimit RLIMIT_AS doesn't
+	#   block swap (see config.py).
+	# POOL_MIN_CHUNKS=1 forces pool mode on every conversion so per-job
+	#   heartbeats (and the UI's per-job memory/timing/Gantt charts) populate
+	#   even for small single-chunk files — handy for local dashboard demos.
+	# HOME=/tmp + the fontconfig tmpfs let fontconfig write its cache under
+	#   the read-only rootfs.
+	docker run --rm -p 127.0.0.1:$(PORT):8080 \
+		-m 4g --memory-swap 6g \
+		-v $(LICENSE_FILE):/aspose/license.lic:ro \
+		-e HOME=/tmp \
+		-e OFFICE_CONVERT_WORKER_RAM_BYTES=6442450944 \
+		-e OFFICE_CONVERT_POOL_MIN_CHUNKS=1 \
+		--cap-drop=ALL --read-only \
+		--tmpfs /tmp --tmpfs /var/run --tmpfs /var/cache/fontconfig \
+		$(IMAGE_GO)
 
 .PHONY: smoke-words
 smoke-words: check-license check-vendor-words ## BUILD smoke-test Aspose.Words license + Linux .so (pre-integration validation)
