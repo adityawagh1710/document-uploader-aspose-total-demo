@@ -2234,3 +2234,73 @@ Two doc-quality observations worth keeping:
 **Context**: CONSTRUCTION-phase tech-stack exploration. Requirements stable (FR/NFR, HTTP contract, failure taxonomy preserved), so INCEPTION artifacts out of scope. Key conclusions captured for any future approval gate: Go cannot be the Aspose engine (no native SDK — C++ workers stay); latency essentially unchanged (render-bound); gains are operational (footprint, single binary, no-GIL concurrency); ROI marginal for this working/tested/deployed system; the higher-leverage lever remains the Aspose engine edition (C++ → C#/.NET or Java). Both gating extensions (PBT, security-baseline) still apply to any future implementation.
 
 ---
+
+## Go Orchestrator Migration — APPROVED, implementation started
+**Timestamp**: 2026-06-02T00:00:00Z
+**User Input**: "review the Go migration plan" → (after review) "Lets to with GO change in BE only no nothing changes in UI"
+**AI Response**:
+  - Reviewed `go-orchestrator-migration-plan.md`. Confirmed the plan's marginal-ROI conclusion and surfaced 5 findings: (1) the headline footprint gain (150–250 MB → 15–35 MB on scratch/distroless) is **wrong for this image** — the runtime stage carries `libreoffice-core-nogui`/`libreoffice-draw-nogui` + ~600 MB Aspose `.so` trees, so scratch is impossible and the real net saving is only the Python interpreter layer; (2) "no GIL → true parallel request handling" is a near-non-gain at `MAX_JOBS=1`/`PARALLEL=2`/static-N/single-replica; (3) phase-8 side-by-side cutover has an in-memory-store split-brain problem (per-process stores diverge by construction — cutover must be shadow-traffic or hard-swap, NOT live A/B); (4) phase-6 parity-test estimate is optimistic for timing-dependent behaviors; (5) orchestrator core is 6,345 LOC, not the stated ~9.1k.
+  - User approved proceeding with **backend-only** migration; UI explicitly out of scope.
+  - **Q8 FLIPPED: A (Python) → B (Go) for the orchestrator**, recorded in aidlc-state.md. C++ workers, Streamlit UI, Helm chart unchanged.
+  - Created branch `feat/go-orchestrator`. Phase 0 started: `go mod init`, package skeleton (`cmd/orchestrator` + `internal/{config,types,oclog,server,probe,planner,worker,qpdf,cache,license,s3,obs}`), `aidlc-docs/construction/go-orchestrator/contract-freeze.md` (14-endpoint parity oracle), and `internal/types/types.go` (verbatim port of `types.py`; builds clean, gofmt clean).
+  - 9-phase task tracker created.
+**Context**: CONSTRUCTION-phase tech-stack swap, now approved. UI out of scope per explicit user directive. Implementation proceeding phase-by-phase against the frozen contract.
+
+---
+
+## Go Orchestrator Migration — Phases 0–4 complete (checkpoint)
+**Timestamp**: 2026-06-02T00:30:00Z
+**User Input**: (cadence decision) "Run through Phase 1–4, then check in" + "Hold commits until later"
+**AI Response**: Ported plan-phases 0–4 to Go on `feat/go-orchestrator` (~4,100 LOC + ~540 test LOC; `go build`/`go vet`/`go test ./internal/...` all green; nothing committed):
+  - Phase 1 pure logic: types, planner (+invariant tests), oerrors, config, license (+tests), cache (+tests), probe detect_format + ParseProbeJSON (+tests), csvinput (+tests).
+  - Phase 2 worker: one-shot RunWorker + prlimit + exit-code map; WorkerPool (channel checkout); ForkedPoolLeader seq-demux (map[int]chan + reader goroutine + mutex); ForkedWorkerPool; pool/fork gating with the xlsx fork-unsafe carve-out preserved.
+  - Phase 3 merge+orchestrator: qpdf streaming concat (cache tee via io.MultiWriter); two-tier Probe/ProbeLite with format-mismatch retry; ConvertJob with pool + one-shot paths, OOM subdivision recursion, order-preserving bounded fan-out, GIL→mutex counters.
+  - Phase 4 obs: RingStore (heartbeats/timings) + JobProgressStore + RecentStore + cursor pagination, **every store explicitly mutex-guarded** (the GIL→lock correctness rule from the plan), with weighting/monotonic/pagination/stale-cursor tests.
+  - Parity fix logged: `chunk-{index}.pdf` keeps Python's float formatting (`chunk-0.0.pdf`).
+  - PAUSED before Phase 5 (server) per the user's review cadence. Phase 5 (router/middleware/error-map/rate-limit/s3/libreoffice+email/csv routing/dashboard+landing HTML via embed.FS), Phase 6 (parity tests + golden fixtures), Phase 7 (container), Phase 8 (cutover) remain.
+**Context**: Mechanical-bulk phases done; server + parity (highest contract risk) deferred to the review gate as agreed.
+
+---
+
+## Go Orchestrator Migration — Phase 5 (server) complete
+**Timestamp**: 2026-06-02T01:00:00Z
+**User Input**: "continue"
+**AI Response**: Ported the server + all supporting modules (Phase 5). Whole module builds/vets/tests green; `cmd/orchestrator` binary builds at 16 MB. Now ~5,970 LOC non-test + ~690 test.
+  - Support packages: `ratelimit` (token-bucket + LRU + XFF), `containerstats` (cgroup v1/v2 + /proc), `libreoffice` (soffice), `email` (3-stage EML pipeline), `s3` (pure helpers + real aws-sdk-go-v2 ops).
+  - `server`: net/http router for all 14 endpoints; request-id middleware; error→Diagnostic mapping w/ Retry-After + X-RateLimit headers; deferred-status streamWriter (pre-stream errors still return JSON); S3 tee; recent-conversion capture; health checker; dashboard+landing via go:embed. `cmd/orchestrator/main.go` wires everything + graceful shutdown on :8080.
+  - Added 6 httptest contract tests (health/dashboard/conversions/presign-disabled/missing-file/progress-unknown) — all green.
+  - Added 2 external deps (aws-sdk-go-v2 + smithy-go); everything else stdlib.
+  - Build gotcha logged: the C++ `vendor/` dir forces `-mod=mod` (set GOFLAGS locally; Dockerfile/Makefile must pass it). Footprint finding reinforced: 16 MB Go binary is aws-sdk-dominated, runtime image still Aspose/LibreOffice-dominated.
+  - PAUSED before Phase 6. Remaining: Phase 6 (parity tests + golden fixtures — needs fake worker + Python oracle to actually prove behavioral parity), Phase 7 (container), Phase 8 (shadow/hard-swap cutover).
+**Context**: All code-translation phases (1–5) done. What remains is proving parity (6), packaging (7), and cutover (8) — the phases that need a running worker/Python and a deploy target, not more translation.
+
+---
+
+## Go Orchestrator Migration — Phase 6 (parity testing) complete in-repo
+**Timestamp**: 2026-06-02T01:30:00Z
+**User Input**: "continue"
+**AI Response**: Built the parity-test layer for everything provable in this environment (no Aspose SDK; qpdf absent, soffice present, prlimit present). Whole module green; ~1,050 test LOC total. Authored `go-orchestrator/parity-testing.md`.
+  - rapid PBT for the planner (complete-cover / maxPages / subdivide halving+floor / sha determinism).
+  - Fake worker binary (`worker/testdata/fakeworker`) → integration tests exercising the REAL ForkedPoolLeader seq-demux, WorkerPool checkout, prlimit spawn, stderr-heartbeat→store, exit-137→OOM. This is the first behavioral validation of the Phase-2 concurrency code.
+  - Fake qpdf → ConcatStreaming stream/tee/error/cleanup tests.
+  - httptest server contract tests.
+  - **Deferred (infra-gated, specified in parity-testing.md)**: golden-fixture byte-diff vs live Python (the Phase 6 *exit criterion*, needs qpdf + running Python), full ConvertJob e2e through real qpdf (no qpdf binary here — runs in the Phase 7 container), testcontainers e2e with licensed Aspose binaries.
+  - Added 1 dev dep: pgregory.net/rapid.
+  - PAUSED before Phase 7. Remaining: Phase 7 (container), Phase 8 (cutover); golden-fixture diff runs once the container provides qpdf + binaries.
+**Context**: In-repo parity done; the cross-impl byte-diff against the Python oracle is the one piece that genuinely needs a running Python + qpdf, so it's gated to CI/dev and specified rather than run here.
+
+---
+
+## Go Orchestrator Migration — Phase 7 (containerize) complete + VALIDATED end-to-end
+**Timestamp**: 2026-06-02T02:30:00Z
+**User Input**: "continue" → "Go buiild" (build the Go image) + "Can i test it in local?"
+**AI Response**:
+  - Authored `Dockerfile.go` (C++ builder identical to Python image; new `golang:1.26-bookworm` Go builder → `CGO_ENABLED=0` static binary; `debian:bookworm-slim` runtime with qpdf+LibreOffice+fonts+Aspose .so + the Go binary, no Python). Added `make build-go`/`test-go`/`run-go` + `IMAGE_GO`. Helm needs NO change (same `repository:tag` contract → image-only roll). Doc: `go-orchestrator/containerize-deploy.md`.
+  - **`make build-go` succeeded** → `office-convert:go` 5.18 GB (Aspose/LibreOffice-dominated — confirms the footprint finding; the Go binary is noise).
+  - **Local HTTP-layer smoke** (host, no Docker): ran the bare binary; `/health` correctly reported `worker_binary_missing/qpdf_missing/license_path_missing`, landing/dashboard/conversions/stats served, request-id echoed.
+  - **Full end-to-end on the image** (real Aspose workers + qpdf + license, `/health` ready, 340 license days): DOCX (fork pool), PDF, XLSX (legacy pool), PPTX (fork pool), EML (email pipeline), CSV (normalization) — **all 6 returned valid %PDF**; `/v1/conversions` recorded all 6 with correct metadata. The Go orchestrator behaviorally works against the unchanged C++ workers.
+  - **Also fixed (user chose "fix on the Go branch")**: pre-existing `make qa` red — `fastapi` range let the test image resolve 0.136 → starlette 1.x → httpx-deprecation hard-failing conftest under `filterwarnings=error`. Pinned `fastapi>=0.115,<0.116` (matches the prod Dockerfile). `make qa` now green: ruff/format/mypy clean, **237 passed / 1 skipped**, badge → 238. Only Python change on the branch; zero other `.py` differ from main.
+  - PAUSED before Phase 8 (cutover). The golden-fixture parity diff (Phase 6 exit criterion) can now run against this image (it has qpdf + workers).
+**Context**: Phase 7 not just authored but proven — the image builds and converts every format end-to-end. Remaining: Phase 8 cutover (shadow/hard-swap on dev05) + the golden-fixture byte-diff vs Python.
+
+---
