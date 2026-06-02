@@ -27,4 +27,7 @@ WORKDIR /app
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "office_convert_ui/app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--browser.gatherUsageStats", "false"]
+# --server.maxUploadSize=1024 lets the picker accept files up to 1 GB, matching
+# the backend ceiling (OFFICE_CONVERT_MAX_INPUT_BYTES=1 GiB). Streamlit's default
+# is 200 MB; without this the UI rejects larger uploads before the API sees them.
+CMD ["streamlit", "run", "office_convert_ui/app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.maxUploadSize", "1024", "--browser.gatherUsageStats", "false"]
