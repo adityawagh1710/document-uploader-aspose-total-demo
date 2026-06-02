@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>office-convert</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a1f29;
+    --panel-2: #232936;
+    --border: #2d3441;
+    --text: #d7dde6;
+    --muted: #7c8694;
+    --accent: #4ea1ff;
+    --ok: #4ade80;
+    --ok-bg: rgba(74,222,128,.10);
+    --warn: #fbbf24;
+    --err: #f87171;
+    --err-bg: rgba(248,113,113,.12);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.5; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+  header { display: flex; align-items: center; gap: 16px; padding-bottom: 20px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  header .ver { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  header .sub { color: var(--muted); margin-left: auto; font-size: 13px; }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(74,222,128,.3); }
+  .pill.err { background: var(--err-bg); color: var(--err); border: 1px solid rgba(248,113,113,.3); }
+  .section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase; margin: 28px 0 12px; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px 18px; }
+  .kpi .label { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .kpi .value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 28px; font-weight: 500; margin-top: 6px; color: var(--text); }
+  .kpi .value.accent { color: var(--accent); }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; }
+  .badge { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text); }
+  /* Two-tone shields.io-style stack badges */
+  .stack { display: flex; flex-wrap: wrap; gap: 8px; }
+  .sb { display: inline-flex; border-radius: 4px; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1; box-shadow: 0 1px 0 rgba(0,0,0,.35); }
+  .sb-l { background: #2d3441; color: #d7dde6; padding: 6px 9px; font-weight: 500; }
+  .sb-r { padding: 6px 9px; color: #fff; font-weight: 600; }
+  .v-blue   { background: #3b82f6; }
+  .v-green  { background: #10b981; }
+  .v-pink   { background: #ec4899; }
+  .v-orange { background: #f97316; }
+  .v-sky    { background: #38bdf8; color: #0b2030; }
+  .v-violet { background: #8b5cf6; }
+  .v-amber  { background: #f59e0b; color: #2a1a00; }
+  .row-title { font-size: 10px; font-weight: 700; letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; margin: 14px 0 8px; }
+  .row-title:first-of-type { margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  th { background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  tr:last-child td { border-bottom: 0; }
+  td.method { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; width: 70px; }
+  td.method .m { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+  td.method .m.GET { background: rgba(74,222,128,.12); color: var(--ok); }
+  td.method .m.POST { background: rgba(78,161,255,.14); color: var(--accent); }
+  td.method .m.DELETE { background: rgba(248,113,113,.12); color: var(--err); }
+  td.path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--text); }
+  td.desc { color: var(--muted); }
+  .docs-links { display: flex; flex-wrap: wrap; gap: 10px; }
+  .docs-links a { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; text-decoration: none; color: var(--text); font-size: 13px; display: flex; align-items: center; gap: 8px; transition: border-color 0.15s; }
+  .docs-links a:hover { border-color: var(--accent); }
+  .docs-links a code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); font-size: 12px; }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--text); margin: 0; }
+  pre .arg { color: var(--accent); }
+  footer { color: var(--muted); font-size: 12px; margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>office-convert</h1>
+    <span class="ver">v{{VERSION}}</span>
+    <span class="pill {{STATUS_CLASS}}">{{STATUS_LABEL}}</span>
+    <span class="sub">Office documents → PDF</span>
+  </header>
+
+  <div class="row-title">Runtime</div>
+  <div class="stack">
+    <span class="sb"><span class="sb-l">python</span><span class="sb-r v-blue">3.12</span></span>
+    <span class="sb"><span class="sb-l">fastapi</span><span class="sb-r v-green">0.115</span></span>
+    <span class="sb"><span class="sb-l">aspose.total</span><span class="sb-r v-pink">c++ 26.4</span></span>
+    <span class="sb"><span class="sb-l">qpdf</span><span class="sb-r v-orange">streaming merge</span></span>
+  </div>
+
+  <div class="row-title">Quality</div>
+  <div class="stack">
+    <span class="sb"><span class="sb-l">🐳 docker</span><span class="sb-r v-blue">required</span></span>
+    <span class="sb"><span class="sb-l">mypy</span><span class="sb-r v-sky">strict</span></span>
+    <span class="sb"><span class="sb-l">ruff</span><span class="sb-r v-violet">linted</span></span>
+    <span class="sb"><span class="sb-l">tests</span><span class="sb-r v-green">passing</span></span>
+  </div>
+
+  <div class="section-title">Supported input formats</div>
+  <div class="row-title" style="margin-top:0">Office &amp; documents</div>
+  <div class="badges">
+    <span class="badge">.docx</span>
+    <span class="badge">.doc</span>
+    <span class="badge">.xlsx</span>
+    <span class="badge">.xls</span>
+    <span class="badge">.pptx</span>
+    <span class="badge">.ppt</span>
+    <span class="badge">.pdf</span>
+    <span class="badge">.odt</span>
+    <span class="badge">.ods</span>
+    <span class="badge">.odp</span>
+    <span class="badge">.odg</span>
+    <span class="badge">.rtf</span>
+    <span class="badge">.csv</span>
+  </div>
+
+  <div class="row-title">Images</div>
+  <div class="badges">
+    <span class="badge">.png</span>
+    <span class="badge">.jpg</span>
+    <span class="badge">.jpeg</span>
+    <span class="badge">.tiff</span>
+    <span class="badge">.gif</span>
+    <span class="badge">.bmp</span>
+    <span class="badge">.webp</span>
+    <span class="badge">.svg</span>
+  </div>
+
+  <div class="row-title">Email</div>
+  <div class="badges">
+    <span class="badge">.eml</span>
+  </div>
+
+  <div class="section-title">Endpoints</div>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td class="method"><span class="m POST">POST</span></td><td class="path">/v1/convert</td><td class="desc">Upload an office document, returns PDF</td></tr>
+      <tr><td class="method"><span class="m GET">GET</span></td><td class="path">/v1/stats</td><td class="desc">Container CPU/memory snapshot</td></tr>
+      <tr><td class="method"><span class="m GET">GET</span></td><td class="path">/v1/workers</td><td class="desc">Worker process inventory</td></tr>
+      <tr><td class="method"><span class="m GET">GET</span></td><td class="path">/v1/jobs/{id}/heartbeats</td><td class="desc">Per-job liveness events</td></tr>
+      <tr><td class="method"><span class="m GET">GET</span></td><td class="path">/v1/jobs/{id}/timings</td><td class="desc">Per-job stage timings</td></tr>
+      <tr><td class="method"><span class="m GET">GET</span></td><td class="path">/v1/jobs/{id}/progress</td><td class="desc">Per-job progress snapshot</td></tr>
+      <tr><td class="method"><span class="m DELETE">DEL</span></td><td class="path">/v1/cache</td><td class="desc">Wipe on-disk conversion cache</td></tr>
+      <tr><td class="method"><span class="m GET">GET</span></td><td class="path">/health</td><td class="desc">Service readiness (unversioned, used by probes)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="section-title">Documentation</div>
+  <div class="docs-links">
+    <a href="/docs">Swagger UI <code>/docs</code></a>
+    <a href="/redoc">ReDoc <code>/redoc</code></a>
+    <a href="/openapi.json">OpenAPI spec <code>/openapi.json</code></a>
+    <a href="/health">Health JSON <code>/health</code></a>
+  </div>
+
+  <footer>office-convert · backed by Aspose.Total for C++ · all routes versioned under <code>/v1/</code> except <code>/health</code></footer>
+</div>
+</body>
+</html>
