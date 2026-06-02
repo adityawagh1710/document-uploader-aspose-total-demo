@@ -504,7 +504,7 @@ st.markdown(
          position:fixed pins to viewport edge regardless of where the
          element ends up in the DOM. translateX(110%) starts off-screen
          right; slide-in then fade-out animation runs once via `forwards`
-         to leave the toast invisible past 5 s. */
+         to leave the toast invisible past 3 s. */
       .toast-container {
         position: fixed;
         top: 16px;
@@ -524,7 +524,7 @@ st.markdown(
         color: #e2e8f0;
         box-shadow: 0 8px 24px rgba(0,0,0,0.4);
         backdrop-filter: blur(8px);
-        animation: toast-life 5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        animation: toast-life 3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
       }
       .toast .toast-title {
         font-weight: 600;
@@ -2154,7 +2154,7 @@ def toast_renderer():
       - `toast_shown_ids` (session) tracks result ids we've already toasted
         so the toast doesn't re-fire on every fragment tick after completion.
       - `toast_active` (session) holds the in-flight toast + an `expires_at`
-        wall-clock so we can clear the slot after the 5 s CSS animation.
+        wall-clock so we can clear the slot after the 3 s CSS animation.
 
     The CSS animation runs once on the slot's first render (Streamlit's diff
     won't re-render identical HTML on subsequent ticks), then we explicitly
@@ -2200,7 +2200,7 @@ def toast_renderer():
                 f"</div></div>"
             )
         _slot_toast.markdown(html, unsafe_allow_html=True)
-        st.session_state["toast_active"] = {"id": cid, "expires_at": now + 5.0}
+        st.session_state["toast_active"] = {"id": cid, "expires_at": now + 3.0}
 
 
 @st.fragment(run_every=1)
@@ -2343,6 +2343,35 @@ uploaded_file = st.file_uploader(
         "eml",
     ],
 )
+
+# Action block — the Start Conversion control renders right under the picker,
+# BEFORE the monitoring charts + dashboard iframe below, so it's reachable
+# without scrolling past a 760px iframe after uploading.
+if uploaded_file:
+    if _snap_active is not None:
+        st.warning("⏳ A conversion is already running — submit another after it finishes.")
+    else:
+        # `.size` reads the size from Streamlit's UploadedFile metadata
+        # without materializing the bytes. `getvalue()` would copy the full
+        # buffer just to call len() on it — wasted O(file_size) work on
+        # every script rerun until the user clicks Start Conversion.
+        size_mb = uploaded_file.size / 1024 / 1024
+        st.info(f"📁 **{uploaded_file.name}** — {size_mb:.2f} MB")
+
+        store_s3 = False
+        if UI_S3_ENABLED and UI_S3_DEFAULT_OUTPUT_BUCKET:
+            store_s3 = st.checkbox(
+                f"☁️ Also store the PDF in S3 (s3://{UI_S3_DEFAULT_OUTPUT_BUCKET})",
+                value=False,
+                help="Tees the PDF to S3; history offers a presigned download link.",
+            )
+
+        if st.button("▶️ Start Conversion", type="primary"):
+            s3_output = f"s3://{UI_S3_DEFAULT_OUTPUT_BUCKET}" if store_s3 else None
+            if _start_conversion(uploaded_file.name, uploaded_file.getvalue(), s3_output):
+                st.rerun()
+            else:
+                st.warning("Another conversion just started — try again in a moment.")
 
 
 @st.fragment(run_every=2)
@@ -2556,33 +2585,8 @@ st.components.v1.iframe(
     scrolling=True,
 )
 
-# Action block — only the upload/start UI lives below the file picker.
-# Stats display above is independent of upload state.
-if uploaded_file:
-    if _snap_active is not None:
-        st.warning("⏳ A conversion is already running — submit another after it finishes.")
-    else:
-        # `.size` reads the size from Streamlit's UploadedFile metadata
-        # without materializing the bytes. `getvalue()` would copy the full
-        # buffer just to call len() on it — wasted O(file_size) work on
-        # every script rerun until the user clicks Start Conversion.
-        size_mb = uploaded_file.size / 1024 / 1024
-        st.info(f"📁 **{uploaded_file.name}** — {size_mb:.2f} MB")
-
-        store_s3 = False
-        if UI_S3_ENABLED and UI_S3_DEFAULT_OUTPUT_BUCKET:
-            store_s3 = st.checkbox(
-                f"☁️ Also store the PDF in S3 (s3://{UI_S3_DEFAULT_OUTPUT_BUCKET})",
-                value=False,
-                help="Tees the PDF to S3; history offers a presigned download link.",
-            )
-
-        if st.button("▶️ Start Conversion", type="primary"):
-            s3_output = f"s3://{UI_S3_DEFAULT_OUTPUT_BUCKET}" if store_s3 else None
-            if _start_conversion(uploaded_file.name, uploaded_file.getvalue(), s3_output):
-                st.rerun()
-            else:
-                st.warning("Another conversion just started — try again in a moment.")
+# (The upload action block — file info + Start Conversion button — now renders
+# directly under the file picker above, before the monitoring panels.)
 
 # ============================================================
 # CONVERSION HISTORY
