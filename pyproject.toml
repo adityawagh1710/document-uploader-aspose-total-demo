@@ -16,7 +16,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastapi>=0.115,<0.137",
+    # Pinned to 0.115.* to match the production Dockerfile (which installs
+    # `fastapi==0.115.*`). The wider `<0.137` range let the TEST image resolve
+    # fastapi 0.136, which drags in starlette 1.x — and starlette 1.x's
+    # testclient raises StarletteDeprecationWarning for httpx<2, which the
+    # suite's `filterwarnings=error` turns into a hard conftest-import failure.
+    # Keeping test == prod removes that drift. Bumping past 0.115 is a
+    # deliberate upgrade that must also move starlette/httpx together.
+    "fastapi>=0.115,<0.116",
     "uvicorn[standard]>=0.32,<0.49",
     "pydantic>=2.9,<2.14",
     "pydantic-settings>=2.6,<2.15",
