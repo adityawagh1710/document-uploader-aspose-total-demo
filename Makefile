@@ -84,7 +84,8 @@ build-test: ## BUILD test-runner image (Python + dev deps; no Aspose needed)
 	docker build -t $(IMAGE_TEST) -f Dockerfile.test .
 	@printf "$(GREEN)Done. Run:$(RESET) make test\n"
 
-.PHONY: build-go test-go run-go
+.PHONY: build-go test-go run-go up-go down-go
+COMPOSE_GO := docker compose -f compose.yaml -f compose.go.yaml
 build-go: check-vendor check-license ## BUILD Go orchestrator image (needs vendor/aspose/; runtime is Python-free)
 	@printf "$(GREEN)Building Go image $(IMAGE_GO)...$(RESET)\n"
 	docker build -t $(IMAGE_GO) -f go.Dockerfile .
@@ -117,6 +118,14 @@ run-go: check-license ## RUN the Go image locally on $(PORT) (foreground; licens
 		--cap-drop=ALL --read-only \
 		--tmpfs /tmp --tmpfs /var/run --tmpfs /var/cache/fontconfig \
 		$(IMAGE_GO)
+
+up-go: check-license ## RUN bring up the Go stack (backend + UI) via compose; builds if needed
+	@printf "$(GREEN)Starting Go stack via compose (backend + UI)...$(RESET)\n"
+	$(COMPOSE_GO) up -d --build
+	@printf "$(GREEN)Up.$(RESET) API: http://localhost:$(PORT)  ·  UI: http://localhost:8501\n"
+
+down-go: ## RUN tear down the Go compose stack (backend + UI + localstack)
+	$(COMPOSE_GO) down
 
 .PHONY: smoke-words
 smoke-words: check-license check-vendor-words ## BUILD smoke-test Aspose.Words license + Linux .so (pre-integration validation)
