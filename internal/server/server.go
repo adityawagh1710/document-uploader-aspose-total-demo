@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/opus2/office-convert-orchestrator/internal/cache"
 	"github.com/opus2/office-convert-orchestrator/internal/config"
 	"github.com/opus2/office-convert-orchestrator/internal/containerstats"
@@ -77,27 +78,32 @@ func New(s *config.Settings, lic *licenseHealth, c *cache.Manager, stores worker
 }
 
 // Handler returns the http.Handler with all routes + request-id middleware.
+// Routing uses go-chi (the recommended Go HTTP router); the route table, methods,
+// and path-param names are unchanged from the prior net/http ServeMux, so the
+// wire contract is identical (verified by the golden-fixture parity gate).
 func (srv *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/convert", srv.convert)
-	mux.HandleFunc("GET /health", srv.health)
-	mux.HandleFunc("GET /{$}", srv.landing)
-	mux.HandleFunc("GET /v1/jobs/{request_id}/heartbeats", srv.getHeartbeats)
-	mux.HandleFunc("GET /v1/jobs/{request_id}/timings", srv.getTimings)
-	mux.HandleFunc("GET /v1/jobs/{request_id}/progress", srv.getProgress)
-	mux.HandleFunc("GET /v1/jobs/active", srv.listActiveJobs)
-	mux.HandleFunc("GET /v1/stats", srv.containerStats)
-	mux.HandleFunc("GET /v1/workers", srv.containerWorkers)
-	mux.HandleFunc("DELETE /v1/cache", srv.clearCache)
-	mux.HandleFunc("GET /v1/conversions", srv.listConversions)
-	mux.HandleFunc("GET /v1/conversions/stats", srv.conversionsStats)
-	mux.HandleFunc("GET /v1/dashboard", srv.dashboard)
-	mux.HandleFunc("GET /v1/downloads/presign", srv.presign)
-	return srv.requestIDMiddleware(mux)
+	r := chi.NewRouter()
+	r.Use(srv.requestIDMiddleware)
+	r.Post("/v1/convert", srv.convert)
+	r.Get("/health", srv.health)
+	r.Get("/", srv.landing)
+	r.Get("/v1/jobs/{request_id}/heartbeats", srv.getHeartbeats)
+	r.Get("/v1/jobs/{request_id}/timings", srv.getTimings)
+	r.Get("/v1/jobs/{request_id}/progress", srv.getProgress)
+	r.Get("/v1/jobs/active", srv.listActiveJobs)
+	r.Get("/v1/stats", srv.containerStats)
+	r.Get("/v1/workers", srv.containerWorkers)
+	r.Delete("/v1/cache", srv.clearCache)
+	r.Get("/v1/conversions", srv.listConversions)
+	r.Get("/v1/conversions/stats", srv.conversionsStats)
+	r.Get("/v1/dashboard", srv.dashboard)
+	r.Get("/v1/downloads/presign", srv.presign)
+	return r
 }
 
 // requestIDMiddleware binds X-Request-ID (or a fresh one) to the context and
-// echoes it on the response. Mirrors request_id_middleware.
+// echoes it on the response. Mirrors request_id_middleware. Shape matches
+// chi's middleware contract (func(http.Handler) http.Handler).
 func (srv *Server) requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rid := r.Header.Get("X-Request-ID")
@@ -160,17 +166,17 @@ func (srv *Server) landing(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) dashboard(w http.ResponseWriter, r *http.Request) { writeHTML(w, srv.dashHTML) }
 
 func (srv *Server) getHeartbeats(w http.ResponseWriter, r *http.Request) {
-	rid := r.PathValue("request_id")
+	rid := chi.URLParam(r, "request_id")
 	writeJSON(w, 200, map[string]any{"request_id": rid, "heartbeats": srv.stores.Heartbeats.Get(rid)})
 }
 
 func (srv *Server) getTimings(w http.ResponseWriter, r *http.Request) {
-	rid := r.PathValue("request_id")
+	rid := chi.URLParam(r, "request_id")
 	writeJSON(w, 200, map[string]any{"request_id": rid, "timings": srv.stores.Timings.Get(rid)})
 }
 
 func (srv *Server) getProgress(w http.ResponseWriter, r *http.Request) {
-	rid := r.PathValue("request_id")
+	rid := chi.URLParam(r, "request_id")
 	jp := srv.stores.Progress.Get(rid)
 	if jp == nil {
 		writeJSON(w, 200, map[string]any{
