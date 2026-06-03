@@ -204,6 +204,45 @@ the Dockerfile and HTTP plumbing before paying for an Aspose license.
 
 ---
 
+## Go orchestrator (migration — backend-only, pre-cutover)
+
+The Python orchestrator described throughout this README is the **current
+production backend**. A complete **Go re-implementation** of the orchestrator
+lives alongside it on branch `feat/go-orchestrator` and is validated end-to-end
+but **not yet cut over** — Python remains the deployed backend until Phase 8.
+
+This is **transitional duplication, not a hybrid**: one backend reimplemented
+two ways. Everything *around* the orchestrator is shared and unchanged — the C++
+Aspose worker binaries (`worker_cpp/`), the JSON-stdio worker protocol, the
+Streamlit UI (`office_convert_ui/`), and the Helm chart (`deploy/helm/`). The Go
+orchestrator (`cmd/` + `internal/`) shells out to the same five per-product
+worker binaries over the same protocol, so the cutover is a pure image swap
+(same `repository:tag` contract).
+
+**Stack:** Go stdlib + `net/http` routing via `go-chi/chi/v5`; `log/slog`
+logging; AWS SDK v2; tests use `testify` + `go-cmp` + `pgregory.net/rapid`
+(property-based). The HTTP wire contract is identical to the Python service.
+
+**Run / test it:**
+
+```bash
+make up-go             # build + run the Go stack (backend + UI) via compose.go.yaml
+make test-go           # full Go suite (unit + property + golden parity gate)
+make golden-verify     # replay the Go server against the captured Python oracle
+make golden-capture    # (re)generate the golden fixtures from the live Python oracle
+make down-go           # tear down
+```
+
+**Golden-fixture parity gate.** `make golden-verify` (and CI's `go-test` job)
+runs `TestGoldenParity`, which replays the Python orchestrator's frozen HTTP
+responses against the Go server and diffs them — the safety net that proves the
+two backends are interchangeable before the cutover. Fixtures are committed under
+`internal/server/testdata/golden/`; regenerate them with `make golden-capture`
+(needs Python; no Aspose/qpdf). Built with `go.Dockerfile` (not the production
+`Dockerfile`). Design docs: `aidlc-docs/construction/go-orchestrator/`.
+
+---
+
 ## Prerequisites
 
 1. **Aspose.Total C++ Temporary License** (`.lic` file). Request at
@@ -705,6 +744,11 @@ office_convert/        Python package — orchestrator, HTTP server, chunk
 ├── types.py errors.py config.py logging.py license.py
 ├── chunk_planner.py cache.py qpdf.py probe.py
 ├── aspose_worker.py orchestrator.py server.py
+cmd/ + internal/       Go orchestrator (migration; backend-only, pre-cutover
+                       — see "Go orchestrator" above). net/http+chi server,
+                       planner, worker pool, qpdf, cache, obs, s3. Tests use
+                       testify + go-cmp + rapid; the golden parity gate lives
+                       in internal/server/testdata/golden/.
 worker_cpp/            C++17 worker — main, error/license/render/probe
                        coordinators, per-format dispatch (DOCX/PPTX/
                        XLSX/PDF), CMakeLists.txt with Aspose linkage
@@ -723,6 +767,10 @@ Dockerfile             Multi-stage production build (debian:bookworm
 Dockerfile.test        Test runner image (Python + dev deps; no Aspose)
 compose.yaml           Docker Compose definition for the prod service +
                        opt-in test profile. Canonical entrypoint.
+go.Dockerfile          Go orchestrator image (C++ builder + Go builder +
+                       Python-free runtime). Build via make build-go.
+compose.go.yaml        Compose override swapping in the Go backend
+                       (make up-go); inherits everything else from compose.yaml.
 Makefile               Docker-first workflow orchestrator (delegates to
                        compose; run `make help`)
 pyproject.toml         Python deps + tool config (PEP 621, PEP 561)
