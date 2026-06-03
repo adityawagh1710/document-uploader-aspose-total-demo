@@ -4,87 +4,55 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestDisabledCacheIsNoOp(t *testing.T) {
 	m, err := NewManager("", "v1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Enabled() {
-		t.Fatal("empty dir should be disabled")
-	}
-	if got := m.GetFinal("abc"); got != "" {
-		t.Fatalf("disabled GetFinal = %q, want empty", got)
-	}
-	if err := m.PutFinal("abc", "/nonexistent"); err != nil {
-		t.Fatalf("disabled PutFinal should be no-op, got %v", err)
-	}
-	if r := m.Clear(); r.Enabled {
-		t.Fatal("disabled Clear should report Enabled=false")
-	}
+	require.NoError(t, err)
+	require.False(t, m.Enabled(), "empty dir should be disabled")
+	require.Empty(t, m.GetFinal("abc"), "disabled GetFinal should be empty")
+	require.NoError(t, m.PutFinal("abc", "/nonexistent"), "disabled PutFinal should be a no-op")
+	require.False(t, m.Clear().Enabled, "disabled Clear should report Enabled=false")
 }
 
 func TestFinalRoundTripAndClear(t *testing.T) {
 	dir := t.TempDir()
 	m, err := NewManager(dir, "26.4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !m.Enabled() {
-		t.Fatal("should be enabled")
-	}
+	require.NoError(t, err)
+	require.True(t, m.Enabled(), "should be enabled")
 
 	src := filepath.Join(dir, "src.pdf")
-	if err := os.WriteFile(src, []byte("%PDF-1.7 hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(src, []byte("%PDF-1.7 hello"), 0o644))
 
 	sha := "deadbeef"
-	if got := m.GetFinal(sha); got != "" {
-		t.Fatalf("miss expected, got %q", got)
-	}
-	if err := m.PutFinal(sha, src); err != nil {
-		t.Fatal(err)
-	}
+	require.Empty(t, m.GetFinal(sha), "miss expected before PutFinal")
+	require.NoError(t, m.PutFinal(sha, src))
 	hit := m.GetFinal(sha)
-	if hit == "" {
-		t.Fatal("expected cache hit after PutFinal")
-	}
+	require.NotEmpty(t, hit, "expected cache hit after PutFinal")
 	got, err := os.ReadFile(hit)
-	if err != nil || string(got) != "%PDF-1.7 hello" {
-		t.Fatalf("cached content = %q err=%v", got, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "%PDF-1.7 hello", string(got))
 
 	// Version namespacing: a different version must miss.
 	m2, _ := NewManager(dir, "26.3")
-	if got := m2.GetFinal(sha); got != "" {
-		t.Fatal("different aspose version should not hit")
-	}
+	require.Empty(t, m2.GetFinal(sha), "different aspose version should not hit")
 
 	res := m.Clear()
-	if !res.Enabled || res.FilesDeleted == 0 || res.BytesFreed == 0 {
-		t.Fatalf("Clear result unexpected: %+v", res)
-	}
-	if got := m.GetFinal(sha); got != "" {
-		t.Fatal("entry should be gone after Clear")
-	}
+	require.True(t, res.Enabled)
+	require.NotZero(t, res.FilesDeleted)
+	require.NotZero(t, res.BytesFreed)
+	require.Empty(t, m.GetFinal(sha), "entry should be gone after Clear")
 }
 
 func TestFinalTempPathAndFinalize(t *testing.T) {
 	dir := t.TempDir()
 	m, _ := NewManager(dir, "v1")
 	tmp, err := m.FinalTempPath("abc123")
-	if err != nil || tmp == "" {
-		t.Fatalf("FinalTempPath: tmp=%q err=%v", tmp, err)
-	}
-	if err := os.WriteFile(tmp, []byte("streamed"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.FinalizeFinal("abc123", tmp); err != nil {
-		t.Fatal(err)
-	}
-	if got := m.GetFinal("abc123"); got == "" {
-		t.Fatal("finalize should publish the entry")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, tmp)
+	require.NoError(t, os.WriteFile(tmp, []byte("streamed"), 0o644))
+	require.NoError(t, m.FinalizeFinal("abc123", tmp))
+	require.NotEmpty(t, m.GetFinal("abc123"), "finalize should publish the entry")
 }

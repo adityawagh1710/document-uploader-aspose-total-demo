@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/opus2/office-convert-orchestrator/internal/types"
 )
 
@@ -25,9 +28,7 @@ func TestClassifyThresholds(t *testing.T) {
 		{-1, true, types.LicenseStateExpired},
 	}
 	for _, c := range cases {
-		if got := Classify(c.days, c.has); got != c.want {
-			t.Errorf("Classify(%d, %v) = %q, want %q", c.days, c.has, got, c.want)
-		}
+		assert.Equalf(t, c.want, Classify(c.days, c.has), "Classify(%d, %v)", c.days, c.has)
 	}
 }
 
@@ -38,28 +39,21 @@ func TestParseExpiryNumericAndPermanent(t *testing.T) {
 	lic := filepath.Join(dir, "dated.lic")
 	mustWrite(t, lic, `<License><Data><SubscriptionExpiry>20991231</SubscriptionExpiry></Data></License>`)
 	exp, has, err := parseExpiry(lic)
-	if err != nil || !has {
-		t.Fatalf("parseExpiry dated: has=%v err=%v", has, err)
-	}
-	if exp.Year() != 2099 || exp.Month() != 12 || exp.Day() != 31 {
-		t.Fatalf("expiry = %v, want 2099-12-31", exp)
-	}
+	require.NoError(t, err)
+	require.True(t, has, "dated license should report an expiry")
+	assert.Equal(t, 2099, exp.Year())
+	assert.Equal(t, "December", exp.Month().String())
+	assert.Equal(t, 31, exp.Day())
 
 	// Well-formed but no expiry field -> permanent.
 	perm := filepath.Join(dir, "perm.lic")
 	mustWrite(t, perm, `<License><Data><Product>Aspose.Total for C++</Product></Data></License>`)
 	_, has, err = parseExpiry(perm)
-	if err != nil {
-		t.Fatalf("parseExpiry perm err=%v", err)
-	}
-	if has {
-		t.Fatal("permanent license should report no expiry")
-	}
+	require.NoError(t, err)
+	require.False(t, has, "permanent license should report no expiry")
 }
 
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }

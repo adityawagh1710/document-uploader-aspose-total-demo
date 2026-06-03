@@ -3,13 +3,16 @@ package planner
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
 	"github.com/opus2/office-convert-orchestrator/internal/types"
 )
 
 // Property-based parity tests (re-expressing the Python PBT invariants from
-// nfr-requirements.md §9 in pgregory.net/rapid).
+// nfr-requirements.md §9 in pgregory.net/rapid). testify's require works against
+// *rapid.T (it satisfies require.TestingT via Errorf + FailNow), so a violated
+// property fails the property and feeds rapid's shrinker.
 
 var allFormats = []types.FormatName{types.FormatDOCX, types.FormatPPTX, types.FormatXLSX, types.FormatPDF}
 
@@ -27,24 +30,14 @@ func TestProp_PlanChunksCompleteCover(t *testing.T) {
 		// Invariant 1: ordered, complete, non-overlapping cover of [1..pages].
 		expect := 1
 		for i, c := range plan.Chunks {
-			if c.PageStart != expect {
-				t.Fatalf("chunk %d starts at %d, expected %d", i, c.PageStart, expect)
-			}
-			if c.PageEnd < c.PageStart {
-				t.Fatalf("chunk %d end %d < start %d", i, c.PageEnd, c.PageStart)
-			}
+			require.Equalf(t, expect, c.PageStart, "chunk %d start (gap or overlap)", i)
+			require.GreaterOrEqualf(t, c.PageEnd, c.PageStart, "chunk %d end < start", i)
 			// Invariant 2: no chunk exceeds maxPages (page-range split path).
-			if c.Pages() > maxPages {
-				t.Fatalf("chunk %d has %d pages > maxPages %d", i, c.Pages(), maxPages)
-			}
+			require.LessOrEqualf(t, c.Pages(), maxPages, "chunk %d pages > maxPages", i)
 			expect = c.PageEnd + 1
 		}
-		if expect-1 != pages {
-			t.Fatalf("cover ends at %d, expected %d", expect-1, pages)
-		}
-		if plan.TotalPages != pages {
-			t.Fatalf("TotalPages = %d, want %d", plan.TotalPages, pages)
-		}
+		require.Equal(t, pages, expect-1, "cover must end at pages")
+		require.Equal(t, pages, plan.TotalPages, "TotalPages mismatch")
 	})
 }
 
@@ -56,28 +49,17 @@ func TestProp_SubdivideHalvingCoversParent(t *testing.T) {
 
 		kids := Subdivide(parent)
 		if span <= 1 {
-			if kids != nil {
-				t.Fatalf("single-page chunk should not subdivide, got %v", kids)
-			}
+			require.Nil(t, kids, "single-page chunk should not subdivide")
 			return
 		}
-		if len(kids) != 2 {
-			t.Fatalf("expected 2 children, got %d", len(kids))
-		}
+		require.Len(t, kids, 2)
 		// Children exactly cover the parent, contiguously, no gap/overlap.
-		if kids[0].PageStart != parent.PageStart {
-			t.Fatalf("left start %d != parent start %d", kids[0].PageStart, parent.PageStart)
-		}
-		if kids[1].PageEnd != parent.PageEnd {
-			t.Fatalf("right end %d != parent end %d", kids[1].PageEnd, parent.PageEnd)
-		}
-		if kids[1].PageStart != kids[0].PageEnd+1 {
-			t.Fatalf("gap/overlap: left ends %d, right starts %d", kids[0].PageEnd, kids[1].PageStart)
-		}
+		require.Equal(t, parent.PageStart, kids[0].PageStart, "left start != parent start")
+		require.Equal(t, parent.PageEnd, kids[1].PageEnd, "right end != parent end")
+		require.Equal(t, kids[0].PageEnd+1, kids[1].PageStart, "gap/overlap between children")
 		// Index discipline: left keeps the parent index, right gets +0.5.
-		if kids[0].Index != parent.Index || kids[1].Index != parent.Index+0.5 {
-			t.Fatalf("indices = %v,%v want %v,%v", kids[0].Index, kids[1].Index, parent.Index, parent.Index+0.5)
-		}
+		require.Equal(t, parent.Index, kids[0].Index, "left index")
+		require.Equal(t, parent.Index+0.5, kids[1].Index, "right index")
 	})
 }
 
@@ -91,15 +73,9 @@ func TestProp_ChunkSHA256Stable(t *testing.T) {
 
 		h1 := ChunkSHA256(c, sha, format)
 		h2 := ChunkSHA256(c, sha, format)
-		if h1 != h2 {
-			t.Fatalf("non-deterministic: %s != %s", h1, h2)
-		}
-		if len(h1) != 64 {
-			t.Fatalf("expected 64 hex chars, got %d", len(h1))
-		}
+		require.Equal(t, h1, h2, "hash must be deterministic")
+		require.Len(t, h1, 64, "expected 64 hex chars")
 		// A different page range must change the key.
-		if ChunkSHA256(types.Chunk{PageStart: start, PageEnd: end + 1}, sha, format) == h1 {
-			t.Fatal("hash insensitive to page range")
-		}
+		require.NotEqual(t, h1, ChunkSHA256(types.Chunk{PageStart: start, PageEnd: end + 1}, sha, format), "hash insensitive to page range")
 	})
 }

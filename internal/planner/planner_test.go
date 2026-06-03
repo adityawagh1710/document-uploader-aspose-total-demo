@@ -3,6 +3,9 @@ package planner
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/opus2/office-convert-orchestrator/internal/types"
 )
 
@@ -11,24 +14,16 @@ import (
 func assertCompleteCover(t *testing.T, plan types.ChunkPlan) {
 	t.Helper()
 	if plan.TotalPages == 0 {
-		if len(plan.Chunks) != 0 {
-			t.Fatalf("zero total pages but %d chunks", len(plan.Chunks))
-		}
+		require.Empty(t, plan.Chunks, "zero total pages should yield no chunks")
 		return
 	}
 	expect := 1
 	for i, c := range plan.Chunks {
-		if c.PageStart != expect {
-			t.Fatalf("chunk %d starts at %d, expected %d (gap or overlap)", i, c.PageStart, expect)
-		}
-		if c.PageEnd < c.PageStart {
-			t.Fatalf("chunk %d has end %d < start %d", i, c.PageEnd, c.PageStart)
-		}
+		require.Equalf(t, expect, c.PageStart, "chunk %d start (gap or overlap)", i)
+		require.GreaterOrEqualf(t, c.PageEnd, c.PageStart, "chunk %d end < start", i)
 		expect = c.PageEnd + 1
 	}
-	if expect-1 != plan.TotalPages {
-		t.Fatalf("cover ends at %d, expected %d", expect-1, plan.TotalPages)
-	}
+	require.Equal(t, plan.TotalPages, expect-1, "cover must end at TotalPages")
 }
 
 func TestPlanChunksCompleteCover(t *testing.T) {
@@ -57,52 +52,36 @@ func TestPlanChunksCompleteCover(t *testing.T) {
 
 func TestPlanChunksEmpty(t *testing.T) {
 	plan := PlanChunks(types.ProbeResult{PageCount: 0, Format: types.FormatDOCX}, 10, 50)
-	if len(plan.Chunks) != 0 || plan.TotalPages != 0 {
-		t.Fatalf("expected empty plan, got %+v", plan)
-	}
+	assert.Empty(t, plan.Chunks)
+	assert.Zero(t, plan.TotalPages)
 }
 
 func TestSubdivideHalvingAndFloor(t *testing.T) {
 	// 10-page chunk halves into [1..5] and [6..10] with fractional index.
 	parent := types.Chunk{Index: 3, PageStart: 1, PageEnd: 10}
 	kids := Subdivide(parent)
-	if len(kids) != 2 {
-		t.Fatalf("expected 2 children, got %d", len(kids))
-	}
-	if kids[0].PageStart != 1 || kids[0].PageEnd != 5 {
-		t.Fatalf("left child = [%d..%d], want [1..5]", kids[0].PageStart, kids[0].PageEnd)
-	}
-	if kids[1].PageStart != 6 || kids[1].PageEnd != 10 {
-		t.Fatalf("right child = [%d..%d], want [6..10]", kids[1].PageStart, kids[1].PageEnd)
-	}
-	if kids[0].Index != 3 || kids[1].Index != 3.5 {
-		t.Fatalf("child indices = %v,%v want 3,3.5", kids[0].Index, kids[1].Index)
-	}
+	require.Len(t, kids, 2)
+	assert.Equal(t, 1, kids[0].PageStart)
+	assert.Equal(t, 5, kids[0].PageEnd)
+	assert.Equal(t, 6, kids[1].PageStart)
+	assert.Equal(t, 10, kids[1].PageEnd)
+	assert.Equal(t, 3.0, kids[0].Index)
+	assert.Equal(t, 3.5, kids[1].Index)
 	// Single-page chunk is at the floor: no further subdivision.
-	if got := Subdivide(types.Chunk{Index: 0, PageStart: 7, PageEnd: 7}); got != nil {
-		t.Fatalf("single-page subdivide should return nil, got %+v", got)
-	}
+	assert.Nil(t, Subdivide(types.Chunk{Index: 0, PageStart: 7, PageEnd: 7}), "single-page subdivide should return nil")
 }
 
 func TestChunkSHA256Deterministic(t *testing.T) {
 	c := types.Chunk{Index: 0, PageStart: 1, PageEnd: 10}
 	h1 := ChunkSHA256(c, "abc123", types.FormatDOCX)
 	h2 := ChunkSHA256(c, "abc123", types.FormatDOCX)
-	if h1 != h2 {
-		t.Fatalf("non-deterministic hash: %s != %s", h1, h2)
-	}
+	assert.Equal(t, h1, h2, "hash must be deterministic")
 	// Page range participates in the key.
 	other := ChunkSHA256(types.Chunk{PageStart: 1, PageEnd: 11}, "abc123", types.FormatDOCX)
-	if h1 == other {
-		t.Fatal("hash ignored page range")
-	}
+	assert.NotEqual(t, h1, other, "hash ignored page range")
 	// Format participates in the key.
-	if ChunkSHA256(c, "abc123", types.FormatPDF) == h1 {
-		t.Fatal("hash ignored format")
-	}
-	if len(h1) != 64 {
-		t.Fatalf("expected 64 hex chars, got %d", len(h1))
-	}
+	assert.NotEqual(t, h1, ChunkSHA256(c, "abc123", types.FormatPDF), "hash ignored format")
+	assert.Len(t, h1, 64, "expected 64 hex chars")
 }
 
 func TestSeamPlanUsedWhenBalanced(t *testing.T) {
@@ -116,8 +95,6 @@ func TestSeamPlanUsedWhenBalanced(t *testing.T) {
 	plan := PlanChunks(probe, 5, 50)
 	assertCompleteCover(t, plan)
 	for i, c := range plan.Chunks {
-		if !c.NaturalSeam {
-			t.Fatalf("chunk %d should be marked as a natural seam", i)
-		}
+		assert.Truef(t, c.NaturalSeam, "chunk %d should be marked as a natural seam", i)
 	}
 }
