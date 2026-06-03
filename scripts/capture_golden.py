@@ -111,10 +111,14 @@ SEED_PROGRESS: list[dict[str, Any]] = [
 _BOUNDARY = "GOLDENBOUNDARY0123456789"
 _GARBAGE = b"\x00\x01\x02\x03GARBAGE-not-an-office-file"
 _UNSUPPORTED_BODY = (
-    f"--{_BOUNDARY}\r\n"
-    'Content-Disposition: form-data; name="file"; filename="x.bin"\r\n'
-    "Content-Type: application/octet-stream\r\n\r\n"
-).encode() + _GARBAGE + f"\r\n--{_BOUNDARY}--\r\n".encode()
+    (
+        f"--{_BOUNDARY}\r\n"
+        'Content-Disposition: form-data; name="file"; filename="x.bin"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+    ).encode()
+    + _GARBAGE
+    + f"\r\n--{_BOUNDARY}--\r\n".encode()
+)
 _EMPTY_MULTIPART = f"--{_BOUNDARY}--\r\n".encode()
 
 # Normalization paths shared with the Go test. Dotted body paths; "[]" means
@@ -263,7 +267,9 @@ def _write_fake_worker(path: Path) -> None:
         "# Minimal: probe -> fixed JSON; render -> touch output. Existence is\n"
         "# all health checks; these cases never actually render.\n"
         'if "--mode=probe" in sys.argv or "probe" in sys.argv:\n'
-        '    sys.stdout.write(json.dumps({"page_count": 4, "format": "x", "natural_seams": [], "size_bytes": 1000}))\n'
+        '    out = {"page_count": 4, "format": "x", '
+        '"natural_seams": [], "size_bytes": 1000}\n'
+        "    sys.stdout.write(json.dumps(out))\n"
         "sys.exit(0)\n"
     )
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -381,9 +387,7 @@ def _response_to_golden(resp: Any) -> dict[str, Any]:
 
 
 def main() -> int:
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-        "internal/server/testdata/golden"
-    )
+    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("internal/server/testdata/golden")
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_cases = []
     for case in CASES:
