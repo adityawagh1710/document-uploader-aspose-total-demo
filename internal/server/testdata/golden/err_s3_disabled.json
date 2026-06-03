@@ -1,0 +1,14 @@
+{
+  "body": {
+    "detail": {
+      "message": "S3 integration is disabled (set OFFICE_CONVERT_S3_ENABLED=1)"
+    },
+    "failure_class": "s3_disabled",
+    "request_id": "rid-s3-disabled"
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-s3-disabled"
+  },
+  "status": 400
+}

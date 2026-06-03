@@ -1,0 +1,14 @@
+{
+  "body": {
+    "detail": {
+      "message": "provide exactly one input source: 'file' or 's3_input'"
+    },
+    "failure_class": "missing_file",
+    "request_id": "rid-missing-file"
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-missing-file"
+  },
+  "status": 400
+}

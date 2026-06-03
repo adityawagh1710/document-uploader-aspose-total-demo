@@ -1,0 +1,19 @@
+{
+  "body": {
+    "detail": {
+      "limit": 1,
+      "retry_after_seconds": 60
+    },
+    "failure_class": "rate_limited",
+    "request_id": "rid-rate-limited"
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "Retry-After": "60",
+    "X-RateLimit-Limit": "1",
+    "X-RateLimit-Remaining": "0",
+    "X-RateLimit-Reset": "<NORM>",
+    "X-Request-ID": "rid-rate-limited"
+  },
+  "status": 429
+}

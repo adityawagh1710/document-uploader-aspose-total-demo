@@ -1,0 +1,14 @@
+{
+  "body": {
+    "buffer_size": 0,
+    "entries": [],
+    "has_more": false,
+    "next_cursor": null,
+    "stale_cursor": false
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-conv-empty"
+  },
+  "status": 200
+}

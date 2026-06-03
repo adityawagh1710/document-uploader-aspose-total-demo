@@ -1,0 +1,41 @@
+{
+  "body": {
+    "buffer_size": 3,
+    "entries": [
+      {
+        "completion_ts": 1700000003.5,
+        "duration_ms": 321,
+        "error_code": "render_failed",
+        "format": "pptx",
+        "input_filename": "broken.pptx",
+        "output_s3_uri": null,
+        "output_size_bytes": null,
+        "page_count": null,
+        "request_id": "seed-rid-0003",
+        "source": "ui",
+        "status": "failed"
+      },
+      {
+        "completion_ts": 1700000002.5,
+        "duration_ms": 5678,
+        "error_code": null,
+        "format": "xlsx",
+        "input_filename": null,
+        "output_s3_uri": "s3://out/seed-rid-0002/output.pdf",
+        "output_size_bytes": 51200,
+        "page_count": 12,
+        "request_id": "seed-rid-0002",
+        "source": "cross",
+        "status": "success"
+      }
+    ],
+    "has_more": true,
+    "next_cursor": "eyJ0cyI6MTcwMDAwMDAwMi41LCJpZCI6InNlZWQtcmlkLTAwMDIifQ==",
+    "stale_cursor": false
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-conv-p1"
+  },
+  "status": 200
+}

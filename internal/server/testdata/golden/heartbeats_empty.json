@@ -1,0 +1,11 @@
+{
+  "body": {
+    "heartbeats": [],
+    "request_id": "does-not-exist"
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-hb"
+  },
+  "status": 200
+}
