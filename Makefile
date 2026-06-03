@@ -102,8 +102,11 @@ golden-capture: ## TEST (re)capture Go/Python parity golden fixtures from the li
 	# its HTTP responses under internal/server/testdata/golden/. No Aspose; no
 	# qpdf (the captured cases seed the stores directly — see capture_golden.py).
 	# Kept qpdf-less to match the qpdf-less Go verify image so health status agrees.
+	# The container runs as root (pip install needs it), so it chowns its output
+	# back to the host user — otherwise the generated fixtures are root-owned and
+	# block host-side git operations (e.g. branch switches).
 	docker run --rm -v $(PROJECT_DIR):/work -w /work python:3.12-slim \
-		sh -c "pip install -q -e . httpx && python scripts/capture_golden.py internal/server/testdata/golden"
+		sh -c "pip install -q -e . httpx && python scripts/capture_golden.py internal/server/testdata/golden && chown -R $(shell id -u):$(shell id -g) internal/server/testdata"
 
 golden-verify: ## TEST replay golden fixtures against the Go orchestrator + diff (parity gate)
 	@printf "$(GREEN)Verifying Go parity against golden fixtures...$(RESET)\n"
@@ -203,7 +206,7 @@ test-e2e: build build-test check-license ## TEST run Testcontainers e2e suite (n
 corpus: build-test ## TEST generate the synthetic test corpus (.docx/.pptx/.xlsx)
 	@printf "$(GREEN)Generating test corpus fixtures...$(RESET)\n"
 	docker run --rm -v $(PROJECT_DIR)/tests/corpus:/app/tests/corpus \
-		$(IMAGE_TEST) python -m tests.corpus._generate
+		$(IMAGE_TEST) sh -c "python -m tests.corpus._generate && chown -R $(shell id -u):$(shell id -g) /app/tests/corpus"
 	@printf "$(GREEN)Fixtures available in tests/corpus/$(RESET)\n"
 	@ls tests/corpus/ 2>/dev/null | grep -v -E '_generate|README|__pycache' | sed 's/^/  /'
 
@@ -316,7 +319,7 @@ format-check: build-test ## QA ruff format --check
 format: build-test ## QA ruff format (writes changes; mount workspace)
 	docker run --rm -v $(PROJECT_DIR)/office_convert:/app/office_convert \
 		-v $(PROJECT_DIR)/tests:/app/tests \
-		$(IMAGE_TEST) ruff format .
+		$(IMAGE_TEST) sh -c "ruff format . && chown -R $(shell id -u):$(shell id -g) /app/office_convert /app/tests"
 
 typecheck: build-test ## QA mypy --strict on office_convert/
 	docker run --rm $(IMAGE_TEST) mypy office_convert
