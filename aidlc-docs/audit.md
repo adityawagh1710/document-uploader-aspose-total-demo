@@ -2340,3 +2340,11 @@ Two doc-quality observations worth keeping:
 **Context**: Orchestrator-internal refactor for org framework consistency, during Phase 8 lead-up. Source guidance is a *different* project's AIDLC Preferred (overridable) list, adopted here deliberately.
 
 ---
+
+## Go Orchestrator — Phase 9 Python-retirement plan SCOPED (deferred)
+**Timestamp**: 2026-06-03T14:40:00Z
+**User Input**: "scope the Python-retirement cutover as a plan for later / Everything must point to go only no python this must to clear"
+**AI Response**: Scoped (did NOT execute) the Python retirement as construction/go-orchestrator/python-retirement-plan.md. Target = Go-only backend: delete office_convert/ + Python tests + Dockerfile/Dockerfile.test + capture_golden.py + pyproject.toml; fold go.Dockerfile→Dockerfile and compose.go.yaml→compose.yaml; rename Go Make targets to canonical (up-go→up, test-go→test, build-go→build, run-go→run); drop the Python CI qa job (keep go-test + helm-lint); switch dependabot pip→gomod; rewrite README Go-first. Gated on the Phase 8 dev05 cutover HOLDING first (don't drop the Python rollback prematurely). Flagged the one ambiguity explicitly: the Streamlit UI (office_convert_ui/) is Python — plan assumes (A) keep it (frontend, backend-agnostic) vs (B) rewrite it as a separate project; awaiting operator's pick. Golden gate: keep frozen fixtures (Go-only verify), drop the capture oracle. Cross-repo: keep the office-convert:go tag so classification-service-demo's consumer needs no change. Pointer added to aidlc-state.md.
+**Context**: Planning artifact for a future cutover; no code deleted. Sequencing: Phase 8 → merge feat→main → chore/retire-python PR.
+
+---
