@@ -96,6 +96,20 @@ test-go: ## TEST run the Go unit + property + integration suites (no Aspose need
 	docker run --rm -v $(PROJECT_DIR):/src -w /src $(GO_IMAGE) \
 		sh -c "apt-get update -qq && apt-get install -y -qq util-linux >/dev/null && GOFLAGS=-mod=mod go test ./internal/... ./cmd/..."
 
+golden-capture: ## TEST (re)capture Go/Python parity golden fixtures from the live Python oracle
+	@printf "$(GREEN)Capturing golden fixtures from the Python oracle...$(RESET)\n"
+	# Runs the in-process Python service (TestClient + fake worker) and freezes
+	# its HTTP responses under internal/server/testdata/golden/. No Aspose; no
+	# qpdf (the captured cases seed the stores directly — see capture_golden.py).
+	# Kept qpdf-less to match the qpdf-less Go verify image so health status agrees.
+	docker run --rm -v $(PROJECT_DIR):/work -w /work python:3.12-slim \
+		sh -c "pip install -q -e . httpx && python scripts/capture_golden.py internal/server/testdata/golden"
+
+golden-verify: ## TEST replay golden fixtures against the Go orchestrator + diff (parity gate)
+	@printf "$(GREEN)Verifying Go parity against golden fixtures...$(RESET)\n"
+	docker run --rm -v $(PROJECT_DIR):/src -w /src $(GO_IMAGE) \
+		sh -c "GOFLAGS=-mod=mod go test ./internal/server/ -run TestGoldenParity -v"
+
 run-go: check-license ## RUN the Go image locally on $(PORT) (foreground; license bind-mounted, hardened posture)
 	@printf "$(GREEN)Starting $(IMAGE_GO) on http://localhost:$(PORT) (Ctrl-C to stop)...$(RESET)\n"
 	# -m/--memory-swap mirror the prod compose posture (4 GiB RAM + 2 GiB swap).

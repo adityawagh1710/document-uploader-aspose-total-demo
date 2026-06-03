@@ -1,0 +1,39 @@
+{
+  "body": {
+    "detail": {
+      "accepted": [
+        "docx",
+        "pptx",
+        "xlsx",
+        "pdf",
+        "doc",
+        "xls",
+        "ppt",
+        "csv",
+        "rtf",
+        "odt",
+        "ods",
+        "odp",
+        "odg",
+        "png",
+        "jpg",
+        "jpeg",
+        "tiff",
+        "tif",
+        "gif",
+        "bmp",
+        "webp",
+        "svg",
+        "eml"
+      ],
+      "detected_magic": "0001020347415242"
+    },
+    "failure_class": "unsupported_format",
+    "request_id": "rid-unsupported"
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-unsupported"
+  },
+  "status": 400
+}

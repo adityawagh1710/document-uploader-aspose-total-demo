@@ -1,0 +1,18 @@
+{
+  "body": {
+    "chunks_rendered": 2,
+    "elapsed_s": "<NORM>",
+    "load_progress": 1.0,
+    "merge_done": 0.0,
+    "phase": "rendering",
+    "request_id": "seed-rid-job1",
+    "started_at": "<NORM>",
+    "total_chunks": 4,
+    "weighted_percent": 0.625
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-prog-known"
+  },
+  "status": 200
+}

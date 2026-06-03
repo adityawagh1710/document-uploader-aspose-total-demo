@@ -1,0 +1,14 @@
+{
+  "body": {
+    "active_jobs": 0,
+    "license_days_remaining": "<NORM>",
+    "max_jobs": 2,
+    "problems": "<NORM>",
+    "ready": "<NORM>"
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-health"
+  },
+  "status": 503
+}

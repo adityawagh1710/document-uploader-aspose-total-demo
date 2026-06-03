@@ -1,0 +1,26 @@
+{
+  "body": {
+    "per_format": {
+      "docx": {
+        "avg_ms": 1234,
+        "count": 1,
+        "p95_ms": 1234
+      },
+      "xlsx": {
+        "avg_ms": 5678,
+        "count": 1,
+        "p95_ms": 5678
+      }
+    },
+    "totals": {
+      "count": 3,
+      "failures": 1,
+      "successes": 2
+    }
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-conv-stats"
+  },
+  "status": 200
+}

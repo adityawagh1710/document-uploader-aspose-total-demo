@@ -1,0 +1,17 @@
+{
+  "body": {
+    "chunks_rendered": 0,
+    "elapsed_s": 0.0,
+    "load_progress": 0.0,
+    "merge_done": 0.0,
+    "phase": "unknown",
+    "request_id": "does-not-exist",
+    "total_chunks": 0,
+    "weighted_percent": 0.0
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-ID": "rid-prog-unknown"
+  },
+  "status": 200
+}

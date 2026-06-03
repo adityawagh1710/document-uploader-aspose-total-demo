@@ -2304,3 +2304,16 @@ Two doc-quality observations worth keeping:
 **Context**: Phase 7 not just authored but proven — the image builds and converts every format end-to-end. Remaining: Phase 8 cutover (shadow/hard-swap on dev05) + the golden-fixture byte-diff vs Python.
 
 ---
+
+## Go Orchestrator — Golden-Fixture Parity Gate (Phase 6 exit criterion)
+**Timestamp**: 2026-06-03T09:40:00Z
+**User Input**: "Load previous session" → "what will golden-fixture parity diff do ???" → "Continue with golden-fixture" → (AskUserQuestion: last_touched divergence) "Strip from Python"
+**AI Response**: Implemented the golden-fixture diff — the canonical Go↔Python cross-impl parity gate and Phase 6 exit criterion.
+  - **Built**: `scripts/capture_golden.py` (Python oracle: in-process `TestClient` + fake worker, seeds recent/progress stores with a fixed dataset, freezes 14 responses + a `manifest.json` under `internal/server/testdata/golden/`; needs neither Aspose nor qpdf because cases seed stores directly). `internal/server/golden_test.go` (`TestGoldenParity`: data-driven from the manifest, seeds the same records into the Go stores, replays + diffs; skips cleanly if fixtures absent). `make golden-capture` (python:3.12-slim) + `make golden-verify` (golang:1.26-bookworm), both qpdf-less so the env-coupled health status agrees.
+  - **Cases (14)**: health; /v1/conversions empty + seeded-page1(cursor) + filter=failed; /v1/conversions/stats; /v1/jobs/active; progress known + unknown; heartbeats/timings empty; Diagnostic envelope for s3_disabled, missing_file, unsupported_format (freezes detected_magic + accepted list), rate_limited (freezes X-RateLimit-* + Retry-After).
+  - **Design**: semantic (numeric-aware) comparison, NOT byte diff — capture proved Python renders whole-valued floats as `1.0`/`0.0` where Go renders `1`/`0`, and the base64 `next_cursor` token inherits that (token bytes differ, decodes identical). Comparator decodes both to JSON values; cursors decoded before compare; volatile fields normalized; X-Request-ID asserted via fixed request-header echo.
+  - **Divergence caught + resolved**: Python `JobProgress.to_dict()` leaked internal `last_touched` (time.monotonic bookkeeping) via `asdict()` onto /v1/jobs progress responses; Go omits it; no consumer reads it. **Operator chose "Strip from Python"** → `to_dict()` now pops `last_touched`. Python suite re-run green (237 passed / 1 skipped); gate 14/14 green (verified both bare-metal go1.26.1 and via `make golden-verify` in golang:1.26-bookworm).
+  - **Docs**: `aidlc-docs/construction/go-orchestrator/parity-testing.md` updated (status → COMPLETE; "as built" section; divergence record; env limits).
+**Context**: Phase 6 exit criterion / Phase 8 cutover gate now SATISFIED. Remaining for Phase 8: ECR push + hard-swap on dev05 (never live A/B). Changes uncommitted on `feat/go-orchestrator` (PR-only workflow; awaiting user direction to commit).
+
+---
