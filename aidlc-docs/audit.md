@@ -2317,3 +2317,26 @@ Two doc-quality observations worth keeping:
 **Context**: Phase 6 exit criterion / Phase 8 cutover gate now SATISFIED. Remaining for Phase 8: ECR push + hard-swap on dev05 (never live A/B). Changes uncommitted on `feat/go-orchestrator` (PR-only workflow; awaiting user direction to commit).
 
 ---
+
+## Go Orchestrator — Repo coexistence + folder-naming decision
+**Timestamp**: 2026-06-03T10:05:00Z
+**User Input**: "So now you have do [Go] and python in code base together right ?" → "So isnt it best idea to rename folders like office_convert_py and office_convert_go ???" → "okay update aidlc doc"
+**AI Response**: Confirmed both orchestrators coexist on `feat/go-orchestrator` (transitional duplication, not a hybrid): Python `office_convert/` (current prod) + Go `cmd/`+`internal/` (the port, cutover pending); shared/unchanged = C++ workers, JSON-stdio protocol, Streamlit UI, Helm chart. Assessed the proposed `office_convert_py`/`office_convert_go` rename and **recommended against it**: `office_convert` is the Python import package (rename → ~40 .py + ~16 build/config refs, high-risk churn on soon-retired code); Go has no single folder to mirror (standard cmd/+internal/ layout, module path would break); disambiguation already exists by language + by build artifact (Dockerfile/compose vs go.Dockerfile/compose.go.yaml). End-state plan: delete `office_convert/` at cutover → single orchestrator. Recorded the decision + rationale in aidlc-state.md ("Repo coexistence + folder-naming decision (2026-06-03)").
+**Context**: Architecture/naming decision during Phase 8 lead-up. No code changed; documentation only.
+
+---
+
+## Go Orchestrator — Framework alignment (chi + testify + go-cmp)
+**Timestamp**: 2026-06-03T11:30:00Z
+**User Input**: "what does /home/adityawagh/opus2-workspace/document-uploader aidlc recommend for frame work ????" → "No i want you to draw plan for recommend things so that will start implimenation after my confirmation" → (AskUserQuestion scope) "Strict (full adoption)" + "Yes — record in AIDLC" → (plan approved via ExitPlanMode) → "yes" (commit)
+**AI Response**: Aligned the Go orchestrator with the document-uploader AIDLC's Preferred (overridable) Go stack, per operator's strict-adoption choice.
+  - **Already met** (no change): log/slog (internal/oclog), Go modules, AWS SDK v2.
+  - **chi**: internal/server/server.go migrated net/http ServeMux → go-chi/chi/v5 — 15 routes via r.Get/Post/Delete, GET /{$} → r.Get("/"), requestIDMiddleware via r.Use, 3× r.PathValue → chi.URLParam. cmd/orchestrator/main.go unchanged (chi.Router is http.Handler). Route table/methods/params identical.
+  - **go-cmp**: internal/server/golden_test.go — replaced ~60-LOC hand-rolled jsonDiff with cmp.Diff + cmpopts.EquateApprox(0,1e-9) (the tolerance is what unifies Python's 1.0 vs Go's 1, both float64). Normalization + cursor decode unchanged.
+  - **testify**: all 11 *_test.go files converted (t.Errorf→assert.*, t.Fatalf→require.*; idiomatic require.NoError/ErrorAs, assert.Equal/InDelta/Contains). Verified *rapid.T satisfies require.TestingT, so PBT bodies use require and still feed rapid's shrinker.
+  - **deps**: go.mod 3→6 direct (chi runtime; testify + go-cmp test-only). go mod tidy clean.
+  - **Verification**: golden gate stayed 14/14 across the chi swap (proves zero wire-contract change); full make test-go green; make qa 237 passed/1 skipped (Python untouched — no cross-bleed). gofmt clean (pre-existing testdata/fakeworker/main.go left as-is, out of scope).
+  - **Docs**: new construction/go-orchestrator/framework-alignment.md (adopt-vs-met matrix, rationale, safety); aidlc-state.md note. Committed in 3 logical commits on feat/go-orchestrator (chi / testify+go-cmp / docs), not pushed (PR-only).
+**Context**: Orchestrator-internal refactor for org framework consistency, during Phase 8 lead-up. Source guidance is a *different* project's AIDLC Preferred (overridable) list, adopted here deliberately.
+
+---
