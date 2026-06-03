@@ -146,6 +146,12 @@ ENV OFFICE_CONVERT_LICENSE_PATH=/aspose/license.lic \
 
 EXPOSE 8080
 
+# The binary probes its own /health (the runtime image is Python-free and has no
+# curl/wget; this works under the read-only rootfs). Mirrors the compose +
+# Python-image health timings. Exits 0 only when the server reports ready.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["/usr/local/bin/office-convert-orchestrator", "healthcheck"]
+
 RUN mkdir -p /cache && chown appuser:appgroup /cache
 
 USER appuser

@@ -24,3 +24,9 @@ services:
       # context (.) is inherited from compose.yaml; only the Dockerfile swaps.
       dockerfile: go.Dockerfile
     image: office-convert:go
+    # Override the base healthcheck: compose.yaml's probe shells out to `python`,
+    # but the Go runtime image is Python-free. The binary probes its own /health
+    # instead (same intent, same 10s/5s/30s/3 timings). Without this the Go
+    # backend would never report healthy and dependents (the UI) would not start.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/office-convert-orchestrator", "healthcheck"]

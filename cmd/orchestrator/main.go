@@ -26,6 +26,14 @@ import (
 )
 
 func main() {
+	// `orchestrator healthcheck` probes the running server's /health and exits
+	// 0 if ready, else 1. Used by the Dockerfile HEALTHCHECK and the compose
+	// healthcheck — the runtime image is Python-free, so the binary checks
+	// itself (no curl/wget/python needed, works under a read-only rootfs).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck(healthcheckURL()))
+	}
+
 	s, err := config.Load()
 	if err != nil {
 		// Logging isn't configured yet; use stderr directly.
@@ -75,4 +83,28 @@ func main() {
 		slog.Error("server failed", "err", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheckURL builds the local /health URL from the configured port.
+func healthcheckURL() string {
+	port := os.Getenv("OFFICE_CONVERT_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	return "http://localhost:" + port + "/health"
+}
+
+// healthcheck GETs url and returns a process exit code: 0 iff the server is
+// ready (HTTP 200), else 1. /health returns 503 when not ready.
+func healthcheck(url string) int {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return 0
+	}
+	return 1
 }
