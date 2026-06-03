@@ -44,6 +44,31 @@ jobs:
       - name: pytest (unit + property + integration, parallel)
         run: docker run --rm office-convert-test:ci pytest -n auto tests/unit tests/property tests/integration -v
 
+  go-test:
+    name: go build + vet + test (incl. golden parity gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: go build + vet
+        run: |
+          go build ./...
+          go vet ./...
+
+      # `go test ./...` runs the unit + property suites AND TestGoldenParity (the
+      # Go<->Python wire-contract gate) — its fixtures are committed under
+      # internal/server/testdata/golden/, so no Python/qpdf is needed in CI.
+      # The fixtures are (re)generated locally via `make golden-capture`.
+      - name: go test (unit + property + golden parity gate)
+        run: go test ./...
+
   helm-lint:
     name: helm chart lint
     runs-on: ubuntu-latest
