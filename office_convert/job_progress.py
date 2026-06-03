@@ -44,6 +44,11 @@ class JobProgress:
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = asdict(self)
+        # last_touched is internal TTL-eviction bookkeeping (a time.monotonic()
+        # value, meaningless to clients); asdict() would leak it onto the wire.
+        # Dropped so the /v1/jobs progress contract stays clean — and matches the
+        # Go orchestrator, which never emitted it. (Go/Python parity gate.)
+        d.pop("last_touched", None)
         d["weighted_percent"] = self.weighted_percent()
         d["elapsed_s"] = max(0.0, time.time() - self.started_at)
         return d
