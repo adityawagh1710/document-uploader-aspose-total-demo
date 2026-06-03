@@ -952,6 +952,19 @@ During this branch, **both orchestrators live in the repo**: Python `office_conv
 - Disambiguation **already exists twice**: by language (`.py` vs `.go`/`go.mod`) and by build artifact (`Dockerfile`/`compose.yaml` for Python vs `go.Dockerfile`/`compose.go.yaml` for Go).
 - **End-state plan**: at Phase 8 cutover, once Go holds on dev05, **delete `office_convert/`** (or keep briefly as a tagged rollback oracle) → back to a single orchestrator, and the naming question dissolves. Optimize for the end state, not the few-week overlap. If interim clarity is wanted, a short `README`/`ARCHITECTURE` note is the cheap, zero-risk option (not yet added).
 
+#### Phase 9 — Python retirement (Go-only) — SCOPED, deferred (2026-06-03)
+
+Operator directive: *"Everything must point to Go only, no Python."* Scoped as a plan
+(NOT executed) — gated on the Phase 8 dev05 cutover holding first (don't delete the Python
+rollback before Go is proven in prod). Full plan + file-by-file work breakdown:
+[`go-orchestrator/python-retirement-plan.md`](construction/go-orchestrator/python-retirement-plan.md).
+Removes `office_convert/`, Python tests, the Python `Dockerfile`/`Dockerfile.test`,
+`capture_golden.py`, `pyproject.toml`; folds `go.Dockerfile`→`Dockerfile` +
+`compose.go.yaml`→`compose.yaml`; renames Go Make targets to canonical (`up-go`→`up`, …);
+strips the Python CI job. **One open decision**: the Streamlit UI (`office_convert_ui/`) is
+Python — plan assumes (A) keep it (it's the frontend, backend-agnostic); (B) = rewrite the UI
+is a separate project. Golden gate: keep frozen fixtures (Go-only verify), drop the capture oracle.
+
 #### Go framework alignment (2026-06-03)
 
 Cross-checked the Go orchestrator against the **`document-uploader` AIDLC's `tech-environment.md`** Preferred (overridable) Go stack. Operator chose **strict full adoption** + record the decision. Already-met: `log/slog`, Go modules, AWS SDK v2. **Adopted**: `go-chi/chi/v5` for HTTP routing (was pure `net/http`; 15 routes migrated, route table/methods/params identical), `testify` (assert/require) across all 11 test files, and `go-cmp` (replaced the hand-rolled `jsonDiff` in the golden test with `cmp.Diff` + `EquateApprox`). Orchestrator-internal only — C++ workers, protocol, UI, Helm untouched; **zero wire-contract change**, proven by the golden gate staying 14/14 across the chi swap. Full `make test-go` + `make qa` (237/1, Python untouched) green. Detail: [`go-orchestrator/framework-alignment.md`](construction/go-orchestrator/framework-alignment.md).
