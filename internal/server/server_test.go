@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/opus2/office-convert-orchestrator/internal/cache"
 	"github.com/opus2/office-convert-orchestrator/internal/config"
 	"github.com/opus2/office-convert-orchestrator/internal/license"
@@ -29,9 +32,7 @@ func buildTestServer(t *testing.T) *Server {
 	dir := t.TempDir()
 	licPath := filepath.Join(dir, "permanent.lic")
 	// Permanent license: well-formed, no SubscriptionExpiry -> never expired.
-	if err := os.WriteFile(licPath, []byte(`<License><Data><Product>Aspose.Total for C++</Product></Data></License>`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(licPath, []byte(`<License><Data><Product>Aspose.Total for C++</Product></Data></License>`), 0o644))
 	s := &config.Settings{
 		MaxJobs:             2,
 		Parallel:            2,
@@ -47,9 +48,7 @@ func buildTestServer(t *testing.T) *Server {
 		S3PresignTTLSeconds: 900,
 	}
 	c, err := cache.NewManager("", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	stores := worker.Stores{
 		Heartbeats: obs.HeartbeatStore(),
 		Timings:    obs.TimingStore(),
@@ -79,25 +78,18 @@ func TestHealthShape(t *testing.T) {
 	var body map[string]any
 	json.NewDecoder(resp.Body).Decode(&body)
 	for _, k := range []string{"ready", "license_days_remaining", "active_jobs", "max_jobs", "problems"} {
-		if _, ok := body[k]; !ok {
-			t.Errorf("health missing key %q (body=%v)", k, body)
-		}
+		assert.Containsf(t, body, k, "health missing key %q", k)
 	}
-	if resp.Header.Get("X-Request-ID") == "" {
-		t.Error("missing X-Request-ID echo")
-	}
+	assert.NotEmpty(t, resp.Header.Get("X-Request-ID"), "missing X-Request-ID echo")
 }
 
 func TestDashboardAndLandingServed(t *testing.T) {
 	srv := buildTestServer(t)
 	for _, path := range []string{"/", "/v1/dashboard"} {
 		resp := do(t, srv, "GET", path, "")
-		if resp.StatusCode != 200 {
-			t.Errorf("%s = %d, want 200", path, resp.StatusCode)
-		}
-		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-			t.Errorf("%s content-type = %q", path, ct)
-		}
+		assert.Equalf(t, 200, resp.StatusCode, "%s status", path)
+		assert.Truef(t, strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html"),
+			"%s content-type = %q", path, resp.Header.Get("Content-Type"))
 	}
 }
 
@@ -106,25 +98,17 @@ func TestConversionsEmptyShape(t *testing.T) {
 	resp := do(t, srv, "GET", "/v1/conversions", "")
 	var body map[string]any
 	json.NewDecoder(resp.Body).Decode(&body)
-	if body["has_more"] != false {
-		t.Errorf("empty has_more = %v, want false", body["has_more"])
-	}
-	if _, ok := body["entries"]; !ok {
-		t.Error("missing entries key")
-	}
+	assert.Equal(t, false, body["has_more"], "empty has_more")
+	assert.Contains(t, body, "entries")
 }
 
 func TestPresignDisabled(t *testing.T) {
 	srv := buildTestServer(t)
 	resp := do(t, srv, "GET", "/v1/downloads/presign?bucket=b&key=k", "")
-	if resp.StatusCode != 400 {
-		t.Fatalf("presign disabled = %d, want 400", resp.StatusCode)
-	}
+	require.Equal(t, 400, resp.StatusCode, "presign disabled")
 	var body map[string]any
 	json.NewDecoder(resp.Body).Decode(&body)
-	if body["failure_class"] != "s3_disabled" {
-		t.Errorf("failure_class = %v, want s3_disabled", body["failure_class"])
-	}
+	assert.Equal(t, "s3_disabled", body["failure_class"])
 }
 
 func TestConvertMissingFile(t *testing.T) {
@@ -135,14 +119,10 @@ func TestConvertMissingFile(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, r)
 	resp := w.Result()
-	if resp.StatusCode != 400 {
-		t.Fatalf("missing file = %d, want 400", resp.StatusCode)
-	}
+	require.Equal(t, 400, resp.StatusCode, "missing file")
 	var body map[string]any
 	json.NewDecoder(resp.Body).Decode(&body)
-	if body["failure_class"] != "missing_file" {
-		t.Errorf("failure_class = %v, want missing_file", body["failure_class"])
-	}
+	assert.Equal(t, "missing_file", body["failure_class"])
 }
 
 func TestProgressUnknown(t *testing.T) {
@@ -150,7 +130,5 @@ func TestProgressUnknown(t *testing.T) {
 	resp := do(t, srv, "GET", "/v1/jobs/nonexistent/progress", "")
 	var body map[string]any
 	json.NewDecoder(resp.Body).Decode(&body)
-	if body["phase"] != "unknown" {
-		t.Errorf("unknown job phase = %v, want unknown", body["phase"])
-	}
+	assert.Equal(t, "unknown", body["phase"], "unknown job phase")
 }

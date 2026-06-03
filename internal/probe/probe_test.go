@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/opus2/office-convert-orchestrator/internal/csvinput"
 	"github.com/opus2/office-convert-orchestrator/internal/types"
 )
@@ -29,17 +32,11 @@ func TestDetectFormatMagic(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := DetectFormat(c.bytes, "", "")
 			if c.isErr {
-				if err == nil {
-					t.Fatalf("expected error, got %q", got)
-				}
+				require.Errorf(t, err, "expected error, got %q", got)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != c.want {
-				t.Fatalf("DetectFormat = %q, want %q", got, c.want)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, c.want, got)
 		})
 	}
 }
@@ -49,51 +46,34 @@ func TestDetectOLE2ByFilename(t *testing.T) {
 	// uploaded filename's extension.
 	ole2 := append([]byte("\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"), make([]byte, 64)...)
 	got, err := DetectFormat(ole2, "", "legacy.xls")
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if got != types.DispatchXLSX {
-		t.Fatalf("got %q, want xlsx (from .xls)", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, types.DispatchXLSX, got, "should detect xlsx from .xls")
 }
 
 func TestDetectGeneratedXLSXFromDisk(t *testing.T) {
 	// Cross-package: csvinput produces a real OOXML zip; probe must classify
 	// it as xlsx via [Content_Types].xml — the on-disk EOCD path.
 	xlsx, err := csvinput.CSVBytesToXLSXBytes([]byte("a,b,c\n1,2,3\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	path := filepath.Join(t.TempDir(), "gen.xlsx")
-	if err := os.WriteFile(path, xlsx, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, xlsx, 0o644))
 	got, err := DetectFormat(xlsx[:4], path, "gen.xlsx")
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if got != types.DispatchXLSX {
-		t.Fatalf("generated XLSX detected as %q, want xlsx", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, types.DispatchXLSX, got, "generated XLSX should detect as xlsx")
 }
 
 func TestParseProbeJSON(t *testing.T) {
 	ok := []byte(`{"page_count": 42, "format": "docx", "size_bytes": 12345, "natural_seams": [[1,10],[11,20]]}`)
 	pr, err := ParseProbeJSON(ok)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if pr.PageCount != 42 || pr.Format != types.FormatDOCX || pr.SizeBytes != 12345 {
-		t.Fatalf("parsed wrong: %+v", pr)
-	}
-	if len(pr.NaturalSeams) != 2 || pr.NaturalSeams[1] != [2]int{11, 20} {
-		t.Fatalf("seams wrong: %+v", pr.NaturalSeams)
-	}
+	require.NoError(t, err)
+	assert.EqualValues(t, 42, pr.PageCount)
+	assert.Equal(t, types.FormatDOCX, pr.Format)
+	assert.EqualValues(t, 12345, pr.SizeBytes)
+	require.Len(t, pr.NaturalSeams, 2)
+	assert.Equal(t, [2]int{11, 20}, pr.NaturalSeams[1])
 
-	if _, err := ParseProbeJSON([]byte(`{"format":"docx"}`)); err == nil {
-		t.Fatal("expected error on missing page_count/size_bytes")
-	}
-	if _, err := ParseProbeJSON([]byte(`not json`)); err == nil {
-		t.Fatal("expected error on invalid JSON")
-	}
+	_, err = ParseProbeJSON([]byte(`{"format":"docx"}`))
+	assert.Error(t, err, "expected error on missing page_count/size_bytes")
+	_, err = ParseProbeJSON([]byte(`not json`))
+	assert.Error(t, err, "expected error on invalid JSON")
 }

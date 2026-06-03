@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/opus2/office-convert-orchestrator/internal/config"
 	"github.com/opus2/office-convert-orchestrator/internal/obs"
 	"github.com/opus2/office-convert-orchestrator/internal/oerrors"
@@ -30,12 +33,8 @@ func buildFakeWorker(t *testing.T, formats ...types.FormatName) string {
 	}
 	for _, f := range formats[1:] {
 		b, err := os.ReadFile(first)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(base+"-"+string(f), b, 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(base+"-"+string(f), b, 0o755))
 	}
 	return base
 }
@@ -61,9 +60,7 @@ func testStores() Stores {
 func mkInput(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "input.docx")
-	if err := os.WriteFile(p, []byte("fake document bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(p, []byte("fake document bytes"), 0o644))
 	return p
 }
 
@@ -88,9 +85,7 @@ func renderChunks(t *testing.T, pool Pool, scratch string, n int) []string {
 		}(i)
 	}
 	wg.Wait()
-	if firstErr != nil {
-		t.Fatalf("render error: %v", firstErr)
-	}
+	require.NoError(t, firstErr, "render error")
 	return paths
 }
 
@@ -101,30 +96,24 @@ func TestForkedWorkerPoolRendersConcurrently(t *testing.T) {
 	scratch := t.TempDir()
 
 	pool, err := NewForkedWorkerPool(s, types.FormatDOCX, mkInput(t), "rid-fork", stores, 2)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	defer pool.Close(context.Background())
 
-	if pc, ok := pool.ActualPageCount(); !ok || pc != 5 {
-		t.Fatalf("page count = %d, ok=%v, want 5", pc, ok)
-	}
+	pc, ok := pool.ActualPageCount()
+	require.True(t, ok, "page count should be known")
+	require.Equal(t, 5, pc)
 
 	paths := renderChunks(t, pool, scratch, 3)
 	for i, p := range paths {
-		if p == "" {
-			t.Fatalf("chunk %d returned empty path", i)
-		}
-		if b, err := os.ReadFile(p); err != nil || len(b) == 0 {
-			t.Fatalf("chunk %d output missing: %v", i, err)
-		}
+		require.NotEmptyf(t, p, "chunk %d returned empty path", i)
+		b, err := os.ReadFile(p)
+		require.NoErrorf(t, err, "chunk %d output", i)
+		require.NotEmptyf(t, b, "chunk %d output missing", i)
 	}
 
 	// The fake worker emits one load heartbeat; the stderr tailer must have
 	// recorded it under the request id (the GIL->mutex store path).
-	if hbs := stores.Heartbeats.Get("rid-fork"); len(hbs) == 0 {
-		t.Error("expected at least one heartbeat recorded for rid-fork")
-	}
+	assert.NotEmpty(t, stores.Heartbeats.Get("rid-fork"), "expected at least one heartbeat recorded for rid-fork")
 }
 
 func TestWorkerPoolLegacyRenders(t *testing.T) {
@@ -133,19 +122,17 @@ func TestWorkerPoolLegacyRenders(t *testing.T) {
 	scratch := t.TempDir()
 
 	pool, err := NewWorkerPool(s, types.FormatXLSX, mkInput(t), "rid-legacy", testStores(), 2)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	defer pool.Close(context.Background())
 
-	if pc, ok := pool.ActualPageCount(); !ok || pc != 5 {
-		t.Fatalf("page count = %d ok=%v, want 5", pc, ok)
-	}
+	pc, ok := pool.ActualPageCount()
+	require.True(t, ok, "page count should be known")
+	require.Equal(t, 5, pc)
 	paths := renderChunks(t, pool, scratch, 4)
 	for i, p := range paths {
-		if b, err := os.ReadFile(p); err != nil || len(b) == 0 {
-			t.Fatalf("chunk %d output missing: %v", i, err)
-		}
+		b, err := os.ReadFile(p)
+		require.NoErrorf(t, err, "chunk %d output", i)
+		require.NotEmptyf(t, b, "chunk %d output missing", i)
 	}
 }
 
@@ -160,9 +147,7 @@ func TestLegacyPoolHeartbeatPoolIndexDistinct(t *testing.T) {
 	scratch := t.TempDir()
 
 	pool, err := NewWorkerPool(s, types.FormatXLSX, mkInput(t), "rid-idx", stores, 3)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	defer pool.Close(context.Background())
 	renderChunks(t, pool, scratch, 3)
 
@@ -172,9 +157,7 @@ func TestLegacyPoolHeartbeatPoolIndexDistinct(t *testing.T) {
 			idxs[toInt(v, -1)] = true
 		}
 	}
-	if len(idxs) < 2 {
-		t.Fatalf("legacy workers collapsed onto pool_index %v — expected distinct indices", idxs)
-	}
+	require.GreaterOrEqualf(t, len(idxs), 2, "legacy workers collapsed onto pool_index %v — expected distinct indices", idxs)
 }
 
 func TestForkedPoolMapsOOMError(t *testing.T) {
@@ -184,17 +167,11 @@ func TestForkedPoolMapsOOMError(t *testing.T) {
 	scratch := t.TempDir()
 
 	pool, err := NewForkedWorkerPool(s, types.FormatDOCX, mkInput(t), "rid-oom", testStores(), 1)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	defer pool.Close(context.Background())
 
 	_, rerr := pool.RenderChunk(context.Background(), types.Chunk{Index: 0, PageStart: 1, PageEnd: 10}, scratch)
-	if rerr == nil {
-		t.Fatal("expected render error")
-	}
-	oe, ok := rerr.(*oerrors.Error)
-	if !ok || !oe.OOM {
-		t.Fatalf("expected OOM error, got %#v", rerr)
-	}
+	var oe *oerrors.Error
+	require.ErrorAs(t, rerr, &oe, "expected render error")
+	require.True(t, oe.OOM, "expected OOM error")
 }

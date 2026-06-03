@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/opus2/office-convert-orchestrator/internal/oerrors"
 	"github.com/opus2/office-convert-orchestrator/internal/types"
 )
@@ -18,9 +21,7 @@ func writeFakeQpdf(t *testing.T, body string, code int) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fakeqpdf")
 	script := "#!/bin/sh\nprintf '" + body + "'\nexit " + itoa(code) + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
 	orig := Binary
 	Binary = path
 	t.Cleanup(func() { Binary = orig })
@@ -40,25 +41,19 @@ func TestConcatStreamingStreamsAndTees(t *testing.T) {
 
 	var buf bytes.Buffer
 	err := ConcatStreaming(context.Background(), []string{"a.pdf", "b.pdf"}, &buf, teePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if buf.String() != "MERGEDPDFBYTES" {
-		t.Fatalf("streamed %q, want MERGEDPDFBYTES", buf.String())
-	}
+	require.NoError(t, err)
+	require.Equal(t, "MERGEDPDFBYTES", buf.String())
 	teed, err := os.ReadFile(teePath)
-	if err != nil || string(teed) != "MERGEDPDFBYTES" {
-		t.Fatalf("tee file = %q err=%v", teed, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "MERGEDPDFBYTES", string(teed))
 }
 
 func TestConcatStreamingNoChunks(t *testing.T) {
 	var buf bytes.Buffer
 	err := ConcatStreaming(context.Background(), nil, &buf, "")
-	oe, ok := err.(*oerrors.Error)
-	if !ok || oe.FailureClass != types.MergeFailed {
-		t.Fatalf("expected MergeFailed, got %#v", err)
-	}
+	var oe *oerrors.Error
+	require.ErrorAs(t, err, &oe)
+	require.Equal(t, types.MergeFailed, oe.FailureClass)
 }
 
 func TestConcatStreamingQpdfFailureMapsToMergeError(t *testing.T) {
@@ -66,12 +61,10 @@ func TestConcatStreamingQpdfFailureMapsToMergeError(t *testing.T) {
 	teePath := filepath.Join(t.TempDir(), "cache.tmp")
 	var buf bytes.Buffer
 	err := ConcatStreaming(context.Background(), []string{"a.pdf"}, &buf, teePath)
-	oe, ok := err.(*oerrors.Error)
-	if !ok || oe.FailureClass != types.MergeFailed {
-		t.Fatalf("expected MergeFailed, got %#v", err)
-	}
+	var oe *oerrors.Error
+	require.ErrorAs(t, err, &oe)
+	require.Equal(t, types.MergeFailed, oe.FailureClass)
 	// Partial tee file must be cleaned up on failure.
-	if _, statErr := os.Stat(teePath); !os.IsNotExist(statErr) {
-		t.Error("tee file should be removed on qpdf failure")
-	}
+	_, statErr := os.Stat(teePath)
+	assert.True(t, os.IsNotExist(statErr), "tee file should be removed on qpdf failure")
 }
