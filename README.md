@@ -29,7 +29,7 @@ products' CodePorting frameworks stay process-isolated.
 ```
 ┌────────────────────── Docker container (4GB RAM + 2GB swap) ──────────────────────┐
 │                                                                                    │
-│   FastAPI / Uvicorn (Python orchestrator)                                          │
+│   FastAPI / Uvicorn (Python) → net/http + chi (Go orchestrator)                    │
 │   ┌─────────────────────────────────────────────────────────────────────────┐      │
 │   │ 1. Format Detection (magic bytes + OLE2 streams, format retry)          │      │
 │   │ 2. Probe Lite (ZIP metadata / size estimate — instant)                  │      │
@@ -56,6 +56,12 @@ products' CodePorting frameworks stay process-isolated.
 │   (never buffers full PDF in memory)                                               │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **Orchestrator box:** the Go re-implementation (`net/http` + `chi`) now lives on
+> `main` alongside the Python (FastAPI) orchestrator and is the **only** box that
+> changes at cutover — the C++ workers, JSON-stdio protocol, qpdf merge, and HTTP
+> wire contract are identical. **Python is still the deployed backend until the
+> Phase 8 dev05 cutover** (see the "Go orchestrator" section below).
 
 For detailed Mermaid diagrams (request flow, format detection, pool mode),
 see `aidlc-docs/construction/office-converter/architecture-diagram.md`.
