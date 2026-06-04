@@ -245,7 +245,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ui
-    image: office-convert:ui
+    # Match the Makefile's IMAGE_UI (`office-convert-ui:dev`) and the ECR repo
+    # name (`office-convert-ui`) so compose and `make` produce the SAME image,
+    # not two differently-tagged copies of the UI.
+    image: office-convert-ui:dev
     ports:
       - "127.0.0.1:8501:8501"
     volumes:
