@@ -208,8 +208,9 @@ the Dockerfile and HTTP plumbing before paying for an Aspose license.
 
 The Python orchestrator described throughout this README is the **current
 production backend**. A complete **Go re-implementation** of the orchestrator
-lives alongside it on branch `feat/go-orchestrator` and is validated end-to-end
-but **not yet cut over** — Python remains the deployed backend until Phase 8.
+lives alongside it in `cmd/` + `internal/` on `main` (merged from
+`feat/go-orchestrator`, now deleted) and is validated end-to-end but **not yet
+cut over** — Python remains the deployed backend until the Phase 8 dev05 cutover.
 
 This is **transitional duplication, not a hybrid**: one backend reimplemented
 two ways. Everything *around* the orchestrator is shared and unchanged — the C++
