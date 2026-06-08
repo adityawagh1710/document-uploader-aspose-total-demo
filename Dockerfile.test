@@ -19,7 +19,7 @@
 # pyproject.toml only). Drift bit us at least twice — reportlab 4.2.x
 # vs >=4.4 on the 3.11→3.12 alignment was the most recent example.
 
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # System deps: qpdf for tests, util-linux for prlimit references in tests,
 # build-essential because some Python deps compile native bits.
