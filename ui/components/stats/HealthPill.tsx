@@ -2,14 +2,15 @@
 
 import useSWR from 'swr';
 import clsx from 'clsx';
-import { fetcher } from '@/lib/api';
+import { fetchHealth } from '@/lib/api';
 import type { Health } from '@/lib/types';
 
-// Header health indicator. SWR polls /health every 3 s (BR-UI-4); the 503
-// not-ready response still carries a JSON Health body, so a thrown ApiError
-// (error slot) means the API itself is unreachable.
+// Header health indicator. SWR polls /health every 3 s (BR-UI-4). fetchHealth
+// returns the Health JSON for BOTH 200 (ready) and 503 (not-ready), so the
+// error slot is reached ONLY on a real network failure → that's the genuine
+// "API DOWN". A 503 not-ready (e.g. license_expired) shows as NOT READY.
 export function HealthPill() {
-  const { data, error } = useSWR<Health>('/health', fetcher, { refreshInterval: 3000 });
+  const { data, error } = useSWR<Health>('/health', fetchHealth, { refreshInterval: 3000 });
 
   const state = error ? 'down' : !data ? 'loading' : data.ready ? 'ready' : 'not-ready';
   const dot = {
@@ -35,7 +36,9 @@ export function HealthPill() {
       <span className={clsx('h-2 w-2 rounded-full', dot)} />
       {label}
       {data?.license_days_remaining != null && (
-        <span className="text-slate-500">· lic {data.license_days_remaining}d</span>
+        <span className={clsx(data.license_days_remaining < 0 ? 'text-rose-400' : 'text-slate-500')}>
+          · lic {data.license_days_remaining < 0 ? 'expired' : `${data.license_days_remaining}d`}
+        </span>
       )}
     </span>
   );

@@ -2,7 +2,7 @@
 
 import useSWR from 'swr';
 import { Card } from '@/components/ui/Card';
-import { fetcher } from '@/lib/api';
+import { fetcher, fetchHealth } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
 import type { ContainerStats, Health, WorkerProc } from '@/lib/types';
 
@@ -32,7 +32,7 @@ function Tile({
 
 export function HealthTiles() {
   // BR-UI-4: health/stats poll at 3 s; SWR pauses polling on hidden tabs.
-  const { data: health } = useSWR<Health>('/health', fetcher, { refreshInterval: 3000 });
+  const { data: health } = useSWR<Health>('/health', fetchHealth, { refreshInterval: 3000 });
   const { data: stats } = useSWR<ContainerStats>('/v1/stats', fetcher, { refreshInterval: 3000 });
   const { data: workers } = useSWR<{ workers: WorkerProc[] }>('/v1/workers', fetcher, {
     refreshInterval: 3000,

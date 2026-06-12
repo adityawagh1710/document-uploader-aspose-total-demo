@@ -40,3 +40,25 @@ test.describe('dashboard shell', () => {
     expect(csp).toContain("object-src 'none'");
   });
 });
+
+// Regression: a 503 not-ready /health (expired license) is a LIVE API reporting
+// a problem — the UI must show NOT READY / EXPIRED, never "API DOWN" (which is
+// reserved for an unreachable API).
+test.describe('not-ready health (503) is not "API down"', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockApi(page, { healthNotReady: true });
+    await page.goto('/');
+  });
+
+  test('header pill shows NOT READY, not API DOWN', async ({ page }) => {
+    const pill = page.getByTestId('health-pill');
+    await expect(pill).toContainText('NOT READY');
+    await expect(pill).not.toContainText('API DOWN');
+    await expect(pill).toContainText('expired');
+  });
+
+  test('tiles reflect the expired license', async ({ page }) => {
+    await expect(page.getByTestId('tile-ready')).toContainText('NOT READY');
+    await expect(page.getByTestId('tile-license')).toContainText('EXPIRED');
+  });
+});

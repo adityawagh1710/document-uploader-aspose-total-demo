@@ -22,6 +22,17 @@ export const health: Health = {
   problems: [],
 };
 
+// Not-ready: /health returns this with HTTP 503 (e.g. expired license). The UI
+// must show NOT READY / EXPIRED — NOT "API DOWN" (which is reserved for a real
+// network failure). Mirrors the live expired-license state.
+export const expiredHealth: Health = {
+  ready: false,
+  license_days_remaining: -4,
+  active_jobs: 0,
+  max_jobs: 2,
+  problems: ['license_expired'],
+};
+
 export const containerStats: ContainerStats = {
   cpu_usage_usec: 1_200_000,
   mem_bytes: 512 * 1024 * 1024,
