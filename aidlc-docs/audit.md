@@ -2529,3 +2529,10 @@ Two doc-quality observations worth keeping:
 **Context**: Unit python-retirement-nextjs-ui AIDLC workflow complete (Operations = placeholder). PR pending user authorization.
 
 ---
+## Playwright E2E added + CSP hydration bug found & fixed (python-retirement-nextjs-ui)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Did you do cypress tests on UI ??" → "Okay go ahead with Playwright"
+**AI Response**: Clarified no Cypress exists (UI tests are vitest, which I'd also not executed — ran them: 9/9). Set up Playwright per the project web-testing rules. Added @playwright/test + ui/e2e/ (dashboard/compare/history mocked specs + gated live-smoke), playwright.config.ts (runs the production standalone server — next dev's eval HMR and `next start` w/ output:standalone both break hydration), e2e/mock-api.ts + fixtures.ts. While wiring it up the E2E surfaced a REAL shipped bug: the static `script-src 'self'` CSP in next.config.ts blocked Next.js App Router's inline hydration/RSC scripts, so the UI rendered SSR HTML but NEVER hydrated in a browser (the curl-only smoke missed it — HTTP/SSR only). Fixed with a per-request nonce CSP in ui/middleware.ts (`'self' 'nonce-…' 'strict-dynamic'`), matching the project web-security rules; removed the CSP from next.config (kept static X-*/Referrer/Permissions headers). Results: mocked E2E 12/12, live E2E 2/2 (rebuilt :8501 container hydrates + does a real browser-driven Gotenberg HTML→PDF via the /api proxy). Added CI ui-e2e job + vitest to ui-test; fixed the vitest act() warning. Commits: afaaf19 (CSP fix), 227ddf8 (E2E harness+CI+act fix). Doc: construction/build-and-test/python-retirement-nextjs-ui-build-and-test.md §2.
+**Context**: UI now has browser E2E coverage; a production CSP hydration bug was caught and fixed before the PR merged.
+
+---

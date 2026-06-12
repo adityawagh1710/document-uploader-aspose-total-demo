@@ -125,6 +125,13 @@
   `license_expired` (**expected** — expired real license, the known SubscriptionExpiry-vs-
   LicenseExpiry gap, NOT a regression). Stack torn down clean. **APPROVED 2026-06-12**
   ("Approve & Continue").
+- **Playwright E2E added + CSP bug found & fixed (2026-06-12, post-approval)**: user asked
+  for browser E2E. Added `@playwright/test` + `ui/e2e/` (mocked suite 12/12; live suite 2/2
+  via `E2E_LIVE=1`) + CI `ui-e2e` job; vitest (9/9) now also runs in CI. The E2E surfaced a
+  **real production bug** the curl smoke missed: the static `script-src 'self'` CSP blocked
+  Next.js App Router's inline hydration scripts → UI never hydrated in a browser. **Fixed**
+  with a per-request nonce CSP in `ui/middleware.ts` (commit `afaaf19`); E2E harness in
+  `227ddf8`; verified live on the rebuilt container. Also fixed the vitest `act()` warning.
 - **Operations = PLACEHOLDER** (deployment/monitoring/incident-response are future expansion,
   out of v1 scope) — no Operations artifacts generated. **AIDLC workflow for unit
   `python-retirement-nextjs-ui` is COMPLETE through Build and Test.** Genuine next practical
