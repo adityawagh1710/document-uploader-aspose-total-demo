@@ -53,6 +53,47 @@ func TestParseExpiryNumericAndPermanent(t *testing.T) {
 	require.False(t, has, "permanent license should report no expiry")
 }
 
+// When both LicenseExpiry and SubscriptionExpiry are present, the EARLIER one
+// binds (it's when Aspose actually stops rendering). Mirrors the real temp
+// license: LicenseExpiry 2026-06-08 (past) vs SubscriptionExpiry 2027-05-08.
+func TestParseExpiryPrefersEarliestBindingDate(t *testing.T) {
+	dir := t.TempDir()
+
+	lic := filepath.Join(dir, "both.lic")
+	mustWrite(t, lic, `<License><Data>`+
+		`<SubscriptionExpiry>20270508</SubscriptionExpiry>`+
+		`<LicenseExpiry>20260608</LicenseExpiry>`+
+		`</Data></License>`)
+
+	exp, has, err := parseExpiry(lic)
+	require.NoError(t, err)
+	require.True(t, has)
+	// Earliest = LicenseExpiry 2026-06-08, NOT SubscriptionExpiry 2027.
+	assert.Equal(t, 2026, exp.Year())
+	assert.Equal(t, "June", exp.Month().String())
+	assert.Equal(t, 8, exp.Day())
+
+	// A manager over this file is expired (the binding date is in the past).
+	m := NewManager(lic)
+	expired, err := m.IsExpired()
+	require.NoError(t, err)
+	assert.True(t, expired, "past LicenseExpiry must make the license expired")
+}
+
+// Order-independence: LicenseExpiry listed first still yields the earliest.
+func TestParseExpiryEarliestRegardlessOfOrder(t *testing.T) {
+	dir := t.TempDir()
+	lic := filepath.Join(dir, "ordered.lic")
+	mustWrite(t, lic, `<License><Data>`+
+		`<LicenseExpiry>20300101</LicenseExpiry>`+
+		`<SubscriptionExpiry>20250101</SubscriptionExpiry>`+
+		`</Data></License>`)
+	exp, has, err := parseExpiry(lic)
+	require.NoError(t, err)
+	require.True(t, has)
+	assert.Equal(t, 2025, exp.Year(), "earliest of the two binds regardless of element order")
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))

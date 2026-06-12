@@ -4,10 +4,19 @@
 // parsing for expiry checking). The C++ worker is the only place that actually
 // calls Aspose's SetLicense().
 //
-// Aspose temporary license files are XML envelopes signed by Aspose. The expiry
-// date appears as <SubscriptionExpiry>YYYYMMDD</SubscriptionExpiry> in the
-// License element. If the file is well-formed but lacks that field, the license
-// is treated as permanent (DaysRemaining returns ok=false).
+// Aspose license files are XML envelopes signed by Aspose. Two expiry-ish dates
+// can appear in the License element:
+//
+//   - <LicenseExpiry>YYYYMMDD</LicenseExpiry>       — the hard stop for a
+//     temporary license; Aspose refuses to render past this date.
+//   - <SubscriptionExpiry>YYYYMMDD</SubscriptionExpiry> — how long you may use
+//     product versions released before this date.
+//
+// The BINDING date (when rendering actually stops working) is the EARLIER of the
+// two present. We surface that one, so /health and the dashboard reflect what the
+// C++ Aspose engine will actually do — not a rosy SubscriptionExpiry while a past
+// LicenseExpiry silently fails every conversion. If the file is well-formed but
+// has neither field, the license is treated as permanent (DaysRemaining ok=false).
 package license
 
 import (
@@ -25,7 +34,7 @@ import (
 const (
 	healthyMinDays = 7 // strictly more than this -> HEALTHY
 	warnMinDays    = 4 // at or above this (but <= HEALTHY_MIN) -> WARN
-	// Aspose <SubscriptionExpiry> numeric format is YYYYMMDD (8 digits).
+	// Aspose expiry numeric format is YYYYMMDD (8 digits).
 	asposeNumericDateLen = 8
 )
 
@@ -45,7 +54,7 @@ func NewManager(path string) *Manager { return &Manager{path: path} }
 // Refresh forces a re-read of the license file on the next query.
 func (m *Manager) Refresh() { m.read = false }
 
-// ExpiryDate returns the SubscriptionExpiry date and whether one was present.
+// ExpiryDate returns the binding (earliest) expiry date and whether one was present.
 func (m *Manager) ExpiryDate() (time.Time, bool, error) {
 	if !m.read {
 		exp, has, err := parseExpiry(m.path)
@@ -114,7 +123,8 @@ func Classify(daysRemaining int, hasExpiry bool) types.LicenseState {
 	}
 }
 
-// parseExpiry parses the XML and returns the SubscriptionExpiry date.
+// parseExpiry parses the XML and returns the EARLIEST of any <LicenseExpiry> /
+// <SubscriptionExpiry> dates present (the binding "rendering stops" date).
 // has=false if the license is well-formed but has no expiry field (permanent).
 func parseExpiry(path string) (time.Time, bool, error) {
 	f, err := os.Open(path)
@@ -124,6 +134,8 @@ func parseExpiry(path string) (time.Time, bool, error) {
 	defer f.Close()
 
 	dec := xml.NewDecoder(f)
+	var earliest time.Time
+	found := false
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -133,7 +145,7 @@ func parseExpiry(path string) (time.Time, bool, error) {
 			return time.Time{}, false, fmt.Errorf("malformed license XML: %w", err)
 		}
 		start, ok := tok.(xml.StartElement)
-		if !ok || start.Name.Local != "SubscriptionExpiry" {
+		if !ok || (start.Name.Local != "SubscriptionExpiry" && start.Name.Local != "LicenseExpiry") {
 			continue
 		}
 		// Read the character data inside this element.
@@ -149,9 +161,12 @@ func parseExpiry(path string) (time.Time, bool, error) {
 		if err != nil {
 			return time.Time{}, false, err
 		}
-		return d, true, nil
+		// Keep the earliest — whichever expiry comes first is what stops rendering.
+		if !found || d.Before(earliest) {
+			earliest, found = d, true
+		}
 	}
-	return time.Time{}, false, nil
+	return earliest, found, nil
 }
 
 // parseAsposeDate parses YYYYMMDD or YYYY-MM-DD (ISO) Aspose date strings.

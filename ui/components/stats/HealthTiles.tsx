@@ -70,8 +70,20 @@ export function HealthTiles() {
         label="License"
         testId="tile-license"
         stagger="stagger-3"
-        value={health?.license_days_remaining != null ? `${health.license_days_remaining}d` : '—'}
-        sub="days remaining"
+        value={
+          health?.license_days_remaining == null ? (
+            '—'
+          ) : health.license_days_remaining < 0 ? (
+            <span className="text-rose-400">EXPIRED</span>
+          ) : (
+            `${health.license_days_remaining}d`
+          )
+        }
+        sub={
+          health?.license_days_remaining != null && health.license_days_remaining < 0
+            ? `${-health.license_days_remaining}d ago`
+            : 'days remaining'
+        }
       />
       <Tile
         label="Memory"
