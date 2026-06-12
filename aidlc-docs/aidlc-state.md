@@ -1,9 +1,73 @@
 # AI-DLC State Tracking
 
 ## Project Information
-- **Project Type**: Greenfield
+- **Project Type**: Greenfield at inception (2026-05-11); now **BROWNFIELD** — see "Reverse Engineering Status (2026-06-12)" below. The original greenfield header is retained for history.
 - **Start Date**: 2026-05-11T00:00:00Z
-- **Current Stage**: INCEPTION - Requirements Analysis
+- **Current Stage**: INCEPTION - Requirements Analysis (HTML conversion feature, Go-only; question gate open — see "HTML Conversion Feature (2026-06-12)" below)
+
+## Reverse Engineering Status (2026-06-12)
+- [x] Reverse Engineering — Completed 2026-06-12 on `main` (HEAD `51fa1e3`).
+- **Trigger**: user request "analyze this workspace and code base in detail"; workspace-detection
+  re-classified the project as brownfield (substantial multi-language code, no prior RE artifacts).
+- **Artifacts Location**: `aidlc-docs/inception/reverse-engineering/` (9 artifacts:
+  business-overview, architecture, code-structure, api-documentation, component-inventory,
+  technology-stack, dependencies, code-quality-assessment, reverse-engineering-timestamp).
+- **Method**: 4 parallel code-explorer agents (Python orchestrator / Go orchestrator / C++ workers
+  / build-deploy-UI) + synthesis.
+- **Status**: **APPROVED 2026-06-12** (implicit — user directed the workflow forward with
+  "Using AIDLC start with Go only"; logged in audit.md).
+
+## HTML Conversion Feature (2026-06-12) — Requirements Analysis in progress
+
+- **Request**: HTML → PDF via BOTH engines on SEPARATE endpoints for perf+fidelity comparison:
+  `POST /v1/convert/html/gotenberg` (Chromium, full JS) and `POST /v1/convert/html/aspose`
+  (Aspose.Words, static HTML, no JS). Streamlit UI gets an engine-comparison panel.
+- **Backend scope (user-decided)**: **Go orchestrator ONLY**. Python `office_convert/` unchanged;
+  the 14/14 golden-parity gate is scoped to exclude the two new routes until Phase 9 retirement.
+- **Decided defaults**: Gotenberg = separate `gotenberg/gotenberg:8` service (cannot live in the
+  API image — Chromium ~300 MB); Aspose path = single-shot reuse of `worker-docx` (relax format
+  guard in `worker_cpp/formats/docx.cpp` to accept `"html"`; Words loads HTML via
+  `LoadFormat::Auto`, no new vendor lib); both endpoints use the bypass pattern (no chunk planner,
+  modeled on LibreOffice/EML paths); `ConversionRecord` gains an `engine` field so
+  `/v1/conversions/stats` splits per-engine.
+- **Key engine fact**: Gotenberg executes JavaScript (needs `waitDelay`/`waitForExpression`
+  exposure); Aspose.Words has NO JS engine — static-HTML-only path.
+- **Stage status**: Requirements Analysis **COMPLETE** 2026-06-12 — all 7 questions answered
+  (Q1:A both wait controls; Q2:A deny-internal/allow-public for Chromium; Q3:B mirror policy in
+  the Aspose resource callback; Q4:B 10 MB HTML cap; Q5:A new `engine_unavailable` 503;
+  Q6:A local compose only, Helm deferred; Q7:A parallel convert-with-both UI).
+  Requirements doc: `inception/requirements/html-conversion-requirements.md`.
+  **APPROVED 2026-06-12** ("Approve & Continue"); User Stories skipped.
+- **Workflow Planning**: COMPLETE 2026-06-12 — feature execution plan at
+  `inception/plans/html-conversion-execution-plan.md`. Stages to execute: Functional Design →
+  Code Generation → Build and Test (unit: `html-conversion`). Skipped: User Stories,
+  Application Design, Units Generation, NFR Requirements, NFR Design, Infrastructure Design
+  (rationales in the plan). Module order: worker_cpp → Go orchestrator → compose → UI → tests.
+  Execution plan **APPROVED 2026-06-12**.
+- **Functional Design (unit: html-conversion)**: COMPLETE 2026-06-12 — 4 artifacts at
+  `construction/html-conversion/functional-design/` (business-logic-model, business-rules,
+  domain-entities, frontend-components) + plan with defaults D1–D4. PBT-01 Testable Properties
+  documented. **APPROVED 2026-06-12**.
+- **Code Generation (unit: html-conversion)**: COMPLETE 2026-06-12 — Part 1 approved; Part 2
+  executed all 15 steps on branch `feat/html-conversion` (uncommitted). Summary:
+  `construction/html-conversion/code/code-summary.md`. Verification at this stage:
+  `go vet` + `go test ./...` green incl. golden gate 14/14 + new rapid PBT; `-race` green on
+  touched packages; UI `py_compile` OK; compose config valid. Notable: golden gate caught and
+  forced revert of the `AcceptedUploadFormats` html addition (legacy-route wire parity).
+  Code Generation **APPROVED 2026-06-12**.
+- **Build and Test (unit: html-conversion)**: EXECUTED 2026-06-12 — results in
+  `construction/build-and-test/html-conversion-build-and-test.md`. Builds ✅ (`make build-go`
+  incl. real-Aspose C++ compile of the html path; `make qa` 237 passed/1 skipped; Go suite +
+  golden 14/14). Acceptance: Gotenberg engine ✅ end-to-end (incl. JS-fidelity via
+  waitForExpression and SSRF deny verified against localstack), engine-down 503 ✅, telemetry ✅,
+  all validation spot-checks ✅. **Aspose render side ⛔ BLOCKED (environmental)**: the real
+  license hard-expired 2026-06-08 (`LicenseExpiry` field; health parses only
+  `SubscriptionExpiry` 2027 → pre-existing gap, baseline DOCX fails identically). Operator
+  action: renewed license, then re-run aspose-side criteria 1–3. Build and Test **APPROVED
+  2026-06-12** — unit `html-conversion` workflow COMPLETE (Operations = placeholder; next
+  practical step is the `feat/html-conversion` PR + post-license re-verification).
+- **Research basis**: project memory `project-html-conversion-feature.md` + audit entries
+  2026-06-12; integration-point map from code-explorer trace.
 
 ## Workspace State
 - **Existing Code**: No
@@ -116,7 +180,7 @@ work, but are NOT requirements for v1.
 ### 🔵 INCEPTION PHASE
 
 - [x] Workspace Detection — Greenfield, design doc present
-- [x] Reverse Engineering — SKIPPED (greenfield)
+- [x] Reverse Engineering — SKIPPED at inception (greenfield); **EXECUTED 2026-06-12** on brownfield code (see "Reverse Engineering Status (2026-06-12)" above; artifacts in `inception/reverse-engineering/`)
 - [x] Requirements Analysis — Complete 2026-05-11; `requirements.md` approved by user
 - [x] User Stories — Complete 2026-05-11 (retroactively added per user request); personas.md + stories.md generated, awaiting approval
 - [x] Workflow Planning — Complete 2026-05-11; `plans/execution-plan.md` generated, awaiting user approval
