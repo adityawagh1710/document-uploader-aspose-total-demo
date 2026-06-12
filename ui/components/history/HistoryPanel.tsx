@@ -107,7 +107,7 @@ export function HistoryPanel({ s3Enabled }: { s3Enabled: boolean }) {
                 <tr
                   key={rec.request_id}
                   data-testid="history-row"
-                  className="border-b border-surface-edge/50 text-slate-300"
+                  className="border-b border-surface-edge/50 text-slate-300 transition-colors hover:bg-surface-edge/30"
                 >
                   <td className="py-2 pr-3 font-mono text-slate-500">
                     {formatDate(rec.completion_ts)}

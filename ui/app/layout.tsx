@@ -12,6 +12,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="min-h-screen antialiased">
         <header className="sticky top-0 z-10 border-b border-surface-edge bg-surface/90 backdrop-blur">
+          {/* Thin cyan→violet accent strip — a quiet "live instrument" cue. */}
+          <div className="h-0.5 w-full bg-gradient-to-r from-accent via-accent-violet to-transparent" />
           <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
             <div className="flex items-baseline gap-3">
               <h1 className="text-lg font-bold tracking-tight">

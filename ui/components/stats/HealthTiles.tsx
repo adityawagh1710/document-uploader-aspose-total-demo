@@ -11,14 +11,16 @@ function Tile({
   value,
   sub,
   testId,
+  stagger,
 }: {
   label: string;
   value: React.ReactNode;
   sub?: string;
   testId: string;
+  stagger?: string;
 }) {
   return (
-    <Card className="p-4">
+    <Card className={`p-4 ${stagger ?? ''}`}>
       <p className="text-xs text-slate-500">{label}</p>
       <p data-testid={testId} className="mt-1 font-mono text-2xl font-bold text-slate-100">
         {value}
@@ -46,6 +48,7 @@ export function HealthTiles() {
       <Tile
         label="Service"
         testId="tile-ready"
+        stagger="stagger-1"
         value={
           health ? (
             <span className={health.ready ? 'text-emerald-400' : 'text-rose-400'}>
@@ -60,17 +63,20 @@ export function HealthTiles() {
       <Tile
         label="Active jobs"
         testId="tile-jobs"
+        stagger="stagger-2"
         value={health ? `${health.active_jobs}/${health.max_jobs}` : '…'}
       />
       <Tile
         label="License"
         testId="tile-license"
+        stagger="stagger-3"
         value={health?.license_days_remaining != null ? `${health.license_days_remaining}d` : '—'}
         sub="days remaining"
       />
       <Tile
         label="Memory"
         testId="tile-memory"
+        stagger="stagger-4"
         value={memPct}
         sub={
           stats
@@ -81,6 +87,7 @@ export function HealthTiles() {
       <Tile
         label="Workers"
         testId="tile-workers"
+        stagger="stagger-5"
         value={workers ? workers.workers.length : '…'}
         sub={
           workers && workers.workers.length > 0
