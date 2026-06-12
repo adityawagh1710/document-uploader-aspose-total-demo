@@ -38,6 +38,30 @@ services:
       gotenberg:
         condition: service_started
 
+  # Next.js operator dashboard — replaces the Streamlit test-ui for the Go
+  # stack. Same host port (8501) so operator bookmarks keep working; the
+  # container listens on 3000. API_URL is the server-side rewrite target
+  # (single-origin proxy); NEXT_PUBLIC_DASHBOARD_URL is the only
+  # browser-facing API URL (the /v1/dashboard iframe).
+  # !override (not merge) on ports/volumes/environment: the base Streamlit
+  # service publishes 8501:8501 and mounts docker.sock — a plain merge would
+  # union those with ours (host-port clash; unwanted socket mount).
+  test-ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    image: office-convert-ui:dev
+    ports: !override
+      - "127.0.0.1:8501:3000"
+    volumes: !override []   # Next UI reads /v1/stats over HTTP; no docker.sock
+    environment: !override
+      API_URL: "http://office-convert:8080"
+      NEXT_PUBLIC_DASHBOARD_URL: "http://localhost:8080/v1/dashboard"
+      NEXT_PUBLIC_S3_ENABLED: "${OFFICE_CONVERT_S3_ENABLED:-true}"
+      PORT: "3000"
+    depends_on:
+      - office-convert
+
   # Gotenberg (Chromium) — the JS-capable HTML→PDF engine behind
   # POST /v1/convert/html/gotenberg. Separate container by necessity: Chromium
   # (~300 MB) cannot live in the single-binary Go image. Internal-only (no host
