@@ -25,6 +25,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/opus2/office-convert-orchestrator/internal/types"
@@ -38,30 +39,47 @@ const (
 	asposeNumericDateLen = 8
 )
 
-// Manager parses a .lic XML file for expiry. Stateless beyond holding the path
-// and a memoized expiry. Not safe for concurrent Refresh; reads are cheap and
-// callers (health endpoint) hold it for the process lifetime.
+// Manager parses a .lic XML file for expiry. It caches the parsed expiry but
+// AUTO-REFRESHES when the file changes on disk (mtime), so an operator can renew
+// the license in place with no container restart (matches the documented
+// behavior + the Python original). Concurrency-safe via mu.
 type Manager struct {
-	path   string
-	read   bool
-	expiry time.Time // zero == no expiry field (permanent)
-	hasExp bool
+	mu      sync.Mutex
+	path    string
+	read    bool
+	modTime time.Time // mtime of the file when last parsed
+	expiry  time.Time // zero == no expiry field (permanent)
+	hasExp  bool
 }
 
 // NewManager constructs a Manager for the given license path.
 func NewManager(path string) *Manager { return &Manager{path: path} }
 
 // Refresh forces a re-read of the license file on the next query.
-func (m *Manager) Refresh() { m.read = false }
+func (m *Manager) Refresh() {
+	m.mu.Lock()
+	m.read = false
+	m.mu.Unlock()
+}
 
-// ExpiryDate returns the binding (earliest) expiry date and whether one was present.
+// ExpiryDate returns the binding (earliest) expiry date and whether one was
+// present. It re-parses the file when it hasn't been read yet OR the file's
+// mtime changed since the last parse (license renewed in place).
 func (m *Manager) ExpiryDate() (time.Time, bool, error) {
-	if !m.read {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	info, statErr := os.Stat(m.path)
+	changed := statErr == nil && !info.ModTime().Equal(m.modTime)
+	if !m.read || changed {
 		exp, has, err := parseExpiry(m.path)
 		if err != nil {
 			return time.Time{}, false, err
 		}
 		m.expiry, m.hasExp, m.read = exp, has, true
+		if statErr == nil {
+			m.modTime = info.ModTime()
+		}
 	}
 	return m.expiry, m.hasExp, nil
 }
