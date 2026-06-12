@@ -48,6 +48,7 @@ var libreofficeFormats = map[types.DispatchFormat]bool{
 var extHintFormats = map[string]bool{
 	"odt": true, "ods": true, "odp": true, "odg": true, "rtf": true,
 	"jpg": true, "jpeg": true, "tif": true, "tiff": true,
+	"html": true, "htm": true,
 }
 
 // Server holds the wired dependencies. One per process.
@@ -85,6 +86,8 @@ func (srv *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(srv.requestIDMiddleware)
 	r.Post("/v1/convert", srv.convert)
+	r.Post("/v1/convert/html/gotenberg", srv.convertHTMLGotenberg)
+	r.Post("/v1/convert/html/aspose", srv.convertHTMLAspose)
 	r.Get("/health", srv.health)
 	r.Get("/", srv.landing)
 	r.Get("/v1/jobs/{request_id}/heartbeats", srv.getHeartbeats)
@@ -252,6 +255,7 @@ func (srv *Server) conversionsStats(w http.ResponseWriter, r *http.Request) {
 	snap := srv.recent.Snapshot()
 	totals := map[string]int{"count": 0, "successes": 0, "failures": 0}
 	perFmtTimes := map[string][]int{}
+	perEngineTimes := map[string][]int{} // HTML conversions, keyed by engine
 	for _, rec := range snap {
 		totals["count"]++
 		if rec.Status == "failed" {
@@ -263,36 +267,51 @@ func (srv *Server) conversionsStats(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		perFmtTimes[rec.Format] = append(perFmtTimes[rec.Format], rec.DurationMS)
+		if rec.Engine != "" {
+			perEngineTimes[rec.Engine] = append(perEngineTimes[rec.Engine], rec.DurationMS)
+		}
 	}
 	perFormat := map[string]map[string]int{}
 	for fmt, times := range perFmtTimes {
-		sort.Ints(times)
-		sum := 0
-		for _, t := range times {
-			sum += t
-		}
-		n := len(times)
-		avg := 0
-		if n > 0 {
-			avg = sum / n
-		}
-		p95idx := 0
-		if n > 0 {
-			p95idx = int(math.Ceil(0.95*float64(n))) - 1
-			if p95idx < 0 {
-				p95idx = 0
-			}
-			if p95idx > n-1 {
-				p95idx = n - 1
-			}
-		}
-		p95 := 0
-		if n > 0 {
-			p95 = times[p95idx]
-		}
-		perFormat[fmt] = map[string]int{"count": n, "avg_ms": avg, "p95_ms": p95}
+		perFormat[fmt] = summarizeTimes(times)
 	}
-	writeJSON(w, 200, map[string]any{"per_format": perFormat, "totals": totals})
+	body := map[string]any{"per_format": perFormat, "totals": totals}
+	// Additive (FR-4): present only once an HTML conversion has been recorded,
+	// so the payload stays parity-identical to Python until the feature is used.
+	if len(perEngineTimes) > 0 {
+		perEngine := map[string]map[string]int{}
+		for engine, times := range perEngineTimes {
+			perEngine[engine] = summarizeTimes(times)
+		}
+		body["per_engine_html"] = perEngine
+	}
+	writeJSON(w, 200, body)
+}
+
+// summarizeTimes computes the count/avg/p95 stats triple over durations (ms).
+func summarizeTimes(times []int) map[string]int {
+	sort.Ints(times)
+	sum := 0
+	for _, t := range times {
+		sum += t
+	}
+	n := len(times)
+	avg := 0
+	if n > 0 {
+		avg = sum / n
+	}
+	p95 := 0
+	if n > 0 {
+		p95idx := int(math.Ceil(0.95*float64(n))) - 1
+		if p95idx < 0 {
+			p95idx = 0
+		}
+		if p95idx > n-1 {
+			p95idx = n - 1
+		}
+		p95 = times[p95idx]
+	}
+	return map[string]int{"count": n, "avg_ms": avg, "p95_ms": p95}
 }
 
 func (srv *Server) presign(w http.ResponseWriter, r *http.Request) {
@@ -338,12 +357,18 @@ func writeHTML(w http.ResponseWriter, html string) {
 }
 
 func recordToDict(r obs.ConversionRecord) map[string]any {
-	return map[string]any{
+	d := map[string]any{
 		"request_id": r.RequestID, "completion_ts": r.CompletionTS, "source": r.Source,
 		"input_filename": r.InputFilename, "format": r.Format, "page_count": r.PageCount,
 		"duration_ms": r.DurationMS, "status": r.Status, "error_code": r.ErrorCode,
 		"output_s3_uri": r.OutputS3URI, "output_size_bytes": r.OutputSizeBytes,
 	}
+	// Additive: only HTML conversions carry an engine; omitting the key for
+	// legacy records keeps the wire shape parity-identical to Python.
+	if r.Engine != "" {
+		d["engine"] = r.Engine
+	}
+	return d
 }
 
 func mergeMap(a, b map[string]any) map[string]any {
@@ -388,6 +413,7 @@ type dispatchInfo struct {
 	source        string
 	inputFilename string
 	format        string
+	engine        string // "gotenberg" | "aspose" for HTML conversions; "" otherwise
 	s3OutBucket   string
 	s3OutKey      string
 	hasS3Out      bool
@@ -404,6 +430,7 @@ func (srv *Server) recordConversion(d dispatchInfo, status, errorCode string, ou
 		CompletionTS: float64(time.Now().UnixNano()) / 1e9,
 		Source:       d.source,
 		Format:       d.format,
+		Engine:       d.engine,
 		DurationMS:   int(time.Since(d.t0).Milliseconds()),
 		Status:       status,
 	}

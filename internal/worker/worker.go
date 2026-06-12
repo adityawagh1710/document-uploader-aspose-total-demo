@@ -84,11 +84,41 @@ func RunWorker(
 	requestID string,
 	chunk *types.Chunk,
 ) (stdout []byte, stderr []byte, err error) {
-	bin := workerBinary(s, format)
+	return runWorkerBin(ctx, s, mode, inputPath, workerBinary(s, format), string(format), outputPath, pageRange, requestID, chunk)
+}
+
+// RenderHTMLOneShot renders an HTML input to PDF via the worker-docx binary
+// (Aspose.Words loads HTML natively; the BR-4 resource deny callback and the
+// BR-7 page geometry live in the worker). Full-document render: the worker
+// deliberately ignores the page range for format=html, so a 1-1 placeholder
+// satisfies the argv contract.
+func RenderHTMLOneShot(ctx context.Context, s *config.Settings, inputPath, outputPath, requestID string) error {
+	pr := [2]int{1, 1}
+	_, _, err := runWorkerBin(ctx, s, "render", inputPath,
+		workerBinary(s, types.FormatDOCX), "html", outputPath, &pr, requestID, nil)
+	return err
+}
+
+// runWorkerBin is the shared one-shot subprocess core: bin is the worker
+// binary path, formatArg the --format value (they differ for HTML, which runs
+// on the docx binary).
+func runWorkerBin(
+	ctx context.Context,
+	s *config.Settings,
+	mode string,
+	inputPath string,
+	bin string,
+	formatArg string,
+	outputPath string,
+	pageRange *[2]int,
+	requestID string,
+	chunk *types.Chunk,
+) (stdout []byte, stderr []byte, err error) {
+	format := types.FormatName(formatArg) // label for logging/diagnostics only
 	rest := []string{
 		"--mode", mode,
 		"--input", inputPath,
-		"--format", string(format),
+		"--format", formatArg,
 		"--license-path", s.LicensePath,
 	}
 	if mode == "render" {

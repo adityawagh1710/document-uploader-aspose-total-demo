@@ -52,6 +52,11 @@ type Settings struct {
 	RateLimitMaxKeys  int
 	RateLimitTrustXFF bool
 
+	// HTML conversion (dual-engine endpoints).
+	GotenbergURL            string // "" == engine not configured
+	GotenbergTimeoutSeconds int
+	HTMLMaxBytes            int64
+
 	// S3 source/sink integration.
 	S3Enabled                bool
 	S3Region                 string // "" == None
@@ -140,6 +145,13 @@ func Load() (*Settings, error) {
 	s.RateLimitMaxKeys, err = envInt("RATE_LIMIT_MAX_KEYS", 10000, 10, 1000000)
 	fail("RATE_LIMIT_MAX_KEYS", err)
 	s.RateLimitTrustXFF = envBool("RATE_LIMIT_TRUST_XFF", true)
+
+	s.GotenbergURL = envStr("GOTENBERG_URL", "http://gotenberg:3000")
+	s.GotenbergTimeoutSeconds, err = envInt("GOTENBERG_TIMEOUT_SECONDS", 120, 31, 600)
+	fail("GOTENBERG_TIMEOUT_SECONDS", err)
+	const tenMiB = 10 * mib
+	s.HTMLMaxBytes, err = envInt64("HTML_MAX_BYTES", tenMiB, 1024, 100*mib)
+	fail("HTML_MAX_BYTES", err)
 
 	s.S3Enabled = envBool("S3_ENABLED", false)
 	s.S3Region = envStr("S3_REGION", "")
