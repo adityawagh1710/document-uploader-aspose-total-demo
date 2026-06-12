@@ -34,7 +34,29 @@ Prereqs present in this environment: `vendor/aspose/` (5 product trees) + `Aspos
 - `npm run lint` (ESLint via `next lint`): **0 errors** (only a `next lint` deprecation notice — removed in Next.js 16; migrate to ESLint CLI before that bump).
 - `npm run typecheck` (`tsc --noEmit`): **0 errors**.
 - `npm run build`: **standalone output OK**. `/` is `ƒ` (dynamic, server-rendered per request — correct for runtime env reads), **213 kB First Load JS** (within the 300 kB app-page budget).
-- vitest component tests (ComparePanel, HistoryPanel) present (`npm --prefix ui test`).
+- vitest component tests (ComparePanel, HistoryPanel): **9/9 pass** (`npm --prefix ui test`; now run in CI's `ui-test` job too).
+
+### Browser E2E (Playwright) — added 2026-06-12
+`@playwright/test` + `ui/e2e/` (config runs the production standalone server with
+`/api/**` stubbed; CI-friendly, no backend needed). Live specs (`E2E_LIVE=1`) hit
+the real `:8501` stack.
+- **Mocked suite: 12/12 pass** — dashboard (5 sections, health tiles, iframe, CSP
+  header), HTML compare (run-gating, engine independence with aspose 503,
+  client-side waitDelay bound, per-engine stats), history (engine chips, failed
+  error codes, stale-cursor reset, filters).
+- **Live suite: 2/2 pass** against the rebuilt stack — UI hydrates + health tiles
+  READY; **real browser-driven Gotenberg HTML→PDF via the `/api` proxy**.
+- CI: new `ui-e2e` job (installs Chromium, runs the mocked suite, uploads the report).
+
+### 🐞 Production bug found AND fixed by the E2E (commit `afaaf19`)
+The E2E surfaced a real shipped bug the curl-only smoke could not: the CSP was
+`script-src 'self'` (static, in `next.config.ts`). Next.js App Router streams its
+hydration/RSC payload via **inline `<script>` tags in production**, so that policy
+**blocked Next's own bootstrap → the UI rendered SSR HTML but never hydrated**
+(dead panels, no SWR, no `/api` calls) for every real browser user. Fixed with a
+**per-request nonce CSP in `ui/middleware.ts`** (`'self' 'nonce-…' 'strict-dynamic'`),
+matching the project web-security rules; verified live (the rebuilt container serves
+the nonce CSP and the browser E2E now hydrates + converts).
 
 ---
 
