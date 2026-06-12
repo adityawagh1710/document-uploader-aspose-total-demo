@@ -60,7 +60,20 @@ export async function getJSON<T>(path: string): Promise<T> {
 // SWR fetcher — thrown ApiError surfaces in the hook's `error` slot.
 export const fetcher = <T>(path: string): Promise<T> => getJSON<T>(path);
 
-export const getHealth = () => getJSON<Health>('/health');
+// Health is special: /health ALWAYS returns a Health JSON — 200 when ready,
+// 503 when not-ready (e.g. license_expired). Both are real data the UI must
+// render (NOT READY + problems). Only a true network failure (fetch throws) or
+// an unexpected status is a genuine "API DOWN". Using the generic getJSON here
+// would throw on the 503 and mislabel a live-but-not-ready API as down.
+export async function fetchHealth(): Promise<Health> {
+  const res = await fetch(`${API}/health`, { cache: 'no-store' });
+  if (res.status === 200 || res.status === 503) {
+    return (await res.json()) as Health;
+  }
+  throw new ApiError(res.status, await parseDiagnostic(res), `HTTP ${res.status}`);
+}
+
+export const getHealth = fetchHealth;
 export const getContainerStats = () => getJSON<ContainerStats>('/v1/stats');
 export const getWorkers = () => getJSON<{ workers: WorkerProc[] }>('/v1/workers');
 export const getConversionsStats = () => getJSON<ConversionsStats>('/v1/conversions/stats');

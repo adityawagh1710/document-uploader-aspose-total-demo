@@ -20,6 +20,8 @@ export interface MockOptions {
   // Make the Aspose HTML engine succeed too (default: 503 license_expired,
   // mirroring the real expired-license behavior).
   asposeSucceeds?: boolean;
+  // Return /health as 503 not-ready (expired license) instead of 200 ready.
+  healthNotReady?: boolean;
 }
 
 export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void> {
@@ -52,7 +54,11 @@ export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void>
     }
 
     // ---- GET telemetry / polling endpoints ----
-    if (path === '/health') return json(route, fx.health);
+    if (path === '/health') {
+      return opts.healthNotReady
+        ? json(route, fx.expiredHealth, 503)
+        : json(route, fx.health);
+    }
     if (path === '/v1/stats') return json(route, fx.containerStats);
     if (path === '/v1/workers') return json(route, fx.workers);
     if (path === '/v1/conversions/stats') return json(route, fx.conversionsStats);
