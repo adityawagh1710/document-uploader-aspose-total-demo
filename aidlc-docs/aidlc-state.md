@@ -89,11 +89,29 @@
 - **Functional Design (python-retirement-nextjs-ui)**: COMPLETE 2026-06-12 — 4 artifacts at
   `construction/python-retirement-nextjs-ui/functional-design/` + plan with defaults D1–D7.
   **APPROVED 2026-06-12** ("Approve & Continue").
-- **Code Generation (python-retirement-nextjs-ui)**: Part 1 planning COMPLETE 2026-06-12 —
-  plan at `construction/plans/python-retirement-nextjs-ui-code-generation-plan.md`.
-  6 modules (Mod 0: rollback tag → Mod 1: ui/ Next.js app 11 steps → Mod 2: compose swap →
-  Mod 3: Python deletion sweep → Mod 4: consolidation → Mod 5: CI/docs → Mod 6: verify).
-  **Awaiting approval before Part 2 (Generation)**.
+- **Code Generation (python-retirement-nextjs-ui)**: **COMPLETE 2026-06-12** — Part 1 plan
+  approved ("Approve & Generate"); Part 2 executed all 6 modules on branch
+  `feat/html-conversion`. Plan + checkboxes:
+  `construction/plans/python-retirement-nextjs-ui-code-generation-plan.md`.
+  Summary: `construction/python-retirement-nextjs-ui/code/code-summary.md`. Commits:
+  - Mod 0–2: Next.js `ui/` app (11 steps) + compose UI service added (additive; pre-deletion).
+  - Mod 3 (`717fb4a`): deleted `office_convert/`, `office_convert_ui/`, `tests/`,
+    `pyproject.toml`, `ruff.toml`, 3 Python Dockerfiles, `scripts/capture_golden.py`;
+    moved `tests/corpus/` → `testdata/corpus/`. Rollback tag `last-python-backend` @ `a00df4d`.
+  - Mod 4 (`27dae67`): `go.Dockerfile` → `Dockerfile`; merged `compose.go.yaml` into
+    `compose.yaml` (Go healthcheck + Gotenberg + Next.js `ui` service); rewrote Makefile
+    (dropped all Python targets; added `ui-install/ui-dev/ui-build/ui-lint`).
+  - Mod 5 (`6235f68`): CI `qa` job → `ui-test` job; dependabot pip → npm `/ui`; README
+    rewritten for Go + C++ + TypeScript (and corrected stale Aspose-tarball refs → `vendor/aspose/`).
+  - Mod 6 verification ALL GREEN: compose config OK; `go test ./internal/... ./cmd/...` green
+    + golden 14/14; UI lint/typecheck/build clean (`/` dynamic, 213 kB First Load JS);
+    both images built (`office-convert:go` 5.17 GB, `office-convert-ui:dev` 239 MB);
+    zero `.py` in our codebase (only vendored Aspose Qt-Creator debug helpers remain).
+  - **Safety invariant held at every step**: Go golden gate 14/14 never went red.
+  - **Open**: PR for `feat/html-conversion` not yet opened (html feature + retirement +
+    Next.js UI = single PR per Q4-override-to-B). Orphaned `office-convert:dev`/`:test`
+    Python images left in place (no blanket prune — sibling project shares the namespace).
+    Aspose-side HTML acceptance still blocked on the expired real license (pre-existing).
 - **Research basis**: project memory `project-html-conversion-feature.md` + audit entries
   2026-06-12; integration-point map from code-explorer trace.
 
