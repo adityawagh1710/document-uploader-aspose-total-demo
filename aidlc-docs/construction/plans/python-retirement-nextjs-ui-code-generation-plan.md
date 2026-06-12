@@ -148,27 +148,26 @@ Delete in one commit (all or nothing):
 ## Module 4: Consolidation (BR-R2)
 
 ### Step 4.1 — Rename `go.Dockerfile` → `Dockerfile`
-- [ ] `mv go.Dockerfile Dockerfile` — now the ONLY backend Dockerfile
-- [ ] Update Makefile `build-go` → `build` target to use default `Dockerfile` (drop `-f go.Dockerfile`)
-- [ ] Update `.dockerignore` if it references `go.Dockerfile`
+- [x] `mv go.Dockerfile Dockerfile` — now the ONLY backend Dockerfile
+- [x] Update Makefile `build-go` → `build` target to use default `Dockerfile` (drop `-f go.Dockerfile`)
+- [x] Update `.dockerignore` if it references `go.Dockerfile`
 
 ### Step 4.2 — Merge compose files into single `compose.yaml`
 Merge `compose.go.yaml` content INTO `compose.yaml`:
-- [ ] `office-convert` service: use new `Dockerfile` (default); add `OFFICE_CONVERT_GOTENBERG_URL` env; override healthcheck to `CMD /usr/local/bin/office-convert-orchestrator healthcheck`; add `depends_on: gotenberg: condition: service_started`; remove Python `CMD` healthcheck
-- [ ] Add `gotenberg` service (from compose.go.yaml) with full `--chromium-deny-list` command
-- [ ] `test-ui` → `ui` service: `ui/Dockerfile` image; port `127.0.0.1:8501:3000`; Next.js env vars
-- [ ] Delete `compose.go.yaml`
+- [x] `office-convert` service: use new `Dockerfile` (default); add `OFFICE_CONVERT_GOTENBERG_URL` env; override healthcheck to `CMD /usr/local/bin/office-convert-orchestrator healthcheck`; add `depends_on: gotenberg: condition: service_started`; remove Python `CMD` healthcheck
+- [x] Add `gotenberg` service (from compose.go.yaml) with full `--chromium-deny-list` command
+- [x] `test-ui` → `ui` service: `ui/Dockerfile` image; port `127.0.0.1:8501:3000`; Next.js env vars
+- [x] Delete `compose.go.yaml`
 
 ### Step 4.3 — Canonicalize Makefile targets
-- [ ] Rename `build-go` → `build`, `test-go` → `test-go` (keep for compatibility), `up-go` → `up`, `down-go` → `down`, `logs-go` → `logs`
-- [ ] Remove `COMPOSE_GO` variable (now just `docker compose`)
-- [ ] Remove Python-only targets: `lint`, `format-check`, `format`, `typecheck`, `qa`, `update-test-badge`, `build-test`, `test`, `test-unit`, `test-property`, `test-integration`, `test-coverage`, `corpus`, `test-e2e`
-- [ ] Rename `test-go` to standalone `test` target (runs Go suite)
-- [ ] Add `ui-install`: `npm --prefix ui ci`
-- [ ] Add `ui-dev`: `npm --prefix ui run dev`
-- [ ] Add `ui-build`: `npm --prefix ui run build`
-- [ ] Add `ui-lint`: `npm --prefix ui run lint`
-- [ ] Update `help` header and `BUILD/TEST/RUN` references
+- [x] Rename `build-go` → `build`, keep `test-go`, `up-go` → `up`, `down-go` → `down`, `logs-go` → `logs`
+- [x] Remove `COMPOSE_GO` variable (now just `docker compose`)
+- [x] Remove Python-only targets: `lint`, `format-check`, `format`, `typecheck`, `qa`, `update-test-badge`, `build-test`, `test`, `test-unit`, `test-property`, `test-integration`, `test-coverage`, `corpus`, `test-e2e`
+- [x] Add `ui-install`: `npm --prefix ui ci`
+- [x] Add `ui-dev`: `npm --prefix ui run dev`
+- [x] Add `ui-build`: `npm --prefix ui run build`
+- [x] Add `ui-lint`: `npm --prefix ui run lint`
+- [x] Update `help` header and `BUILD/TEST/RUN` references
 
 ---
 

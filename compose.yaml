@@ -1,137 +1,65 @@
 # compose.yaml — Docker Compose configuration for office-convert.
 #
-# Brings up the production service with the recommended security posture:
-# non-root, read-only root filesystem, tmpfs scratch, dropped capabilities,
-# localhost-only port binding.
+# Brings up the Go orchestrator + Next.js UI + Gotenberg + LocalStack.
 #
 # Quick start:
-#   1. Place Aspose SDK tarball next to this file:
-#        cp /path/to/Aspose.Total.for.C++_*.tar.gz aspose-total-cpp.tar.gz
-#   2. Place your Aspose license next to this file:
+#   1. Place your Aspose license next to this file:
 #        Aspose.TotalforC++.lic
+#   2. Populate vendor/aspose/ (see README.md "SDK acquisition")
 #   3. docker compose up -d --build
 #   4. curl http://localhost:8080/health
-#
-# To run tests via Compose:
-#   docker compose --profile test run --rm tests
-#
-# All targets in the Makefile also work — they delegate to compose where
-# appropriate. Compose is canonical; Make is convenience.
+#      open http://localhost:8501
 
 # Pin the project name so it doesn't change if this directory is renamed.
-# Container names (set via container_name:) are global to the daemon; without
-# a pinned project name, renaming the host dir causes "container already in
-# use" collisions on the next `docker compose up` (see 2026-05-28 incident).
 name: office-convert
 
 services:
 
   # ============================================================
-  # Production service — the office-convert HTTP server.
+  # Production service — Go orchestrator HTTP server.
   # ============================================================
   office-convert:
     container_name: office-convert
     build:
       context: .
       dockerfile: Dockerfile
-    image: office-convert:dev
+    image: office-convert:go
     ports:
       # localhost-only by default. Change to "8080:8080" to expose on all
       # interfaces (NOT recommended — there's no application-layer auth).
       - "127.0.0.1:8080:8080"
     volumes:
-      # The Aspose license is bind-mounted from the host, read-only. The
-      # file MUST exist before `compose up`; compose will surface a clear
-      # error if it doesn't.
+      # The Aspose license is bind-mounted from the host, read-only.
       - ./Aspose.TotalforC++.lic:/aspose/license.lic:ro
-      # Persistent cache directory. Survives container recreates (named
-      # volume managed by Docker). Cache layout: <aspose_version>/{final,chunks}/
-      # so version bumps invalidate automatically.
+      # Persistent cache directory. Survives container recreates.
       - office-convert-cache:/cache
     environment:
       OFFICE_CONVERT_MAX_JOBS: "2"
       OFFICE_CONVERT_PARALLEL: "4"
-      # human format is the default — step-by-step events with k=v fields,
-      # designed for `docker compose logs -f` / `make logs`. Switch to
-      # "json" for log-aggregation pipelines (Loki, CloudWatch, etc.).
       OFFICE_CONVERT_LOG_FORMAT: "human"
       OFFICE_CONVERT_LOG_LEVEL: "info"
-      # Bumped from 600s to 1800s on 2026-05-13 for the XLSX page-range
-      # work: probe of a 1M-row workbook does a full Aspose pagination
-      # pass before the orchestrator can plan chunks, and each render
-      # chunk pays a Workbook.Load + pagination cost of its own. 600s
-      # was tight enough that even the probe alone risked timing out.
-      # If this needs another bump, the structural fix is to teach the
-      # worker to share pagination state across chunks of the same job.
       OFFICE_CONVERT_CHUNK_TIMEOUT_SECONDS: "1800"
       OFFICE_CONVERT_MAX_INPUT_BYTES: "1073741824"
-      # Shell-overridable knobs for the heartbeat dashboard / pool-mode
-      # exercising. Defaults match production. Set in the shell before
-      # `docker compose up` to force-trigger pool mode on small files or
-      # to speed up the UI heartbeat cadence for visual smoke tests.
-      #
-      # MAX_PAGES_PER_CHUNK is an emergency operator override on top of the
-      # adaptive algorithm; the PRIMARY per-format ceilings live in
-      # chunk_planner.MAX_PAGES_CEILING (DOCX/PPTX=5000, XLSX/PDF=2000).
-      # Default 10000 is well above every per-format ceiling so this knob
-      # never engages in production. Set lower (e.g., 200) to force
-      # smaller chunks for OOM-subdivision testing.
       OFFICE_CONVERT_MAX_PAGES_PER_CHUNK: "${OFFICE_CONVERT_MAX_PAGES_PER_CHUNK:-10000}"
       OFFICE_CONVERT_HEARTBEAT_MS: "${OFFICE_CONVERT_HEARTBEAT_MS:-2000}"
-      # Default 1 (was 2) — force pool mode on every conversion so the
-      # dashboard's heartbeat / timing / Gantt panels populate even for
-      # single-chunk small files. Pool mode adds ~1-2s fork+load overhead;
-      # acceptable for dev. Override to 2+ if you want one-shot mode back.
       OFFICE_CONVERT_POOL_MIN_CHUNKS: "${OFFICE_CONVERT_POOL_MIN_CHUNKS:-1}"
       OFFICE_CONVERT_FORK_AFTER_LOAD: "${OFFICE_CONVERT_FORK_AFTER_LOAD:-1}"
-      # Raised 2 → 4 on 2026-05-20 to match OFFICE_CONVERT_PARALLEL=4 for
-      # XLSX (was capped at 2 for OOM safety on large workbooks). Local
-      # compose has 6 GiB swap cushion, so even multi-GB workbooks page to
-      # NVMe instead of OOM-killing. Big files (>50 MB workbooks) will be
-      # slower under 4 independent loads but won't die. EKS chart keeps
-      # the conservative 2 because dev05 has no swap (TODO: implement
-      # size-aware cap in orchestrator per the config.py comment).
       OFFICE_CONVERT_XLSX_MAX_POOL_SIZE: "${OFFICE_CONVERT_XLSX_MAX_POOL_SIZE:-4}"
-      # Worker per-process RLIMIT_AS ceiling. Sized to match the container's
-      # memswap_limit (6g = 6442450944 bytes) so the virtual-address cap
-      # does NOT block swap usage. If RLIMIT_AS < memswap_limit, the worker
-      # malloc()s fail before the kernel ever pages out — defeating the
-      # point of the swap cushion.
-      # History: bumped to 12 GiB on 2026-05-14 when the old N-independent-
-      # workers pool model loaded the same 100 MB DOCX 4× in parallel,
-      # pushing peak RAM to 6-8 GiB. Reverted to 6 GiB on 2026-05-15 once
-      # fork-after-load (default ON below) reduced the memory profile back
-      # to ~1× via copy-on-write — peak now stays comfortably under 4 GiB.
       OFFICE_CONVERT_WORKER_RAM_BYTES: "6442450944"
-      # Content-addressable cache. Layered: final-PDF cache for identical
-      # source files; per-chunk cache for repeated identical page ranges.
-      # Both keyed under <aspose_version>/ so version upgrades invalidate
-      # automatically.
       OFFICE_CONVERT_CACHE_DIR: "/cache"
-      # Fontconfig needs a writable cache dir for font resolution. With
-      # read_only: true, we point HOME to /tmp (which is a tmpfs) so
-      # ~/.cache/fontconfig resolves to a writable location.
       HOME: "/tmp"
       # ---- S3 source/sink integration (LocalStack-backed for local dev) ----
-      # boto3 routes to LocalStack via AWS_ENDPOINT_URL_S3; on EKS the Helm
-      # chart leaves that unset so boto3 talks to real AWS via IRSA. Flip
-      # OFFICE_CONVERT_S3_ENABLED=false to disable the feature locally
-      # (localstack still starts, but s3_* fields/endpoints return 400).
       OFFICE_CONVERT_S3_ENABLED: "${OFFICE_CONVERT_S3_ENABLED:-true}"
       OFFICE_CONVERT_S3_INPUT_BUCKETS_ALLOWLIST: "office-convert-in"
       OFFICE_CONVERT_S3_OUTPUT_BUCKETS_ALLOWLIST: "office-convert-out"
       OFFICE_CONVERT_S3_DEFAULT_OUTPUT_BUCKET: "office-convert-out"
       AWS_ENDPOINT_URL_S3: "http://localstack:4566"
-      # Presigned URLs are signed against the HOST-published port (4567) so the
-      # browser following a "Download from S3" link can reach LocalStack. The
-      # server still GETs/PUTs in-network via AWS_ENDPOINT_URL_S3 above.
-      # Mirrors classification-service's S3_PUBLIC_ENDPOINT.
       OFFICE_CONVERT_S3_PUBLIC_ENDPOINT: "http://localhost:4567"
       AWS_REGION: "us-east-1"
       AWS_ACCESS_KEY_ID: "test"
       AWS_SECRET_ACCESS_KEY: "test"
-    # Defense-in-depth runtime posture (matches the recommended
-    # operator flags from the README).
+      # HTML dual-engine feature: Chromium engine URL (Gotenberg).
+      OFFICE_CONVERT_GOTENBERG_URL: "http://gotenberg:3000"
     cap_drop:
       - ALL
     read_only: true
@@ -139,66 +67,81 @@ services:
       - /tmp
       - /var/run
       - /var/cache/fontconfig
-    # Healthcheck uses Python's urllib (already in the runtime image)
-    # because the slim base image doesn't ship curl. Tests:
-    #   /health returns 200 → healthy
-    #   anything else → unhealthy after `retries` failures
+    # Go binary probes its own /health endpoint directly.
     healthcheck:
-      test:
-        - "CMD"
-        - "python"
-        - "-c"
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=5).status==200 else 1)"
+      test: ["CMD", "/usr/local/bin/office-convert-orchestrator", "healthcheck"]
       interval: 10s
       timeout: 5s
       start_period: 30s
       retries: 3
     restart: unless-stopped
-    # Resource limits — ENFORCED by the container runtime via cgroups.
-    # `mem_limit` caps physical RAM; `memswap_limit` is the TOTAL of RAM
-    # + swap (so `memswap_limit - mem_limit` = 2 GiB swap budget). When
-    # RAM pressure hits, the kernel pages out to the host's swap device
-    # (NVMe) instead of OOM-killing the worker. `mem_swappiness=60` is
-    # the kernel default; lower = avoid swap (sticks to RAM longer,
-    # OOMs sooner), higher = swap aggressively.
-    #
-    # NOTE: requires host swap configured and kernel swap accounting
-    # enabled (default on cgroupv2 kernels ≥ 5.x).
-    # Reverted to 4g + 2g swap on 2026-05-15 (was 8g + 4g swap from 2026-05-14)
-    # after fork-after-load became the default pool model. Fork uses ~1× the
-    # memory of the old N-independent-workers pool because children inherit
-    # the loaded Document via copy-on-write — verified peak ≤ 3 GB on the
-    # 100 MB DOCX stress files. If a future workload class pushes us back
-    # over 4 GB, raise both lines together (memswap_limit must stay ≥
-    # mem_limit, and OFFICE_CONVERT_WORKER_RAM_BYTES above must match).
     mem_limit: 4g
     memswap_limit: 6g
     mem_swappiness: 60
-    # cpus: 4
     depends_on:
       localstack:
         condition: service_healthy
+      gotenberg:
+        condition: service_started
 
   # ============================================================
-  # LocalStack — local AWS S3 emulation for the S3 source/sink
-  # integration. Buckets are created by the init hook on ready.
-  # Open:  awslocal s3 ls   (inside the container)
+  # Gotenberg — Chromium-based HTML→PDF engine.
+  # POST /v1/convert/html/gotenberg routes here.
+  # Internal-only (no host port); reached as http://gotenberg:3000.
+  # ============================================================
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: office-convert-gotenberg
+    restart: unless-stopped
+    # BR-4 deny policy. The regex matches the ChromiumDenyListRegex constant
+    # in internal/netpolicy/netpolicy.go — keep the two literally in sync.
+    command:
+      - "gotenberg"
+      - "--chromium-deny-list=^https?://(?:[^@/]*@)?(?:localhost|[^/:.]+|[^/:]*\\.localhost|127\\.[0-9.]+|0\\.0\\.0\\.0|10\\.[0-9.]+|192\\.168\\.[0-9.]+|172\\.(?:1[6-9]|2[0-9]|3[01])\\.[0-9.]+|169\\.254\\.[0-9.]+|\\[::1\\]|\\[[fF][cdCD][0-9a-fA-F]{2}:[^\\]]*\\]|\\[[fF][eE][89abAB][0-9a-fA-F]:[^\\]]*\\])(?::[0-9]+)?(?:[/?#]|$)"
+      # Above the orchestrator's 120s client timeout so the client decides
+      # when a conversion is dead (clean error mapping).
+      - "--api-timeout=130s"
+      - "--chromium-max-queue-size=10"
+    mem_limit: 768m
+    security_opt:
+      - no-new-privileges:true
+
+  # ============================================================
+  # Next.js UI — operator dashboard.
+  # Open: http://localhost:8501
+  # API calls are proxied server-side via /api/* rewrites (BR-UI-1).
+  # ============================================================
+  ui:
+    container_name: office-convert-ui
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    image: office-convert-ui:dev
+    ports:
+      - "127.0.0.1:8501:3000"
+    environment:
+      API_URL: "http://office-convert:8080"
+      NEXT_PUBLIC_DASHBOARD_URL: "http://localhost:8080/v1/dashboard"
+      NEXT_PUBLIC_S3_ENABLED: "${OFFICE_CONVERT_S3_ENABLED:-true}"
+      PORT: "3000"
+    depends_on:
+      - office-convert
+    restart: unless-stopped
+
+  # ============================================================
+  # LocalStack — local AWS S3 emulation.
   # ============================================================
   localstack:
     container_name: office-convert-localstack
-    image: localstack/localstack:3.8        # pin major; "latest" drifts
+    image: localstack/localstack:3.8
     ports:
-      # Host port 4567 (not the LocalStack-default 4566) so this stack can
-      # coexist with another project's localstack already holding 4566 on the
-      # same machine. The API container still reaches it at localstack:4566
-      # over the compose network — only the host-side publish changed.
+      # Host port 4567 (not 4566) to coexist with sibling project localstack.
       - "127.0.0.1:4567:4566"
     environment:
-      SERVICES: "s3"                          # S3-only for v1
+      SERVICES: "s3"
       DEBUG: "0"
-      PERSISTENCE: "0"                        # ephemeral; init hook recreates buckets
+      PERSISTENCE: "0"
     volumes:
-      # Init hook runs once S3 is ready — creates office-convert-{in,out}.
       - ./deploy/localstack/init-buckets.sh:/etc/localstack/init/ready.d/init-buckets.sh:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
@@ -207,79 +150,6 @@ services:
       retries: 12
       start_period: 10s
     restart: unless-stopped
-
-  # ============================================================
-  # Test runner — opt-in profile. Not started by default.
-  # Use: docker compose --profile test run --rm tests
-  #      docker compose --profile test run --rm tests pytest tests/unit -v
-  # ============================================================
-  tests:
-    profiles: [test]
-    container_name: office-convert-tests
-    build:
-      context: .
-      dockerfile: Dockerfile.test
-    image: office-convert:test
-    # Default command runs the in-process suite. Override on the
-    # command line:
-    #   docker compose --profile test run --rm tests pytest tests/property
-    #   docker compose --profile test run --rm tests ruff check .
-    #   docker compose --profile test run --rm tests mypy office_convert
-    command:
-      - pytest
-      - tests/unit
-      - tests/property
-      - tests/integration
-      - -v
-    # No volumes / ports / env vars needed — the test image is
-    # self-contained (Python + dev deps + qpdf; no Aspose SDK).
-
-  # ============================================================
-  # Test UI — Streamlit dashboard for large file testing.
-  # Shows live worker count, CPU usage, no timeout/size limits.
-  # Starts with: docker compose up -d
-  # Open:  http://localhost:8501
-  # ============================================================
-  test-ui:
-    container_name: office-convert-ui
-    build:
-      context: .
-      dockerfile: Dockerfile.ui
-    # Match the Makefile's IMAGE_UI (`office-convert-ui:dev`) and the ECR repo
-    # name (`office-convert-ui`) so compose and `make` produce the SAME image,
-    # not two differently-tagged copies of the UI.
-    image: office-convert-ui:dev
-    ports:
-      - "127.0.0.1:8501:8501"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      API_URL: "http://office-convert:8080"
-      # Browser-facing API URL — used for iframes the operator's browser
-      # loads directly (e.g. the embedded /v1/dashboard panel). Container
-      # cannot reach localhost:8080 but the browser can, so this is
-      # distinct from API_URL above. On EKS, set to the public ALB URL
-      # of the API host.
-      PUBLIC_API_URL: "http://localhost:8080"
-      # S3 output controls for the UI. When enabled, the UI shows a
-      # "store to S3" toggle and renders a presigned "Download from S3"
-      # link in Conversion History (via GET /v1/downloads/presign).
-      UI_S3_ENABLED: "${OFFICE_CONVERT_S3_ENABLED:-true}"
-      UI_S3_DEFAULT_OUTPUT_BUCKET: "office-convert-out"
-      # Match the API's OFFICE_CONVERT_MAX_INPUT_BYTES=1 GiB (above).
-      # Streamlit's default file_uploader cap is 200 MB, which silently
-      # rejects bigger files before they reach the API. Value in MiB.
-      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "1024"
-      # XSRF off — newer Streamlit versions enforce XSRF strictly on
-      # file uploads and the check rejects them with a silent 403 in
-      # ANY origin mismatch (port-forward, reverse-proxy, even just
-      # localhost browsers depending on Streamlit version). The UI is
-      # internal-only with no auth in v1, so XSRF adds no real security.
-      # Matches the EKS chart (deploy/helm/.../values.yaml ui.streamlit).
-      STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION: "false"
-      STREAMLIT_SERVER_ENABLE_CORS: "false"
-    depends_on:
-      - office-convert
 
 # ============================================================
 # Named volumes
