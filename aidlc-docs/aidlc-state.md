@@ -123,8 +123,14 @@
   **Gotenberg HTML 200 → 27688-byte PDF direct AND via UI proxy** (license-independent);
   API-truth history shows engine/source (BR-UI-5); per_engine_html stats; Aspose HTML → 503
   `license_expired` (**expected** — expired real license, the known SubscriptionExpiry-vs-
-  LicenseExpiry gap, NOT a regression). Stack torn down clean. **Awaiting approval to proceed
-  to Operations.**
+  LicenseExpiry gap, NOT a regression). Stack torn down clean. **APPROVED 2026-06-12**
+  ("Approve & Continue").
+- **Operations = PLACEHOLDER** (deployment/monitoring/incident-response are future expansion,
+  out of v1 scope) — no Operations artifacts generated. **AIDLC workflow for unit
+  `python-retirement-nextjs-ui` is COMPLETE through Build and Test.** Genuine next practical
+  step: the `feat/html-conversion` PR (7 local commits ahead of `origin/feat/html-conversion`;
+  `last-python-backend` tag also needs pushing) — pending explicit user authorization
+  (outward-facing; PR-only branch-protected workflow).
 - **Research basis**: project memory `project-html-conversion-feature.md` + audit entries
   2026-06-12; integration-point map from code-explorer trace.
 
