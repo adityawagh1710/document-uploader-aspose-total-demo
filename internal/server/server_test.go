@@ -46,6 +46,10 @@ func buildTestServer(t *testing.T) *Server {
 		RateLimitEnabled:    false,
 		S3Enabled:           false,
 		S3PresignTTLSeconds: 900,
+		// HTML feature: GotenbergURL deliberately "" (engine not configured)
+		// so tests opt in per-case via srv.settings.GotenbergURL.
+		GotenbergTimeoutSeconds: 5,
+		HTMLMaxBytes:            10 << 20,
 	}
 	c, err := cache.NewManager("", "test")
 	require.NoError(t, err)

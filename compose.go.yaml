@@ -30,3 +30,34 @@ services:
     # backend would never report healthy and dependents (the UI) would not start.
     healthcheck:
       test: ["CMD", "/usr/local/bin/office-convert-orchestrator", "healthcheck"]
+    environment:
+      # HTML dual-engine feature (Go backend only): where the Chromium engine
+      # lives. The Aspose engine needs no config (it rides worker-docx).
+      OFFICE_CONVERT_GOTENBERG_URL: "http://gotenberg:3000"
+    depends_on:
+      gotenberg:
+        condition: service_started
+
+  # Gotenberg (Chromium) — the JS-capable HTML→PDF engine behind
+  # POST /v1/convert/html/gotenberg. Separate container by necessity: Chromium
+  # (~300 MB) cannot live in the single-binary Go image. Internal-only (no host
+  # port); the API reaches it as http://gotenberg:3000 on the compose network.
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: office-convert-gotenberg
+    restart: unless-stopped
+    # BR-4 deny policy, Chromium enforcement point. The regex is the
+    # ChromiumDenyListRegex constant from internal/netpolicy/netpolicy.go —
+    # keep the two literally in sync (the netpolicy PBT suite pins the Go
+    # matcher to this same pattern). Blocks loopback, RFC1918, link-local/
+    # metadata, IPv6-private, and single-label (in-cluster) hosts.
+    command:
+      - "gotenberg"
+      - "--chromium-deny-list=^https?://(?:[^@/]*@)?(?:localhost|[^/:.]+|[^/:]*\\.localhost|127\\.[0-9.]+|0\\.0\\.0\\.0|10\\.[0-9.]+|192\\.168\\.[0-9.]+|172\\.(?:1[6-9]|2[0-9]|3[01])\\.[0-9.]+|169\\.254\\.[0-9.]+|\\[::1\\]|\\[[fF][cdCD][0-9a-fA-F]{2}:[^\\]]*\\]|\\[[fF][eE][89abAB][0-9a-fA-F]:[^\\]]*\\])(?::[0-9]+)?(?:[/?#]|$)"
+      # Above the orchestrator's 120s client timeout so the client, not
+      # Gotenberg, decides when a conversion is dead (clean error mapping).
+      - "--api-timeout=130s"
+      - "--chromium-max-queue-size=10"
+    mem_limit: 768m
+    security_opt:
+      - no-new-privileges:true

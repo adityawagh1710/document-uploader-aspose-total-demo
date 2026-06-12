@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SSRF deny-policy sample — office-convert HTML corpus</title>
+</head>
+<body>
+  <h1>BR-4 deny-policy probe</h1>
+  <p>Every image below targets a denied destination. The conversion must
+     SUCCEED with the resources skipped (broken-image placeholders) — a denied
+     fetch never fails the job, it just doesn't happen.</p>
+  <ul>
+    <li>metadata: <img src="http://169.254.169.254/latest/meta-data/" alt="metadata (denied)" width="24" height="24"></li>
+    <li>in-cluster single-label: <img src="http://localstack:4566/office-convert-out/x.png" alt="localstack (denied)" width="24" height="24"></li>
+    <li>loopback: <img src="http://127.0.0.1:8080/health" alt="loopback (denied)" width="24" height="24"></li>
+    <li>rfc1918: <img src="http://10.0.0.1/x.png" alt="rfc1918 (denied)" width="24" height="24"></li>
+  </ul>
+  <p>End of probe document.</p>
+</body>
+</html>

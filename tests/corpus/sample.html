@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Static sample — office-convert HTML corpus</title>
+  <style>
+    body { font-family: Georgia, serif; margin: 2rem; color: #222; }
+    h1 { color: #1a4d8f; border-bottom: 2px solid #1a4d8f; padding-bottom: .3rem; }
+    table { border-collapse: collapse; margin-top: 1rem; }
+    td, th { border: 1px solid #888; padding: .4rem .8rem; }
+    .note { background: #fff8dc; padding: .6rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Static HTML sample</h1>
+  <p>This document contains only static markup and inline CSS. Both engines
+     (Gotenberg/Chromium and Aspose.Words) should render it near-identically:
+     it is the <em>control sample</em> of the engine comparison.</p>
+  <table>
+    <tr><th>Engine</th><th>JavaScript</th><th>Expected result</th></tr>
+    <tr><td>Gotenberg</td><td>executed</td><td>full render</td></tr>
+    <tr><td>Aspose.Words</td><td>none</td><td>full render (static content)</td></tr>
+  </table>
+  <p class="note">No external resources are referenced, so the BR-4 deny
+     policy has nothing to do here.</p>
+</body>
+</html>

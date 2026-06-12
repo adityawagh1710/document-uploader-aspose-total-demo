@@ -48,6 +48,9 @@ const (
 	DispatchWEBP DispatchFormat = "webp"
 	DispatchSVG  DispatchFormat = "svg"
 	DispatchEML  DispatchFormat = "eml"
+	// DispatchHTML routes to the engine-specific /v1/convert/html/{engine}
+	// endpoints (Gotenberg or worker-docx single-shot); never the chunk planner.
+	DispatchHTML DispatchFormat = "html"
 )
 
 // FailureClass enumerates the canonical failure classes returned to callers in
@@ -74,6 +77,10 @@ const (
 	S3InputForbidden     FailureClass = "s3_input_forbidden"
 	S3OutputForbidden    FailureClass = "s3_output_forbidden"
 	S3OutputUploadFailed FailureClass = "s3_output_upload_failed"
+	// EngineUnavailable: the Gotenberg conversion engine is down, unreachable,
+	// or not configured. Go-only extension of the taxonomy (HTML feature);
+	// recorded as a deliberate parity divergence until Python retirement.
+	EngineUnavailable FailureClass = "engine_unavailable"
 )
 
 // LicenseState is computed from days_remaining per business-rules.md §4.

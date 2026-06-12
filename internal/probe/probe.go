@@ -30,6 +30,11 @@ var AcceptedFormats = []types.FormatName{
 // AcceptedUploadFormats is what a user may upload. Legacy + image + email
 // formats are remapped internally. Exposed only via the UnsupportedFormat
 // error detail.
+// NOTE: html/htm are deliberately NOT listed here even though DetectFormat
+// recognizes them — this list feeds the unsupported_format error body of the
+// LEGACY /v1/convert route, which must stay wire-identical to the Python
+// backend (golden parity gate). HTML callers are directed to the dedicated
+// /v1/convert/html/{engine} endpoints by the D1 rejection reason instead.
 var AcceptedUploadFormats = []string{
 	"docx", "pptx", "xlsx", "pdf", "doc", "xls", "ppt", "csv", "rtf",
 	"odt", "ods", "odp", "odg", "png", "jpg", "jpeg", "tiff", "tif",
@@ -123,8 +128,20 @@ func DetectFormat(magicBytes []byte, sourcePath, filename string) (types.Dispatc
 		return img, nil
 	}
 
+	// HTML sniff (BR-1) sits after the image check (the SVG text sniff must win
+	// for <svg> documents) and before EML.
+	if LooksLikeHTML(magicBytes) {
+		return types.DispatchHTML, nil
+	}
+
 	if looksLikeEML(magicBytes) {
 		return types.DispatchEML, nil
+	}
+
+	// Extension fallback for HTML files that start with neither doctype nor
+	// <html (e.g. leading comments or partial fragments saved as .html).
+	if hasHTMLExtension(filename) {
+		return types.DispatchHTML, nil
 	}
 
 	n := 8
@@ -132,6 +149,33 @@ func DetectFormat(magicBytes []byte, sourcePath, filename string) (types.Dispatc
 		n = len(magicBytes)
 	}
 	return "", oerrors.NewUnsupportedFormat(hex.EncodeToString(magicBytes[:n]), AcceptedUploadFormats, "")
+}
+
+// LooksLikeHTML implements the BR-1 content sniff: within the first 1024
+// bytes, after stripping a UTF-8 BOM and ASCII whitespace, the input starts
+// with "<!doctype html" or "<html" (case-insensitive).
+func LooksLikeHTML(magicBytes []byte) bool {
+	head := first(magicBytes, 1024)
+	head = bytes.TrimPrefix(head, []byte("\xef\xbb\xbf"))
+	head = bytes.TrimLeft(head, " \t\r\n\v\f")
+	lower := bytes.ToLower(first(head, 64))
+	return bytes.HasPrefix(lower, []byte("<!doctype html")) ||
+		bytes.HasPrefix(lower, []byte("<html"))
+}
+
+func hasHTMLExtension(filename string) bool {
+	i := strings.LastIndex(filename, ".")
+	if i < 0 {
+		return false
+	}
+	ext := strings.ToLower(filename[i+1:])
+	return ext == "html" || ext == "htm"
+}
+
+// IsHTMLUpload is the BR-2 endpoint-level validation used by the
+// /v1/convert/html/{engine} handlers: content sniff with extension fallback.
+func IsHTMLUpload(head []byte, filename string) bool {
+	return LooksLikeHTML(head) || hasHTMLExtension(filename)
 }
 
 func looksLikeEML(magicBytes []byte) bool {

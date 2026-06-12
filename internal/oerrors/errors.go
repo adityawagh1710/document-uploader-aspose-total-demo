@@ -188,6 +188,17 @@ func NewRateLimited(retryAfterSeconds, limit int) *Error {
 	}
 }
 
+// NewEngineUnavailable signals that an external conversion engine (Gotenberg)
+// is down, unreachable, or not configured. HTML-feature addition (BR-5).
+func NewEngineUnavailable(engine, url, cause string) *Error {
+	return &Error{
+		FailureClass: types.EngineUnavailable,
+		HTTPStatus:   503,
+		Msg:          fmt.Sprintf("%s engine unavailable: %s", engine, cause),
+		Detail:       map[string]any{"engine": engine, "url": url, "cause": cause},
+	}
+}
+
 // --- S3 source/sink integration ---
 
 // NewInputSourceConflict mirrors InputSourceConflictError.

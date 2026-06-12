@@ -276,6 +276,16 @@ func (srv *Server) convert(w http.ResponseWriter, r *http.Request) {
 		}
 		srv.finishStream(sw, di, scratchDir, func(dst io.Writer) error { return copyPDF(pdfPath, dst) })
 
+	case fmtName == types.DispatchHTML:
+		// D1: never silently pick an engine for HTML — direct callers to the
+		// explicit engine endpoints so the comparison stays intentional.
+		cleanupScratch()
+		herr := oerrors.NewUnsupportedFormat("html", probe.AcceptedUploadFormats,
+			"use /v1/convert/html/gotenberg or /v1/convert/html/aspose for HTML inputs")
+		srv.recordConversion(di, "failed", errCode(herr), 0)
+		srv.writeError(w, rid, herr)
+		return
+
 	default:
 		// Aspose orchestrator path (docx/pptx/xlsx/pdf).
 		af := types.FormatName(fmtName)

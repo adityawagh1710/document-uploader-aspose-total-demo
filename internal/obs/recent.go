@@ -24,6 +24,11 @@ type ConversionRecord struct {
 	ErrorCode       *string `json:"error_code"`
 	OutputS3URI     *string `json:"output_s3_uri"`
 	OutputSizeBytes *int64  `json:"output_size_bytes"`
+	// Engine tags HTML conversions with their render engine ("gotenberg" |
+	// "aspose"); empty for the pre-existing office paths. Additive field —
+	// omitted from the wire shape when empty to preserve the Python parity
+	// contract for non-HTML records.
+	Engine string `json:"engine,omitempty"`
 }
 
 // RecentStore is a process-wide bounded, newest-first ring of completed
