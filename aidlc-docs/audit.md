@@ -2348,3 +2348,113 @@ Two doc-quality observations worth keeping:
 **Context**: Planning artifact for a future cutover; no code deleted. Sequencing: Phase 8 → merge feat→main → chore/retire-python PR.
 
 ---
+
+## Workspace Detection (resume) + Reverse Engineering — INITIATED
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Using AIDLC workflow. Analyze this workspace and code base in detail"
+**AI Response**: Resolved rule details dir `.aidlc-rule-details`. Read existing `aidlc-state.md` (976 lines) + `audit.md` tail. Workspace Detection finding: the recorded `Project Type: Greenfield` is now STALE — the workspace contains a substantial, multi-language production codebase (Python FastAPI orchestrator `office_convert/` ~6.3k LOC; Go orchestrator `cmd/`+`internal/` ~6.1k LOC merged to main pre-cutover; C++ Aspose workers `worker_cpp/` 5 per-product binaries; Streamlit UI `office_convert_ui/`; Helm chart `deploy/helm/`). No reverse-engineering artifacts exist under `aidlc-docs/inception/reverse-engineering/`. Per workspace-detection.md Step 3, the project is BROWNFIELD with no RE artifacts → next phase = Reverse Engineering. Launched 4 parallel code-explorer agents (Python orchestrator / Go orchestrator / C++ workers / build-deploy-UI) and synthesized 9 RE artifacts under `aidlc-docs/inception/reverse-engineering/`. Awaiting user approval before proceeding to Requirements Analysis.
+**Context**: Workspace Detection (resume) → Reverse Engineering. Brownfield analysis pass requested explicitly by the user.
+
+---
+
+## Reverse Engineering — RESUME (re-issued after /clear); presented for approval
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Using AIDLC workflow. Analyze this workspace and code base in detail"
+**AI Response**: Detected resume via existing `aidlc-state.md` (Current Stage = INCEPTION / Reverse Engineering, awaiting approval). Verified currency: HEAD is still `51fa1e3` — the exact commit the 9 RE artifacts were generated against (`reverse-engineering-timestamp.md`), and no source files changed since. Regenerating would be wasteful and produce identical output, so did NOT re-run the 4-agent analysis. Loaded all 9 RE artifacts per session-continuity (business-overview, architecture, code-structure, api-documentation, component-inventory, technology-stack, dependencies, code-quality-assessment, timestamp) and presented a consolidated detailed summary in chat. Awaiting explicit user approval before proceeding to Requirements Analysis.
+**Context**: Reverse Engineering resume. No code or artifacts modified this turn; approval gate only.
+
+---
+
+## HTML Conversion Feature — research + design direction (pre-Requirements)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input** (sequence, same session):
+1. "Can you read /opus2-workspace/document_uploader_inception/doc-uploader-design/pipeline/12-office-conversion.md and understand ????"
+2. "I want to impliment HTML Conversion using both Gotenberg and Aspose using AIDLC process in this current repo Can we impliment ???? do research for it"
+3. "I want both of them but on different end points so that we can analyze performance Make sure we adjust this UI as well"
+4. "I want to check one more thing how good is it at dealing with JavaScript in websites Did you get my point ??"
+5. "Save above in memory so that when i switch model it will catch easily"
+**AI Response**: Read the sibling design doc (886 lines; sidecar-pattern Office+HTML conversion via Aspose+Gotenberg). Ran feasibility research: (a) code-explorer trace of this repo's integration points (DispatchFormat, detect_format, bypass-pattern precedents LibreOffice/EML, options plumbing, compose/Helm service pattern, golden-parity impact); (b) web research confirming Aspose.Words loads HTML via LoadFormat::Auto (no new vendor lib) and Gotenberg 8 converts via POST /forms/chromium/convert/html (file must be index.html; separate container required). Verdict: implementable. Design refined per user: TWO separate endpoints (`/v1/convert/html/gotenberg`, `/v1/convert/html/aspose`) for perf+fidelity comparison; ConversionRecord tagged with engine; Streamlit UI gets an engine-comparison panel. JS finding: Gotenberg = full Chromium/V8 (needs waitDelay/waitForExpression exposure); Aspose.Words = NO JS engine (static HTML only) — consistent with the sibling repo's own comparison doc. Saved to project memory (project-html-conversion-feature.md).
+**Context**: Pre-stage research for the HTML conversion feature; no AIDLC stage executed yet; nothing built.
+
+---
+
+## Reverse Engineering — APPROVED (implicit) + Requirements Analysis INITIATED (HTML conversion, Go-only)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Using AIDLC start with Go only"
+**AI Response**: Interpreted as (a) implicit approval of the Reverse Engineering artifacts (user directs workflow forward), and (b) the answer to the open backend-scope question: the HTML conversion feature lands in the Go orchestrator ONLY (Python `office_convert/` unchanged; golden-parity gate to be scoped to exclude the two new routes until Phase 9 retirement). Started Requirements Analysis at standard depth (request type: New Feature; scope: Multiple Components — Go orchestrator + C++ worker guard + compose/Helm + UI; complexity: Moderate). Loaded enabled extension rules (security-baseline, property-based-testing). Created `inception/requirements/html-conversion-requirement-questions.md` with clarifying questions; awaiting user answers per Step 6 gate.
+**Context**: Requirements Analysis (HTML conversion feature). Question gate open.
+
+---
+
+## Requirements Analysis (HTML conversion) — answers received, requirements generated
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Go ahead" (and filled all 7 [Answer]: tags in html-conversion-requirement-questions.md: Q1:A, Q2:A, Q3:B, Q4:B, Q5:A, Q6:A, Q7:A)
+**AI Response**: Validated answers (consistent, no ambiguities; noted Q3:B implies the deny-internal policy must be implemented in the C++ worker's Aspose IResourceLoadingCallback to mirror Gotenberg's --chromium-deny-list). Generated `inception/requirements/html-conversion-requirements.md` (FR-1…FR-7, NFR-1…NFR-6, out-of-scope, acceptance criteria, extension-compliance table: SECURITY-01/02/04 N/A, SECURITY-03 + SSRF posture captured, PBT-01 captured with sniffer/deny-list properties named). Updated aidlc-state.md. Presenting approval gate; recommendation: SKIP User Stories (single operator persona, benchmarking tool) → Workflow Planning next.
+**Context**: Requirements Analysis complete; approval gate open.
+
+---
+
+## Requirements APPROVED + Workflow Planning executed (HTML conversion)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Approve & Continue"
+**AI Response**: Recorded requirements approval (User Stories stage confirmed skipped). Executed Workflow Planning: generated `inception/plans/html-conversion-execution-plan.md` — impact analysis (additive API, medium risk, easy rollback via PR), Mermaid + text workflow visualization (validated syntax), stage determinations (EXECUTE: Functional Design, Code Generation, Build and Test; SKIP: User Stories, Application Design, Units Generation, NFR Requirements, NFR Design, Infrastructure Design — rationales documented), module update sequence (worker_cpp → Go orchestrator → compose → UI → tests), success criteria. Updated aidlc-state.md. Presenting plan approval gate.
+**Context**: Workflow Planning complete; 3 stages to execute; awaiting plan approval.
+
+---
+
+## Execution Plan APPROVED + Functional Design executed (unit: html-conversion)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Approve & Continue"
+**AI Response**: Recorded execution-plan approval. Executed Functional Design for unit `html-conversion`: plan at `construction/plans/html-conversion-functional-design-plan.md` (all steps [x]; no user questions — business ambiguity was fully resolved in the requirements Q&A; 4 documented defaults D1–D4 surfaced for review: D1 generic-endpoint HTML → unsupported_format pointing at engine endpoints; D2 Letter+0.5in geometry on both engines; D3 waitDelay ≤ 30s; D4 wait fields on aspose endpoint → 400). Artifacts: `construction/html-conversion/functional-design/{business-logic-model,business-rules,domain-entities,frontend-components}.md` — engine flows, canonical BR-4 deny policy (single normative source, two enforcement points), failure mapping incl. new engine_unavailable, new entities (DispatchHTML, HTMLWaitOptions, DenyPolicy, ConversionRecord.engine, 3 settings), UI panel spec. PBT-01 Testable Properties table included (sniffer + deny-matcher + waitDelay invariants → rapid; enumerable mappings marked no-PBT with rationale). Extension compliance: SECURITY-01/02/04 N/A, SECURITY-03 captured (NFR-4/telemetry), SSRF posture designed (BR-4); PBT-01 compliant. No blocking findings. Presenting 2-option completion gate.
+**Context**: Functional Design complete; awaiting approval before Code Generation.
+
+---
+
+## Functional Design APPROVED + Code Generation Part 1 (Planning) complete
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Continue to Next Stage"
+**AI Response**: Recorded functional-design approval. Created code generation plan at `construction/plans/html-conversion-code-generation-plan.md` — 15 numbered steps across 5 modules (1: worker_cpp docx.cpp html guard + BR-4 resource callback + BR-7 geometry; 2: Go orchestrator types/oerrors/config/probe + new internal/netpolicy + new internal/gotenberg + server routes/handler + obs engine tagging; tests incl. rapid PBT per PBT-01; 3: compose.go.yaml gotenberg service; 4: UI comparison panel; 5: parity-divergence note + README + code-summary). Work to land on feature branch `feat/html-conversion` (main PR-only). Expected file inventory documented (modify vs create; Python/Helm/golden untouched).
+**AI Prompt**: "Ready to proceed with code generation per this plan?" — awaiting explicit approval.
+**Context**: Code Generation Part 1 complete; Part 2 (Generation) gated on plan approval.
+
+---
+
+## Code Generation Plan APPROVED — Part 2 (Generation) started
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Approve & Generate"
+**AI Response**: Plan approved. Created branch `feat/html-conversion`; executing the 15 plan steps in order, marking checkboxes as completed.
+**Context**: Code Generation Part 2 in progress (unit: html-conversion).
+
+---
+
+## Code Generation Part 2 — COMPLETE (unit: html-conversion)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: (continuation of "Approve & Generate")
+**AI Response**: Executed all 15 plan steps on `feat/html-conversion`. Modified: worker_cpp/formats/docx.cpp (html guard + BR-4 IResourceLoadingCallback + BR-7 Letter geometry, full-doc render ignoring --page-range), internal/{types,oerrors,config,probe,server,worker,obs}, compose.go.yaml (gotenberg service + deny-list flag), office_convert_ui/app.py (engine-comparison panel + history engine tag), README.md, parity-testing.md. Created: internal/netpolicy (canonical BR-4 + ChromiumDenyListRegex + PBT w/ matcher↔regex oracle), internal/gotenberg (client + tests), internal/server/convert_html{,_test}.go, internal/probe/html_test.go, tests/corpus/sample{,-js}.html, code-summary.md. Deviations (documented): AcceptedUploadFormats html addition REVERTED after the golden parity gate failed on the legacy-route error body (gate working as designed); probe tests in new file; BR-3 status corrected 400→422 in design doc. Verification: go vet clean; go test ./... all 12 packages ok incl. golden 14/14; -race green (server/gotenberg/netpolicy/probe); py_compile OK; compose config valid. ruff/make qa + image rebuild + live acceptance deferred to Build and Test stage. Presenting 2-option completion gate.
+**Context**: Code Generation complete (unit: html-conversion); awaiting approval before Build and Test.
+
+---
+
+## Code Generation APPROVED + Build and Test STARTED (html-conversion)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Continue to Next Stage"
+**AI Response**: Recorded code-generation approval. Started Build and Test: kicked off `make build-go` (rebuilds the 5 C++ worker binaries against the real vendored Aspose SDK — the compile check for the docx.cpp html changes — then the Go orchestrator + runtime image) in the background; writing `construction/build-and-test/html-conversion-build-and-test.md` instructions; will then run the live-stack acceptance criteria (compose up Go stack + gotenberg; criteria 1–5 from the requirements) and `make qa` (dockerized ruff for the UI changes).
+**Context**: Build and Test in progress (unit: html-conversion).
+
+---
+
+## Build and Test — EXECUTED (unit: html-conversion)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "run the acceptance tests" (then "hi" status check mid-run)
+**AI Response**: Builds: make build-go ✅ exit 0 (C++ html path compiles vs real Aspose SDK); make qa ✅ 237 passed/1 skipped. Live stack (compose.yaml+compose.go.yaml: Go api + gotenberg + localstack + UI, all healthy). Acceptance: AC-1 gotenberg ✅ (PDF 27KB, 4.4s cold/0.15s warm); AC-2 gotenberg ✅ (waitForExpression captured JS-rendered table, verified via pdftotext); AC-3 gotenberg ✅ (sample-ssrf.html converted, localstack received 0 fetches — deny-list effective); AC-4 ✅ (gotenberg stopped → 503 engine_unavailable w/ cause, restarted); AC-5 ✅ (per_engine_html stats + engine field on records); spot-checks ✅ (waitDelay=31s→422, wait-on-aspose→422 D4, html-on-generic→400 D1 w/ pointer + unchanged accepted list, non-HTML→422). **AC-1/2/3 aspose-side ⛔ BLOCKED (environmental)**: worker exit 2 "Aspose::Words SetLicense: The license has expired" — .lic LicenseExpiry=2026-06-08 lapsed (SubscriptionExpiry=2027-05-08 is what health parses → shows 330 days); baseline DOCX conversion fails identically on the same image → pre-existing, NOT a feature regression. Pre-existing observability gap flagged (license parser reads only SubscriptionExpiry). Results appended to html-conversion-build-and-test.md; stack left running for UI inspection at :8501. Presenting stage gate.
+**Context**: Build and Test complete (with documented environmental blocker); awaiting approval.
+
+---
+
+## Build and Test APPROVED — html-conversion AI-DLC workflow COMPLETE
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Approve & Continue"
+**AI Response**: Recorded approval. Operations stage is a placeholder — closing out by committing the feature in logical commits on `feat/html-conversion` and pushing for PR (main is branch-protected; no gh CLI — PR to be opened manually by operator). Outstanding operator items: (1) renewed Aspose license → re-run aspose-side acceptance 1–3; (2) follow-up candidate: license parser reads only SubscriptionExpiry (health blind to LicenseExpiry).
+**Context**: Unit html-conversion: all stages approved (Requirements → Workflow Planning → Functional Design → Code Generation → Build and Test).
+
+---

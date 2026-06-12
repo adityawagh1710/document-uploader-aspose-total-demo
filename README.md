@@ -451,6 +451,50 @@ chunked transfer encoding. Headers:
 | 404 | `s3_input_not_found` | `s3_input` object does not exist |
 | 500 | `s3_output_upload_failed` | S3 PUT failed (surfaced post-stream; logged) |
 
+### `POST /v1/convert/html/{gotenberg|aspose}` — HTML dual-engine (Go backend only)
+
+HTML is deliberately **not** accepted by the generic `/v1/convert` route.
+Instead, two engine-specific endpoints exist so the engines can be benchmarked
+head-to-head (latency AND fidelity):
+
+| Endpoint | Engine | JavaScript |
+| --- | --- | --- |
+| `POST /v1/convert/html/gotenberg` | Gotenberg 8 (headless Chromium, separate container) | **Executed** — SPAs, charts, dynamic content render |
+| `POST /v1/convert/html/aspose` | Aspose.Words via `worker-docx` (single-shot, no chunking) | **None** — static markup + CSS subset only |
+
+```bash
+curl -X POST http://localhost:8080/v1/convert/html/gotenberg \
+    -F "file=@page.html" \
+    -F "waitDelay=2s" \
+    -F "waitForExpression=window.status === 'ready'" \
+    -o out-gotenberg.pdf
+
+curl -X POST http://localhost:8080/v1/convert/html/aspose \
+    -F "file=@page.html" -o out-aspose.pdf
+```
+
+- `waitDelay` (≤ 30s) and `waitForExpression` (≤ 1024 chars) give JavaScript
+  time to finish before Chromium snapshots the page — **Gotenberg endpoint
+  only**; the Aspose endpoint rejects them with 422 (it has no JS to wait for).
+- Input cap: `OFFICE_CONVERT_HTML_MAX_BYTES` (default 10 MiB), separate from
+  the office-format ceiling.
+- Both engines render to identical page geometry (US Letter, 0.5in margins)
+  for a fair comparison.
+- **SSRF guard**: external resources referenced by the HTML are fetched only
+  from public hosts. Loopback, RFC1918, link-local/metadata (169.254.0.0/16),
+  IPv6-private, and single-label in-cluster hostnames are denied on BOTH
+  engines (Gotenberg `--chromium-deny-list` / Aspose resource-loading
+  callback — canonical policy in `internal/netpolicy`).
+- Gotenberg down or unconfigured → `503 engine_unavailable`. The Gotenberg
+  container ships in the Go compose overlay (`compose.go.yaml`); the API
+  reaches it via `OFFICE_CONVERT_GOTENBERG_URL` (default
+  `http://gotenberg:3000`).
+- Telemetry: HTML `ConversionRecord`s carry `engine`, and
+  `GET /v1/conversions/stats` adds a `per_engine_html` block
+  (count / avg_ms / p95_ms per engine) once HTML conversions exist. The
+  Streamlit UI's "HTML → PDF · Engine Comparison" panel fires both endpoints
+  in parallel and shows the results side by side.
+
 ### `GET /v1/downloads/presign`
 
 Mints a short-TTL presigned GET URL for an output object. The service owns the

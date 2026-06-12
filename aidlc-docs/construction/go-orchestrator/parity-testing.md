@@ -115,3 +115,26 @@ This is precisely the class of silent divergence the golden diff exists to catch
   exercised by the in-repo fake-worker/fake-qpdf tests, not the golden diff —
   adding it needs real qpdf in the capture image and is the one remaining
   enrichment if a stronger success-header diff is wanted.
+
+### Deliberate Go-only divergence: HTML dual-engine endpoints (2026-06-12)
+
+The HTML conversion feature (`POST /v1/convert/html/gotenberg`,
+`POST /v1/convert/html/aspose`) is implemented in the **Go orchestrator only**
+(operator decision: "start with Go only"; Python is on the Phase 9 retirement
+path). Consequences for this gate:
+
+- The **14 golden fixtures are unchanged and still pass 14/14** — the two new
+  routes are additive and have no Python counterpart to capture.
+- `AcceptedUploadFormats` deliberately does NOT list `html`/`htm`, so the
+  legacy `/v1/convert` `unsupported_format` error body stays byte-identical to
+  the Python capture (the gate caught this on first run; the list was reverted).
+- Legacy-route behavioral delta for HTML uploads only: Go's `/v1/convert`
+  detects HTML and rejects it with an explicit pointer to the engine endpoints
+  (D1), where Python rejects with the generic magic-hex detail. Same
+  failure_class + status (400 `unsupported_format`); richer `detail.reason` on
+  the Go side. Not golden-replayed (no HTML fixture exists).
+- New Go-only wire surface (out of gate scope until Phase 9 makes Go the
+  reference): `engine_unavailable` failure class (503), `engine` field on
+  HTML `ConversionRecord`s, and the `per_engine_html` stats block (emitted only
+  once an HTML conversion has been recorded, so a fresh server's
+  `/v1/conversions/stats` is still parity-identical).
