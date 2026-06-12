@@ -174,10 +174,10 @@ Merge `compose.go.yaml` content INTO `compose.yaml`:
 ## Module 5: CI + Dependabot + Docs (BR-R3)
 
 ### Step 5.1 — Update `.github/workflows/ci.yml`
-- [ ] Delete the `qa` job (lint + typecheck + pytest — Python-only)
-- [ ] Keep `go-test` job unchanged (golden gate 14/14 is the contract tripwire)
-- [ ] Keep `helm-lint` job unchanged
-- [ ] Add `ui-test` job:
+- [x] Delete the `qa` job (lint + typecheck + pytest — Python-only)
+- [x] Keep `go-test` job unchanged (golden gate 14/14 is the contract tripwire)
+- [x] Keep `helm-lint` job unchanged
+- [x] Add `ui-test` job:
   ```yaml
   ui-test:
     name: Next.js lint + typecheck + build
@@ -197,15 +197,16 @@ Merge `compose.go.yaml` content INTO `compose.yaml`:
   ```
 
 ### Step 5.2 — Update `.github/dependabot.yml`
-- [ ] Delete the `pip` ecosystem block
-- [ ] Add `npm` ecosystem block for `/ui` directory (weekly, Monday, 07:00 UTC, groups: `nextjs-stack`, `test-tooling`)
-- [ ] Keep `docker`, `github-actions` blocks unchanged
+- [x] Delete the `pip` ecosystem block
+- [x] Add `npm` ecosystem block for `/ui` directory (weekly, Monday, 07:00 UTC, groups: `nextjs-stack`, `test-tooling`)
+- [x] Keep `docker`, `github-actions` blocks unchanged
 
 ### Step 5.3 — Update `README.md`
-- [ ] Language badges: remove Python, keep Go + C++ + TypeScript (add)
-- [ ] Quick start: replace `make build-test && make test` with `make test-go`; replace `make build && make up` with `make build && make up`; add `make ui-install && make ui-dev` for UI development
-- [ ] Remove "Python orchestrator", "pytest", "mypy", "ruff" references
-- [ ] Update "Tech stack" table: Go (orchestrator), C++ (Aspose workers), TypeScript/Next.js (UI), no Python row
+- [x] Language badges: remove Python, keep Go + C++ + TypeScript (add)
+- [x] Quick start: replace `make build-test && make test` with `make test-go`; add `make ui-install && make ui-dev` for UI development
+- [x] Remove "Python orchestrator", "pytest", "mypy", "ruff" references
+- [x] Update "Tech stack" table: Go (orchestrator), C++ (Aspose workers), TypeScript/Next.js (UI), no Python row
+- [x] Corrected stale Aspose tarball references → `vendor/aspose/` 5-libs path (was a pre-existing doc gap)
 
 ---
 
