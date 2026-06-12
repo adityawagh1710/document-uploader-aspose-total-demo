@@ -8,10 +8,8 @@ import type { NextConfig } from 'next';
 // in ui/Dockerfile if the target differs from the compose default.
 const API_URL = process.env.API_URL ?? 'http://office-convert:8080';
 
-// Browser-facing API origin, used ONLY for the dashboard iframe (frame-src).
-const DASHBOARD_ORIGIN = new URL(
-  process.env.NEXT_PUBLIC_DASHBOARD_URL ?? 'http://localhost:8080/v1/dashboard',
-).origin;
+// NOTE: the dashboard-iframe frame-src origin moved to middleware.ts together
+// with the rest of the (now nonce-based) CSP.
 
 const nextConfig: NextConfig = {
   output: 'standalone',
@@ -25,27 +23,16 @@ const nextConfig: NextConfig = {
     return [{ source: '/api/:path*', destination: `${API_URL}/:path*` }];
   },
 
-  // BR-UI-7 / SECURITY-04 header set. style-src 'unsafe-inline' is the
-  // Tailwind/Next runtime reality; no inline scripts are emitted with the App
-  // Router defaults used here, so script-src stays 'self'.
+  // BR-UI-7 / SECURITY-04 static header set. The Content-Security-Policy is NOT
+  // here — it needs a per-request nonce so Next.js App Router's inline bootstrap
+  // / RSC-streaming scripts execute (a static `script-src 'self'` blocks them and
+  // the app never hydrates). The CSP is set in middleware.ts. These remaining
+  // headers are request-independent and fine to set statically.
   async headers() {
     return [
       {
         source: '/:path*',
         headers: [
-          {
-            key: 'Content-Security-Policy',
-            value: [
-              "default-src 'self'",
-              "img-src 'self' data: blob:",
-              "style-src 'self' 'unsafe-inline'",
-              "script-src 'self'",
-              "connect-src 'self'",
-              `frame-src ${DASHBOARD_ORIGIN}`,
-              "object-src 'none'",
-              "base-uri 'self'",
-            ].join('; '),
-          },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
