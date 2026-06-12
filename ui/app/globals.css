@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-surface: #0b1220;
+  --color-surface-raised: #111a2c;
+  --color-edge: #1e293b;
+  --color-text: #e2e8f0;
+  --color-text-dim: #94a3b8;
+  --color-accent: #22d3ee;
+  --color-accent-violet: #a78bfa;
+  --radius: 0.625rem;
+  --duration-fast: 150ms;
+}
+
+body {
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-feature-settings: 'tnum'; /* tabular numerals for stat tiles */
+}
+
+/* Section rhythm: the dashboard is one long page; sections breathe unevenly
+   on purpose — the convert/compare working area gets more air than telemetry. */
+.section-gap {
+  @apply mt-12 first:mt-0;
+}
+
+@layer components {
+  .btn-primary {
+    @apply rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-slate-950
+      transition-colors duration-150 hover:bg-cyan-300
+      focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2
+      focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-ghost {
+    @apply rounded-lg border border-surface-edge px-3 py-1.5 text-sm text-slate-300
+      transition-colors duration-150 hover:border-accent hover:text-accent
+      focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2
+      focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .input-dark {
+    @apply rounded-lg border border-surface-edge bg-surface px-3 py-2 text-sm
+      text-slate-200 placeholder:text-slate-500
+      focus:border-accent focus:outline-none disabled:opacity-40;
+  }
+}

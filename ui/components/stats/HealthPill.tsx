@@ -1,0 +1,40 @@
+'use client';
+
+import useSWR from 'swr';
+import clsx from 'clsx';
+import { fetcher } from '@/lib/api';
+import type { Health } from '@/lib/types';
+
+// Header health indicator. SWR polls /health every 3 s (BR-UI-4); the 503
+// not-ready response still carries a JSON Health body, so a thrown ApiError
+// (error slot) means the API itself is unreachable.
+export function HealthPill() {
+  const { data, error } = useSWR<Health>('/health', fetcher, { refreshInterval: 3000 });
+
+  const state = error ? 'down' : !data ? 'loading' : data.ready ? 'ready' : 'not-ready';
+  const dot = {
+    ready: 'bg-emerald-400',
+    'not-ready': 'bg-amber-400',
+    down: 'bg-rose-500',
+    loading: 'bg-slate-500 animate-pulse',
+  }[state];
+  const label = {
+    ready: 'READY',
+    'not-ready': 'NOT READY',
+    down: 'API DOWN',
+    loading: '…',
+  }[state];
+
+  return (
+    <span
+      data-testid="health-pill"
+      className="inline-flex items-center gap-2 rounded-full border border-surface-edge px-3 py-1 font-mono text-xs"
+    >
+      <span className={clsx('h-2 w-2 rounded-full', dot)} />
+      {label}
+      {data?.license_days_remaining != null && (
+        <span className="text-slate-500">· lic {data.license_days_remaining}d</span>
+      )}
+    </span>
+  );
+}
