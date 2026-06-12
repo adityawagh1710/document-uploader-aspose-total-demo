@@ -13,6 +13,7 @@ Open: http://localhost:8501
 """
 
 import collections
+import concurrent.futures
 import datetime
 import os
 import re
@@ -41,6 +42,13 @@ API_URL = os.environ.get("API_URL", "http://localhost:8080")
 # Falls back to API_URL when unset (single-origin local dev).
 PUBLIC_API_URL = os.environ.get("PUBLIC_API_URL", API_URL)
 CONVERT_URL = f"{API_URL}/v1/convert"
+# HTML dual-engine endpoints (Go backend only). The endpoint IS the engine —
+# there is no engine option on the generic /v1/convert route by design (D1).
+HTML_CONVERT_URLS = {
+    "gotenberg": f"{API_URL}/v1/convert/html/gotenberg",
+    "aspose": f"{API_URL}/v1/convert/html/aspose",
+}
+CONVERSIONS_STATS_URL = f"{API_URL}/v1/conversions/stats"
 HEALTH_URL = f"{API_URL}/health"  # unversioned by convention (orchestrator probe)
 HEARTBEATS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/heartbeats
 PROGRESS_URL = f"{API_URL}/v1/jobs"  # /v1/jobs/{request_id}/progress
@@ -2374,6 +2382,171 @@ if uploaded_file:
                 st.warning("Another conversion just started — try again in a moment.")
 
 
+# ============================================================
+# HTML → PDF — DUAL-ENGINE COMPARISON (Go backend feature)
+# Two endpoints, one upload: Gotenberg (Chromium, executes
+# JavaScript) vs Aspose.Words (static HTML only). Latency,
+# size, and fidelity side by side — that's the whole point.
+# ============================================================
+def _html_convert_one(engine: str, file_name: str, file_bytes: bytes, wait_fields: dict) -> dict:
+    """Blocking call to one engine endpoint. Returns a result-card dict."""
+    rid = uuid.uuid4().hex
+    start = time.time()
+    try:
+        data_fields = dict(wait_fields) if engine == "gotenberg" else {}
+        resp = _SESSION.post(
+            HTML_CONVERT_URLS[engine],
+            files={"file": (file_name, file_bytes)},
+            data=data_fields,
+            headers={"X-Request-ID": rid},
+            timeout=180,
+        )
+        latency_ms = (time.time() - start) * 1000
+        if resp.status_code != 200:
+            try:
+                err = _format_diagnostic(resp.status_code, resp.json())
+            except Exception:
+                err = f"Error {resp.status_code}"
+            return {"engine": engine, "ok": False, "latency_ms": latency_ms, "error": err, "rid": rid}
+        if not resp.content.startswith(b"%PDF"):
+            return {"engine": engine, "ok": False, "latency_ms": latency_ms,
+                    "error": "Invalid output (not a PDF)", "rid": rid}
+        return {"engine": engine, "ok": True, "latency_ms": latency_ms,
+                "data": resp.content, "size": len(resp.content), "rid": rid}
+    except Exception as e:
+        return {"engine": engine, "ok": False, "latency_ms": (time.time() - start) * 1000,
+                "error": str(e), "rid": rid}
+
+
+def _html_run_engines(engines: list[str], file_name: str, file_bytes: bytes, wait_fields: dict):
+    """Fires the selected engines in parallel and stores results + history."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(engines)) as ex:
+        futures = {e: ex.submit(_html_convert_one, e, file_name, file_bytes, wait_fields) for e in engines}
+        results = {e: f.result() for e, f in futures.items()}
+    st.session_state.html_cmp_results = {"input": file_name, "results": results, "ts": time.strftime("%H:%M:%S")}
+    # Successful runs join the shared Conversion History (engine-tagged).
+    s = _state()
+    with s["lock"]:
+        for e, r in results.items():
+            if r.get("ok"):
+                s["results"].insert(0, {
+                    "id": r["rid"], "name": Path(file_name).stem + f".{e}.pdf",
+                    "input": file_name, "data": r["data"],
+                    "out_mb": r["size"] / 1024 / 1024,
+                    "in_mb": len(file_bytes) / 1024 / 1024,
+                    "time": r["latency_ms"] / 1000, "ts": time.strftime("%H:%M:%S"),
+                    "engine": e,
+                })
+        del s["results"][MAX_RECENT_RESULTS:]
+
+
+st.divider()
+st.header("🌐 HTML → PDF · Engine Comparison")
+st.caption(
+    "**Gotenberg** runs real Chromium and **executes JavaScript** (SPAs, charts, dynamic "
+    "content). **Aspose.Words** renders **static HTML only** — no JS engine. Differences on "
+    "dynamic pages are expected: that's what this panel measures. Try "
+    "`tests/corpus/sample-js.html` with *Wait expression* = `window.status === 'ready'`."
+)
+
+html_file = st.file_uploader("Drop an HTML file (.html / .htm, ≤ 10 MB)", type=["html", "htm"], key="html_cmp_upload")
+wcol1, wcol2 = st.columns(2)
+wait_delay = wcol1.text_input(
+    "Wait delay (Gotenberg only)", value="", placeholder="e.g. 2s",
+    help="Fixed pause before Chromium snapshots the page (max 30s). Gives JS time to run.",
+    key="html_wait_delay",
+)
+wait_expr = wcol2.text_input(
+    "Wait expression (Gotenberg only)", value="", placeholder="window.status === 'ready'",
+    help="Chromium waits until this JS expression is true — the robust way to capture SPAs.",
+    key="html_wait_expr",
+)
+
+if html_file:
+    _wait_fields = {}
+    if wait_delay.strip():
+        _wait_fields["waitDelay"] = wait_delay.strip()
+    if wait_expr.strip():
+        _wait_fields["waitForExpression"] = wait_expr.strip()
+    bcol1, bcol2, bcol3 = st.columns([2, 1, 1])
+    run_engines: list[str] = []
+    if bcol1.button("⚡ Convert with BOTH engines", type="primary", key="html_both"):
+        run_engines = ["gotenberg", "aspose"]
+    if bcol2.button("Gotenberg only", key="html_got_only"):
+        run_engines = ["gotenberg"]
+    if bcol3.button("Aspose only", key="html_asp_only"):
+        run_engines = ["aspose"]
+    if run_engines:
+        with st.spinner(f"Converting via {', '.join(run_engines)}…"):
+            _html_run_engines(run_engines, html_file.name, html_file.getvalue(), _wait_fields)
+        st.rerun()
+
+_cmp = st.session_state.get("html_cmp_results")
+if _cmp:
+    st.caption(f"Latest run: **{_cmp['input']}** · 🕐 {_cmp['ts']}")
+    _cards = st.columns(2)
+    _engine_meta = {
+        "gotenberg": ("🌐 Gotenberg (Chromium — JS executed)", "#22d3ee"),
+        "aspose": ("📄 Aspose.Words (static HTML — no JS)", "#a78bfa"),
+    }
+    for _col, _eng in zip(_cards, ("gotenberg", "aspose")):
+        _label, _ = _engine_meta[_eng]
+        _r = _cmp["results"].get(_eng)
+        with _col:
+            st.subheader(_label)
+            if _r is None:
+                st.info("Not run in this round.")
+            elif _r["ok"]:
+                m1, m2 = st.columns(2)
+                m1.metric("Latency", f"{_r['latency_ms']:.0f} ms")
+                m2.metric("Output size", _human_bytes(_r["size"]))
+                st.caption(f"`X-Request-ID: {_r['rid']}`")
+                st.download_button(
+                    "⬇️ Download PDF", data=_r["data"],
+                    file_name=Path(_cmp["input"]).stem + f".{_eng}.pdf",
+                    mime="application/pdf", key=f"html_dl_{_eng}_{_r['rid']}",
+                )
+            else:
+                st.error(_r["error"])
+                st.caption(f"after {_r['latency_ms']:.0f} ms · `X-Request-ID: {_r['rid']}`")
+
+    # Latency bar — only meaningful when both engines ran.
+    _both = [r for r in _cmp["results"].values() if r.get("latency_ms") is not None]
+    if len(_both) == 2:
+        _fig = go.Figure(go.Bar(
+            x=[r["latency_ms"] for r in _both],
+            y=[_engine_meta[r["engine"]][0] for r in _both],
+            orientation="h",
+            marker_color=[_engine_meta[r["engine"]][1] for r in _both],
+            text=[f"{r['latency_ms']:.0f} ms" + ("" if r["ok"] else " ❌") for r in _both],
+            textposition="auto",
+        ))
+        _fig.update_layout(
+            title="Latency — this run", height=160, margin=dict(l=10, r=10, t=40, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#e2e8f0", size=12), xaxis_title="ms",
+        )
+        st.plotly_chart(_fig, use_container_width=True, key="html_cmp_latency")
+
+    # Server-side cumulative per-engine stats (API-wide, survives UI restarts
+    # and includes conversions fired via curl — not just this session).
+    try:
+        _stats = _SESSION.get(CONVERSIONS_STATS_URL, timeout=3).json()
+        _pe = _stats.get("per_engine_html") or {}
+        if _pe:
+            st.caption("**Cumulative (API-wide)** — count / avg / p95 per engine:")
+            _scols = st.columns(len(_pe))
+            for _scol, (_eng, _v) in zip(_scols, sorted(_pe.items())):
+                _scol.metric(
+                    _eng,
+                    f"{_v.get('avg_ms', 0)} ms avg",
+                    f"{_v.get('count', 0)} runs · p95 {_v.get('p95_ms', 0)} ms",
+                    delta_color="off",
+                )
+    except Exception:
+        pass
+
+
 @st.fragment(run_every=2)
 def live_charts():
     """Live Plotly charts driven by /jobs/{id}/heartbeats + /jobs/{id}/timings.
@@ -2695,6 +2868,9 @@ if st.session_state.history:
                 f"⏱️ {item['time']:.1f}s | 📥 {item['in_mb']:.1f} MB → 📤 {item['out_mb']:.1f} MB"
                 f" | 🕐 {item['ts']}"
             )
+            # HTML comparison runs are engine-tagged; office conversions aren't.
+            if item.get("engine"):
+                md += f" | ⚙️ `{item['engine']}`"
             if item.get("s3_bucket") and item.get("s3_key"):
                 md += f"  \n☁️ `s3://{item['s3_bucket']}/{item['s3_key']}`"
             st.markdown(md)
