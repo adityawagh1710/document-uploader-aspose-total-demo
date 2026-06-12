@@ -48,12 +48,17 @@ export function middleware(request: NextRequest) {
   return response;
 }
 
-// Run on all routes except Next's static assets and the favicon (those are
-// served as static files and don't need the per-request nonce machinery).
+// Run on HTML page routes only. Exclude:
+//  • `api`     — the streaming proxy (app/api/[...path]). Middleware has a
+//                default 10MB client-body limit that would TRUNCATE large
+//                uploads (a 47 MiB DOCX → broken stream → proxy 502). API
+//                responses are JSON/PDF consumed by fetch, not rendered
+//                documents, so they don't need the nonce CSP anyway.
+//  • static assets / favicon — served as files, no nonce needed.
 export const config = {
   matcher: [
     {
-      source: '/((?!_next/static|_next/image|favicon.ico).*)',
+      source: '/((?!api|_next/static|_next/image|favicon.ico).*)',
       missing: [
         { type: 'header', key: 'next-router-prefetch' },
         { type: 'header', key: 'purpose', value: 'prefetch' },
