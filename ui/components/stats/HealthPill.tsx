@@ -13,7 +13,9 @@ export function HealthPill() {
 
   const state = error ? 'down' : !data ? 'loading' : data.ready ? 'ready' : 'not-ready';
   const dot = {
-    ready: 'bg-emerald-400',
+    // `live-dot` adds the expanding ping ring — a visible heartbeat that the
+    // dashboard is actively polling. Steady states (down/not-ready) don't ping.
+    ready: 'bg-emerald-400 live-dot',
     'not-ready': 'bg-amber-400',
     down: 'bg-rose-500',
     loading: 'bg-slate-500 animate-pulse',
