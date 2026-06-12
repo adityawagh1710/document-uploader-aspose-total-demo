@@ -1,35 +1,35 @@
 # Document Uploader Office Convert Service (Aspose.Total)
 
-[![python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
-[![fastapi](https://img.shields.io/badge/fastapi-0.115-009688.svg)](https://fastapi.tiangolo.com/)
+[![go](https://img.shields.io/badge/go-1.26-00ADD8.svg?logo=go&logoColor=white)](https://go.dev/)
+[![chi](https://img.shields.io/badge/router-go--chi%2Fv5-00ADD8.svg)](https://github.com/go-chi/chi)
+[![nextjs](https://img.shields.io/badge/next.js-15-000000.svg?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![typescript](https://img.shields.io/badge/typescript-5.7-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![aspose.total](https://img.shields.io/badge/aspose.total-c%2B%2B%2026.4-ff4081.svg)](https://products.aspose.com/total/cpp/)
 [![qpdf](https://img.shields.io/badge/qpdf-streaming%20merge-orange.svg)](https://qpdf.sourceforge.io/)
+[![gotenberg](https://img.shields.io/badge/gotenberg-8-2496ED.svg)](https://gotenberg.dev/)
 [![docker](https://img.shields.io/badge/docker-required-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/)
-[![tests](https://img.shields.io/badge/tests-238-brightgreen.svg)](#tldr--quickstart)
-[![type checked](https://img.shields.io/badge/type%20checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
-[![lint](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://github.com/astral-sh/ruff)
 [![status](https://img.shields.io/badge/status-v1%20local%20PoC-yellow.svg)](#)
-[![last commit](https://img.shields.io/badge/last%20commit-may%202026-blue.svg)](#)
-[![contributors](https://img.shields.io/badge/contributors-1-orange.svg)](#)
-[![repo](https://img.shields.io/badge/repo-internal-lightgrey.svg)](#)
 [![AI-DLC](https://img.shields.io/badge/AI--DLC-powered-9C27B0.svg)](https://github.com/aws-samples/aws-aidlc-rule-details)
 
 **v1.0 — local PoC** · Chunked Office document → PDF conversion service.
 
 Converts DOCX, PPTX, XLSX, PDF, legacy DOC/XLS/PPT, ODT/ODS/ODP/ODG,
 RTF, CSV, **raster + vector images** (PNG, JPG, TIFF, GIF, BMP, WEBP,
-SVG), **and email** (EML) to PDF over a local HTTP API. Office docs
+SVG), **email** (EML), and **HTML** to PDF over a local HTTP API. Office docs
 render via **Aspose.Total C++** with RAM-isolated subprocess workers
 and **qpdf** streaming merge; ODG + images route through the bundled
 **LibreOffice** fallback (soffice `--convert-to pdf` picks the right
 importer per input extension); EML goes through a two-stage
 **Aspose.Email → MHTML → Aspose.Words → PDF** pipeline so the two
-products' CodePorting frameworks stay process-isolated.
+products' CodePorting frameworks stay process-isolated; HTML renders
+through **two interchangeable engines** (Gotenberg/Chromium for JS
+fidelity, Aspose.Words for static markup) on separate endpoints for
+head-to-head comparison.
 
 ```
 ┌────────────────────── Docker container (4GB RAM + 2GB swap) ──────────────────────┐
 │                                                                                    │
-│   FastAPI / Uvicorn (Python) → net/http + chi (Go orchestrator)                    │
+│   net/http + go-chi/chi (Go orchestrator)                                          │
 │   ┌─────────────────────────────────────────────────────────────────────────┐      │
 │   │ 1. Format Detection (magic bytes + OLE2 streams, format retry)          │      │
 │   │ 2. Probe Lite (ZIP metadata / size estimate — instant)                  │      │
@@ -57,40 +57,38 @@ products' CodePorting frameworks stay process-isolated.
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Orchestrator box:** the Go re-implementation (`net/http` + `chi`) now lives on
-> `main` alongside the Python (FastAPI) orchestrator and is the **only** box that
-> changes at cutover — the C++ workers, JSON-stdio protocol, qpdf merge, and HTTP
-> wire contract are identical. **Python is still the deployed backend until the
-> Phase 8 dev05 cutover** (see the "Go orchestrator" section below).
-
-For detailed Mermaid diagrams (request flow, format detection, pool mode),
-see `aidlc-docs/construction/office-converter/architecture-diagram.md`.
+The **Go orchestrator** (`cmd/` + `internal/`) is the production backend. The
+**Next.js operator dashboard** (`ui/`) is a separate container. HTML conversions
+additionally route to a **Gotenberg** sidecar (headless Chromium) for the
+JS-capable engine. For detailed Mermaid diagrams (request flow, format detection,
+pool mode), see `aidlc-docs/construction/office-converter/architecture-diagram.md`.
 
 ---
 
 ## TL;DR — Quickstart
 
 **Host requirements:** Docker (with `docker compose` v2) + `curl`. Optionally
-`make` for the convenience targets. **Nothing else** — no Python, no uv, no
-qpdf, no pytest needed on the host. Everything runs inside containers.
+`make` for the convenience targets, and Node 22 for host-side UI development.
+**Nothing else** runs on the host — the backend, workers, and UI all build and
+run inside containers.
 
 ### Path A — Docker Compose (canonical)
 
 ```bash
-# 1. Place the two Aspose files in the project root
-cp /path/to/Aspose.Total.for.C++_*.tar.gz aspose-total-cpp.tar.gz
-# (Aspose.TotalforC++.lic should already exist here)
+# 1. Place your Aspose license in the project root (vendor/aspose/ must
+#    already be populated — see "Prerequisites").
+ls Aspose.TotalforC++.lic
 
-# 2. Build and start the service
+# 2. Build and start the full stack (Go API + Next.js UI + Gotenberg + LocalStack)
 docker compose up -d --build
 
 # 3. Hit the endpoints via URL
 curl http://localhost:8080/health
 curl -X POST http://localhost:8080/v1/convert \
-     -F "file=@tests/corpus/simple.pdf" -o output.pdf
+     -F "file=@testdata/corpus/simple.pdf" -o output.pdf
 
-# 4. Run the test suite (separate test image; no Aspose SDK needed)
-docker compose --profile test run --rm tests
+# 4. Open the operator dashboard
+open http://localhost:8501
 
 # 5. Stop when done
 docker compose down
@@ -99,21 +97,30 @@ docker compose down
 ### Path B — Makefile (same thing, with helpers)
 
 ```bash
-make build-test          # build the test image (no Aspose dep)
-make test                # run unit + property + integration suites
-make build               # build the production image (needs Aspose tarball + license)
+make test-go             # run the Go suite (unit + property + golden parity gate)
+make build               # build the API image (needs vendor/aspose/ + license)
 make up                  # docker compose up -d --build; waits for /health
 make demo                # URL-based smoke: /health + bad-format + real convert + docs URLs
-make convert FILE=tests/corpus/simple.pdf
+make convert FILE=testdata/corpus/simple.pdf
 make down                # docker compose down
 ```
 
 `make up` delegates to `docker compose up -d --build`, then waits for `/health`
 to respond and prints all the URLs. `make help` shows the full target list.
 
+### UI development (hot reload, host-side)
+
+```bash
+make ui-install          # npm ci in ui/
+make ui-dev              # Next.js dev server on http://localhost:3000 (proxies /api/* to API_URL)
+make ui-lint             # ESLint + tsc type check
+make ui-build            # production standalone build
+```
+
 Need the SDK or license?
 
-- **SDK tarball**: <https://releases.aspose.com/total/cpp/>
+- **Aspose product libraries**: <https://releases.aspose.com/total/cpp/>
+  (populate `vendor/aspose/` — see "Prerequisites").
 - **Temporary license**: <https://purchase.aspose.com/temporary-license>
   (specify "Aspose.Total **for C++**" — the Python-via-.NET license is NOT
   compatible with this build).
@@ -138,10 +145,9 @@ AWS_ACCOUNT_ID=537462380503 AWS_REGION=eu-west-1 IMAGE_TAG=$(git rev-parse --sho
 make undeploy-dev
 ```
 
-Full layout, scripts, and the in-flight ALB Ingress migration plan
-(with corp-CIDR-allowlisted internet-facing URL) are documented in
-[`deploy/README.md`](deploy/README.md) and
-[`aidlc-docs/operations/dev-deployment-topology.md`](aidlc-docs/operations/dev-deployment-topology.md).
+Full layout, scripts, and the ALB Ingress setup (with corp-CIDR-allowlisted
+internet-facing URL) are documented in [`deploy/README.md`](deploy/README.md)
+and [`aidlc-docs/operations/dev-deployment-topology.md`](aidlc-docs/operations/dev-deployment-topology.md).
 
 ---
 
@@ -149,11 +155,10 @@ Full layout, scripts, and the in-flight ALB Ingress migration plan
 
 Aspose accumulates rendered content in memory; a single large document
 can exceed available RAM. This service breaks inputs into bounded chunks
-(default: **10 pages or 50 MB** of estimated rendered size, whichever is
-smaller), renders each chunk in a fresh subprocess capped at **2 GB**
-virtual memory via `prlimit RLIMIT_AS`, and streams the resulting chunk
-PDFs through `qpdf --empty --pages ... -- -` directly into the HTTP
-response. The full output PDF is never buffered.
+(adaptive, RAM-aware), renders each chunk in a subprocess capped via
+`prlimit RLIMIT_AS`, and streams the resulting chunk PDFs through
+`qpdf --empty --pages ... -- -` directly into the HTTP response. The full
+output PDF is never buffered.
 
 If a chunk OOMs, the orchestrator **subdivides** the page range
 (10 → 5 → 2 → 1 page) and retries. Single-page failures dead-letter
@@ -162,91 +167,47 @@ output.
 
 ---
 
-## v1 Status & What's In The Box
+## Tech stack
 
-The conversion engine is a **single-container service** — the canonical
-deployment is Docker Compose on a single host (Path A / Path B above), and
-that's still the v1 PoC the AI-DLC workflow produced. A working **EKS dev
-deployment** (Path C) runs the same image on `DEV05-EKS-CLUSTER` for
-shared dogfooding; see `aidlc-docs/operations/dev-deployment-topology.md`
-for the current shape and the in-flight ALB Ingress migration.
+| Layer | Technology |
+| ----- | ---------- |
+| **Orchestrator / HTTP API** | Go (stdlib `net/http` + `go-chi/chi/v5`, `log/slog`, AWS SDK v2) |
+| **Document workers** | C++17, Aspose.Total for C++ (5 per-product binaries) |
+| **PDF merge** | qpdf (streaming, never buffers full output) |
+| **HTML / Chromium engine** | Gotenberg 8 (sidecar container) |
+| **Operator dashboard** | Next.js 15 (App Router, TypeScript, Tailwind, SWR, recharts) |
+| **Local AWS emulation** | LocalStack (S3) |
+| **Tests** | Go `testify` + `go-cmp` + `pgregory.net/rapid` (property-based); UI `vitest` + Testing Library |
 
-The full **v1-cloud target** (queue-driven via per-tenant SQS, no public
-HTTP, DynamoDB job state, multi-tenant isolation) is explicitly deferred
-— `aidlc-docs/operations/eks-production-topology.md` captures that
-production design, and the original 25-question requirement set lives at
-`aidlc-docs/inception/requirements/requirement-verification-questions.md`.
-
-**Generated and complete** (run as-is):
-
-- Python orchestrator + HTTP server (FastAPI on Uvicorn)
-- Chunk planner (pure logic + property-based tests; 500 Hypothesis
-  examples covering coverage, monotonicity, balance, determinism)
-- qpdf streaming merge wrapper (real qpdf binary, async byte iterator)
-- Cache layer (content-addressable, atomic writes)
-- License XML parser + expiry state machine
-- Structured JSON-lines logging with `request_id` ContextVar propagation
-- Multi-stage Dockerfile with non-root user + read-only-root-compatible
-  + cap-drop-compatible posture
-- 100+ test cases across unit / property / integration / e2e /
-  security layers
-
-**Scaffolded — operator must wire in real Aspose calls before production**:
-
-- `worker_cpp/formats/{docx,pptx,xlsx,pdf,email}.cpp` — Aspose API calls are
-  documented in comments but commented out, so the C++ compiles cleanly
-  without the SDK headers. After placing the Aspose tarball in the
-  build context, uncomment the real calls per the inline comment
-  blocks, then rebuild.
-- `worker_cpp/probe.cpp` — same pattern for metadata extraction.
-- `worker_cpp/license.cpp` — same pattern for `SetLicense()` per
-  format.
-
-The Dockerfile sets up the entire build pipeline; when both the SDK
-tarball is present AND the Aspose calls are uncommented, the C++ worker
-builds and links cleanly. Otherwise the worker compiles but throws
-`RenderException("SDK not linked")` at runtime — useful for verifying
-the Dockerfile and HTTP plumbing before paying for an Aspose license.
+There is **no Python** in the repo. The orchestrator was originally a Python
+(FastAPI) service; it was reimplemented in Go and the Python implementation +
+Streamlit UI + pytest suite were retired. The Go↔original wire contract is
+frozen as committed golden fixtures (see "Golden-fixture parity gate").
 
 ---
 
-## Go orchestrator (migration — backend-only, pre-cutover)
+## Go orchestrator
 
-The Python orchestrator described throughout this README is the **current
-production backend**. A complete **Go re-implementation** of the orchestrator
-lives alongside it in `cmd/` + `internal/` on `main` (merged from
-`feat/go-orchestrator`, now deleted) and is validated end-to-end but **not yet
-cut over** — Python remains the deployed backend until the Phase 8 dev05 cutover.
-
-This is **transitional duplication, not a hybrid**: one backend reimplemented
-two ways. Everything *around* the orchestrator is shared and unchanged — the C++
-Aspose worker binaries (`worker_cpp/`), the JSON-stdio worker protocol, the
-Streamlit UI (`office_convert_ui/`), and the Helm chart (`deploy/helm/`). The Go
-orchestrator (`cmd/` + `internal/`) shells out to the same five per-product
-worker binaries over the same protocol, so the cutover is a pure image swap
-(same `repository:tag` contract).
-
-**Stack:** Go stdlib + `net/http` routing via `go-chi/chi/v5`; `log/slog`
-logging; AWS SDK v2; tests use `testify` + `go-cmp` + `pgregory.net/rapid`
-(property-based). The HTTP wire contract is identical to the Python service.
+The orchestrator (`cmd/` + `internal/`) is a Go service: stdlib `net/http`
+routing via `go-chi/chi/v5`, `log/slog` logging, AWS SDK v2. It shells out to
+the five per-product C++ Aspose worker binaries (`worker_cpp/`) over a
+JSON-stdio protocol, merges chunk PDFs with qpdf, and streams the result.
 
 **Run / test it:**
 
 ```bash
-make up-go             # build + run the Go stack (backend + UI) via compose.go.yaml
+make up                # build + run the full stack (API + UI + Gotenberg + LocalStack)
 make test-go           # full Go suite (unit + property + golden parity gate)
-make golden-verify     # replay the Go server against the captured Python oracle
-make golden-capture    # (re)generate the golden fixtures from the live Python oracle
-make down-go           # tear down
+make golden-verify     # replay the Go server against the committed golden fixtures
+make down              # tear down
 ```
 
 **Golden-fixture parity gate.** `make golden-verify` (and CI's `go-test` job)
-runs `TestGoldenParity`, which replays the Python orchestrator's frozen HTTP
-responses against the Go server and diffs them — the safety net that proves the
-two backends are interchangeable before the cutover. Fixtures are committed under
-`internal/server/testdata/golden/`; regenerate them with `make golden-capture`
-(needs Python; no Aspose/qpdf). Built with `go.Dockerfile` (not the production
-`Dockerfile`). Design docs: `aidlc-docs/construction/go-orchestrator/`.
+runs `TestGoldenParity`, which replays a set of frozen HTTP responses against the
+Go server and diffs them — the safety net that pins the wire contract. Fixtures
+are committed under `internal/server/testdata/golden/` (14 cases). They were
+originally captured from the retired Python oracle and are now maintained as
+static contract snapshots. Design docs: `aidlc-docs/construction/go-orchestrator/`.
 
 ---
 
@@ -255,9 +216,11 @@ two backends are interchangeable before the cutover. Fixtures are committed unde
 1. **Aspose.Total C++ Temporary License** (`.lic` file). Request at
    <https://purchase.aspose.com/temporary-license>. Specify "Aspose.Total
    **for C++**" — the Python-via-.NET license is NOT compatible.
-2. **Aspose.Total C++ SDK tarball** (`aspose-total-cpp.tar.gz`). The
-   headers + shared objects needed to build the worker. Save next to
-   the Dockerfile.
+2. **Aspose product libraries** under `vendor/aspose/`. The build consumes five
+   per-product trees (`Words`, `Cells`, `Slides`, `PDF`, `Email`) — see
+   `make verify-vendor` for the expected layout and the Linux x86_64 `.so`
+   checks. (Words 26.3 + Cells/Slides/PDF/Email 26.4; the per-product split
+   keeps each product's CodePorting framework ABI-isolated.)
 3. **Docker** (or any OCI-compatible runtime).
 4. **x86_64 host**. Aspose.Total C++ is x86_64-Linux only. Apple Silicon
    hosts work via Docker Desktop's amd64 emulation (slower; dev only).
@@ -270,63 +233,52 @@ Two paths to the same outcome:
 
 | Path | When to use |
 | ---- | ----------- |
-| **Docker Compose** (`docker compose up -d`, `--profile test run …`) | Canonical. Standard tooling everyone recognizes. CI-friendly. |
-| **Makefile** (`make up`, `make test`, `make demo`, …) | Convenience: organized help (`make help`), waits for `/health`, URL-based smoke (`make demo`), variable overrides on the command line. Delegates to compose under the hood for `up`/`down`/`logs`/`restart`. |
+| **Docker Compose** (`docker compose up -d`) | Canonical. Standard tooling everyone recognizes. CI-friendly. |
+| **Makefile** (`make up`, `make demo`, …) | Convenience: organized help (`make help`), waits for `/health`, URL-based smoke (`make demo`), variable overrides on the command line. Delegates to compose for `up`/`down`/`logs`/`restart`. |
 
 Both read the same `compose.yaml`. Pick whichever feels natural.
 
-### Two images
+### Compose services
 
-The `compose.yaml` defines two services and the corresponding images:
+`compose.yaml` brings up four services:
 
-| Image | Built by | Purpose |
-| ----- | -------- | ------- |
-| `office-convert:test` | `Dockerfile.test` | Python + dev deps + qpdf. Runs unit/property/integration tests. **No Aspose SDK needed.** |
-| `office-convert:dev` | `Dockerfile` (multi-stage) | Production image with C++ worker + Aspose `.so` + Python orchestrator. **Requires `aspose-total-cpp.tar.gz` in build context.** |
+| Service | Image | Purpose |
+| ------- | ----- | ------- |
+| `office-convert` | `office-convert:go` (`Dockerfile`) | Go orchestrator + C++ workers + Aspose `.so`. **Requires `vendor/aspose/` + license.** |
+| `ui` | `office-convert-ui:dev` (`ui/Dockerfile`) | Next.js operator dashboard on `:8501`. |
+| `gotenberg` | `gotenberg/gotenberg:8` | Headless-Chromium HTML→PDF engine (internal only). |
+| `localstack` | `localstack/localstack:3.8` | Local S3 emulation for the S3 source/sink integration. |
 
 ### Common workflows
 
-**Just run the tests** (no Aspose dependency):
+**Run the Go tests** (no Aspose dependency):
 
 ```bash
-make build-test       # ~30 sec; only needed once unless you change deps
-make test             # ~60 sec; full unit + property + integration suite
-make test-coverage    # also enforces ≥ 80% line coverage
-make qa               # lint + format-check + typecheck + test
+make test-go          # Go unit + property + golden parity gate (runs in a golang container)
+make golden-verify    # just the parity gate
 ```
 
-**Full production build + URL-based smoke test** (needs Aspose SDK + license):
+**Full production build + URL-based smoke test** (needs Aspose libs + license):
 
 ```bash
-# Pre-flight: place the two Aspose files in the project root
-cp /path/to/Aspose.Total.for.C++_*.tar.gz aspose-total-cpp.tar.gz
+# Pre-flight: populate vendor/aspose/ and place the license in the project root
+make verify-vendor              # checks all 5 product trees are present + Linux x86_64
 ls Aspose.TotalforC++.lic       # license should already exist
 
-make build            # ~5 min cold; builds C++ worker + multi-stage image
-make up               # starts service; waits for /health to respond
+make build            # builds C++ workers + Go binary into the runtime image
+make up               # starts the full stack; waits for /health to respond
 
 # Now test via URLs (all run from your shell, hitting localhost)
 make health           # GET /health
 make demo             # health + bad-format + convert + docs URLs
-make convert FILE=tests/corpus/simple.pdf   # POST a document
-make docs             # print Swagger / ReDoc / OpenAPI URLs
-
-make logs             # tail container logs
-make shell            # interactive shell in the container
-make down             # stop and remove
-```
-
-**End-to-end tests via Testcontainers** (programmatic e2e against the running container):
-
-```bash
-make test-e2e         # mounts Docker socket; spawns prod container; runs pytest
+make convert FILE=testdata/corpus/simple.pdf   # POST a document
 ```
 
 **Cleanup**:
 
 ```bash
-make clean            # stops service; removes both images
-make clean-all        # also removes .pytest_cache, .ruff_cache, etc.
+make clean            # stops services; removes API + UI images
+make clean-all        # also removes ui/.next + ui/node_modules
 ```
 
 ### Override configuration on the command line
@@ -338,58 +290,6 @@ make up PORT=9090                                          # use a different hos
 make convert FILE=~/Documents/big.docx                     # convert a doc outside the repo
 make build IMAGE_PROD=myregistry/office-convert:0.2.0      # tag for a registry push
 make up LICENSE_FILE=/etc/secrets/aspose.lic               # license at a non-default path
-```
-
----
-
-## Manual Docker commands (without `make`)
-
-If you prefer the underlying Docker commands or are scripting around them:
-
-```bash
-cp /path/to/aspose-total-cpp.tar.gz .
-docker build -t office-convert:dev .
-```
-
-The image is multi-stage:
-
-- **Stage 1** (`debian:bookworm`): gcc-12 + CMake + Aspose tarball → builds
-  the C++ worker binary with `-O2 -flto -fvisibility=hidden -fdata-sections
-  -ffunction-sections` and `--gc-sections` + strip for minimal binary size.
-- **Stage 2** (`python:3.11-slim-bookworm`): qpdf + util-linux + Python
-  deps + non-root `appuser`; copies the worker binary and Aspose `.so`
-  files from Stage 1 into `/usr/local/bin/` and `/usr/local/lib/aspose/`
-  with `LD_LIBRARY_PATH` set.
-
-The C++ compiler, headers, and build tools never enter the runtime image.
-
-Build will fail at the `COPY aspose-total-cpp.tar.gz` step if the tarball
-is missing from the build context.
-
----
-
-## Run
-
-**Recommended (localhost-only, defense-in-depth):**
-
-```bash
-docker run --rm \
-    -p 127.0.0.1:8080:8080 \
-    -v $(pwd)/license.lic:/aspose/license.lic:ro \
-    --cap-drop=ALL \
-    --read-only \
-    --tmpfs /tmp \
-    --tmpfs /var/run \
-    office-convert:dev
-```
-
-**With cache (greatly speeds up repeat conversions of the same input):**
-
-```bash
-docker run ... \
-    -v $(pwd)/cache:/cache \
-    -e OFFICE_CONVERT_CACHE_DIR=/cache \
-    office-convert:dev
 ```
 
 ---
@@ -415,6 +315,7 @@ curl -X POST http://localhost:8080/v1/convert \
     ODT, ODS, ODP, ODG, RTF, CSV
   - **Images** (routed to LibreOffice): PNG, JPG, JPEG, TIFF, GIF, BMP,
     WEBP, SVG
+  - HTML is **not** accepted here — use the engine-specific routes below.
 - `options` (optional JSON): `{"cache": <bool>, "log_level": "<level>"}`
 - `s3_input` (optional, requires `OFFICE_CONVERT_S3_ENABLED=1`) — `s3://bucket/key`
   to convert *instead of* uploading `file`. Exactly one of `file` / `s3_input`.
@@ -439,7 +340,7 @@ chunked transfer encoding. Headers:
 | 400 | `input_too_large` | Input exceeds 1 GB (`OFFICE_CONVERT_MAX_INPUT_BYTES`) |
 | 422 | `input_unprocessable` | Aspose can't parse (corrupt, encrypted) |
 | 500 | `render_failed` | Transient render error |
-| 500 | `subdivision_floor_exceeded` | Single page OOMs even at 2 GB RAM |
+| 500 | `subdivision_floor_exceeded` | Single page OOMs even at the RAM ceiling |
 | 500 | `merge_failed` | qpdf concat failed |
 | 429 | `rate_limited` | Per-IP token bucket exhausted (`Retry-After` + `X-RateLimit-*` headers set) |
 | 503 | `license_expired` | Aspose license past expiry |
@@ -451,7 +352,7 @@ chunked transfer encoding. Headers:
 | 404 | `s3_input_not_found` | `s3_input` object does not exist |
 | 500 | `s3_output_upload_failed` | S3 PUT failed (surfaced post-stream; logged) |
 
-### `POST /v1/convert/html/{gotenberg|aspose}` — HTML dual-engine (Go backend only)
+### `POST /v1/convert/html/{gotenberg|aspose}` — HTML dual-engine
 
 HTML is deliberately **not** accepted by the generic `/v1/convert` route.
 Instead, two engine-specific endpoints exist so the engines can be benchmarked
@@ -486,13 +387,12 @@ curl -X POST http://localhost:8080/v1/convert/html/aspose \
   engines (Gotenberg `--chromium-deny-list` / Aspose resource-loading
   callback — canonical policy in `internal/netpolicy`).
 - Gotenberg down or unconfigured → `503 engine_unavailable`. The Gotenberg
-  container ships in the Go compose overlay (`compose.go.yaml`); the API
-  reaches it via `OFFICE_CONVERT_GOTENBERG_URL` (default
-  `http://gotenberg:3000`).
+  container ships in `compose.yaml`; the API reaches it via
+  `OFFICE_CONVERT_GOTENBERG_URL` (default `http://gotenberg:3000`).
 - Telemetry: HTML `ConversionRecord`s carry `engine`, and
   `GET /v1/conversions/stats` adds a `per_engine_html` block
   (count / avg_ms / p95_ms per engine) once HTML conversions exist. The
-  Streamlit UI's "HTML → PDF · Engine Comparison" panel fires both endpoints
+  Next.js UI's "HTML → PDF · engine comparison" panel fires both endpoints
   in parallel and shows the results side by side.
 
 ### `GET /v1/downloads/presign`
@@ -507,8 +407,8 @@ curl "http://localhost:8080/v1/downloads/presign?bucket=office-convert-out&key=p
 #    "expires_in_seconds":900,"expires_at":"2026-05-27T…Z"}
 ```
 
-A fresh URL is minted per call (presigned URLs expire), so the Streamlit UI's
-Conversion History calls this on demand for its "☁️ Download from S3" link.
+A fresh URL is minted per call (presigned URLs expire), so the UI's Conversion
+History calls this on demand for its "☁️ Download from S3" link.
 
 ### S3 integration — local vs EKS
 
@@ -542,6 +442,29 @@ when not ready (`license_expired`, `qpdf_missing`, `worker_binary_missing`,
 
 ---
 
+## Operator dashboard (Next.js)
+
+The dashboard at **http://localhost:8501** (the `ui` service) is a Next.js 15
+App Router app. It is a thin client over the API — there is no client-side
+state store; everything is read from the API so cross-service conversions
+(e.g. curl, the classification fanout) appear in history by construction.
+
+- **Single-origin proxy**: the browser only ever talks to the UI's own origin.
+  `next.config.ts` rewrites `/api/:path*` → the Go API server-side, so there's
+  no CORS surface and no API URL baked into client JS (except the
+  `/v1/dashboard` iframe, the one deliberate browser-direct URL).
+- **Panels**: health/KPI tiles, single-file convert, HTML engine comparison
+  (fires both engines in parallel), conversion history (API-truth, cursor
+  paginated), per-format / per-engine performance charts, and the embedded
+  live `/v1/dashboard`.
+- **Security headers**: a CSP (plus `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy`) is set in `next.config.ts`.
+
+Develop it with hot reload via `make ui-dev` (host Node 22), or build the
+container with `docker build -t office-convert-ui:dev ui/`.
+
+---
+
 ## Configuration
 
 All runtime config via `OFFICE_CONVERT_*` environment variables:
@@ -551,6 +474,8 @@ All runtime config via `OFFICE_CONVERT_*` environment variables:
 | `OFFICE_CONVERT_MAX_JOBS` | `1` | Concurrent HTTP requests served. Excess → 503 busy. |
 | `OFFICE_CONVERT_PARALLEL` | `4` | Concurrent chunk renders inside one request (DOCX/PPTX/PDF use fork-after-load, so peak RAM ≈ 1× loaded doc; XLSX legacy pool independently loads per worker — see `XLSX_MAX_POOL_SIZE` row). |
 | `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE` | `4` | Per-format cap on workers for XLSX. Aspose.Cells is fork-unsafe, so each XLSX worker independently loads the workbook — large files (>50 MB) can OOM with `parallel=4` on a 4 GiB pod. Cap to `2` on swap-less environments (EKS chart default). |
+| `OFFICE_CONVERT_GOTENBERG_URL` | (unset) | Chromium HTML engine endpoint. Unset → `/v1/convert/html/gotenberg` returns 503 `engine_unavailable`. Compose sets `http://gotenberg:3000`. |
+| `OFFICE_CONVERT_HTML_MAX_BYTES` | `10485760` | 10 MiB cap on HTML uploads, separate from the office-format ceiling. |
 | `OFFICE_CONVERT_CACHE_DIR` | (unset) | If set, enables content-addressable filesystem cache. Bind-mount a directory. |
 | `OFFICE_CONVERT_LICENSE_PATH` | `/aspose/license.lic` | Path inside the container. Bind-mount the operator's `.lic` here. |
 | `OFFICE_CONVERT_SCRATCH_DIR` | `/tmp/office-convert` | Per-request scratch directory. tmpfs recommended. |
@@ -572,23 +497,20 @@ All shell-overridable (`OFFICE_CONVERT_VAR=value docker compose up -d`).
 | Variable | Default | Notes |
 | -------- | ------- | ----- |
 | `OFFICE_CONVERT_POOL_MODE` | `1` | Pool mode (persistent workers, load-once-render-many). Set to `0` to force per-chunk one-shot subprocesses. |
-| `OFFICE_CONVERT_POOL_MIN_CHUNKS` | `2` | Pool mode activates when the chunk plan has at least this many chunks. Single-chunk plans use one-shot. Set to `1` to force pool mode on every conversion (useful for exercising the heartbeat dashboard on small files). |
-| `OFFICE_CONVERT_HEARTBEAT_MS` | `2000` | Per-process heartbeat cadence in ms while a load or render is in flight. `0` disables. Heartbeats are emitted at DEBUG; flip `OFFICE_CONVERT_LOG_LEVEL=debug` to see them in stdout logs. |
-| `OFFICE_CONVERT_FORK_AFTER_LOAD` | `0` | Fork-after-load mode: one leader process loads the document then `fork()`s N children that share the loaded `Document` via copy-on-write. Eliminates the N× parallel-parse contention that times out large-DOCX loads in default pool mode. Off by default until broader format/file-shape testing; flip per-workload when you have large files. |
+| `OFFICE_CONVERT_POOL_MIN_CHUNKS` | `1` | Pool mode activates when the chunk plan has at least this many chunks. Compose default `1` forces pool mode on every conversion (so the heartbeat dashboard populates even for small files). |
+| `OFFICE_CONVERT_HEARTBEAT_MS` | `2000` | Per-process heartbeat cadence in ms while a load or render is in flight. `0` disables. Heartbeats are emitted at DEBUG. |
+| `OFFICE_CONVERT_FORK_AFTER_LOAD` | `1` | Fork-after-load: one leader loads the document then `fork()`s N children that share the loaded `Document` via copy-on-write — eliminates the N× parallel-parse contention on large DOCX. XLSX is auto-excluded (Aspose.Cells is fork-unsafe). Set `0` for a global kill switch. |
 
 ### Live heartbeat dashboard
 
-The Streamlit test UI at **http://localhost:8501** (`test-ui` service in
-`compose.yaml`) shows a per-worker heartbeat table during pool-mode
-conversions:
+The UI shows a per-worker heartbeat table during pool-mode conversions:
 
-- Phase (load / render), elapsed-in-phase, **RSS in MB, Swap in MB** (orange
+- Phase (load / render), elapsed-in-phase, **RSS in MB, Swap in MB** (highlighted
   when non-zero — indicates the worker is paging out under `memswap_limit`),
   CPU jiffies, time since last heartbeat.
-- Green dot if heartbeat is ≤ 6 s old; orange if stale (worker likely hung).
 - Each conversion generates a UUID sent as `X-Request-ID`; the panel polls
-  `GET /v1/jobs/{request_id}/heartbeats` every 1 s and correlates 1:1 with the
-  in-flight upload.
+  `GET /v1/jobs/{request_id}/heartbeats` and correlates 1:1 with the in-flight
+  upload.
 
 Heartbeats are also retrievable programmatically:
 ```bash
@@ -622,19 +544,22 @@ container restart required**.
 
 ## Performance Tier-1 Optimizations
 
-The C++ worker is optimized for the per-chunk subprocess pattern:
+The C++ worker is optimized for the subprocess pattern:
 
-- **Lazy product activation** — `apply_license()` activates only the Aspose
-  product matching `--format`, not all four. Saves ~150–600 ms of static
-  init + SetLicense overhead per worker invocation.
+- **Lazy product activation** — each per-product binary links exactly one Aspose
+  product, so `SetLicense()` + static init touch only that product. Saves
+  ~150–600 ms of overhead per worker invocation.
 - **Compiler/linker optimizations** — Release builds use
   `-O2 -flto -fvisibility=hidden -fvisibility-inlines-hidden
   -fdata-sections -ffunction-sections` + `-Wl,--gc-sections -Wl,-s`.
   10–30% smaller binary; ~30–100 ms faster dynamic-loader resolution
   per spawn.
+- **Fork-after-load** (DOCX/PPTX/PDF) — load the document once, fork
+  copy-on-write child renderers, keeping peak RAM at ~1× the loaded document.
 
-Combined saving: **~200–700 ms per chunk render** of startup overhead.
-Aspose render time itself is unchanged — that's still the dominant cost.
+Combined: large-DOCX loads that previously timed out under N× parallel parsing
+now complete in seconds. Aspose render time itself is unchanged — that's still
+the dominant cost.
 
 ---
 
@@ -642,14 +567,14 @@ Aspose render time itself is unchanged — that's still the dominant cost.
 
 | Symptom | Likely cause | Action |
 | ------- | ------------ | ------ |
-| `docker build` fails at `COPY aspose-total-cpp.tar.gz` | Tarball not in build context | `cp /path/to/aspose-total-cpp.tar.gz .` then rebuild |
-| `docker build` fails with linker errors `undefined reference to Aspose::...` | SDK library names don't match `target_link_libraries()` in `worker_cpp/CMakeLists.txt` | Inspect the extracted tarball at `aspose-sdk/lib/`; update CMake `aspose_words` / `aspose_slides` / `aspose_cells` / `aspose_pdf` to match real `.so` filenames |
+| `docker build` fails copying `vendor/aspose/...` | Aspose product trees not populated | Run `make verify-vendor`; extract the 5 product libraries into `vendor/aspose/{Words,Cells,Slides,PDF,Email}/` |
+| `docker build` fails with linker errors `undefined reference to Aspose::...` | Product `.so` names don't match the CMake link targets | Inspect the extracted trees; verify each product's `lib/` against `worker_cpp/CMakeLists.txt` |
 | Container starts but `/health` 503 with `qpdf_missing` | qpdf not in runtime image | Already in Dockerfile; check `apt-get` step succeeded |
-| `/health` 503 with `worker_binary_missing` | C++ worker didn't build | Re-check builder-stage logs; verify the SDK extracted to `/opt/aspose-sdk/` |
+| `/health` 503 with `worker_binary_missing` | C++ workers didn't build | Re-check builder-stage logs; verify vendor trees extracted |
 | `/health` 503 with `license_path_missing` | Bind-mount missing | Add `-v ./license.lic:/aspose/license.lic:ro` |
 | `/health` 503 with `license_expired` | License past expiry date | Renew the temp license |
-| All `/v1/convert` requests return 500 `render_failed` with "SDK not linked" | Real Aspose calls still commented out in `worker_cpp/formats/*.cpp` | Uncomment the real Aspose API calls per the inline comment blocks; rebuild |
-| 500 `subdivision_floor_exceeded` | A single page exceeds 2 GB RAM (e.g. PPTX with huge embedded media) | Reduce input complexity; documented v1 limitation |
+| 503 `engine_unavailable` on `/v1/convert/html/gotenberg` | Gotenberg sidecar down or `OFFICE_CONVERT_GOTENBERG_URL` unset | Ensure the `gotenberg` compose service is up |
+| 500 `subdivision_floor_exceeded` | A single page exceeds the RAM ceiling (e.g. PPTX with huge embedded media) | Reduce input complexity; documented v1 limitation |
 | 503 `busy` on every request | `max_jobs` exhausted | Raise `OFFICE_CONVERT_MAX_JOBS` (mind host RAM headroom; XLSX is fork-unsafe so each worker independently loads the workbook — see `OFFICE_CONVERT_XLSX_MAX_POOL_SIZE` cap) |
 | HTTP client times out at ~30 s on large conversions | Default client timeout too short | Set client timeout to ≥ 15 minutes |
 
@@ -671,7 +596,7 @@ for the full list with rationale:
   Exception: the license file IS re-read per request.
 - **NG-6**: No HA, replication, or failover.
 - **NG-7**: No committed SLO (best-effort).
-- **NG-8**: Output is generic PDF 1.7 only. No PDF/A, no linearization,
+- **NG-8**: Output is generic PDF only. No PDF/A, no linearization,
   no digital signing.
 - **NG-9**: x86_64 Linux only (Aspose.Total C++ constraint).
 
@@ -680,80 +605,35 @@ for the full list with rationale:
 ## Development
 
 The recommended path is **Docker-first via `make`** (see the workflow section
-above). The same commands inside the test image, for the Makefile-curious:
+above).
 
-| What | Make target | Underlying command |
-| ---- | ----------- | ------------------ |
-| Build test image | `make build-test` | `docker build -t office-convert:test -f Dockerfile.test .` |
-| Run all tests | `make test` | `docker run --rm office-convert:test pytest tests/unit tests/property tests/integration -v` |
-| Coverage gate | `make test-coverage` | `docker run --rm office-convert:test pytest --cov=office_convert --cov-fail-under=80 ...` |
-| Lint | `make lint` | `docker run --rm office-convert:test ruff check .` |
-| Format check | `make format-check` | `docker run --rm office-convert:test ruff format --check .` |
-| Type-check | `make typecheck` | `docker run --rm office-convert:test mypy office_convert` |
-| Generate corpus | `make corpus` | `docker run --rm -v .../corpus:... office-convert:test python -m tests.corpus._generate` |
-| All gates | `make qa` | lint + format-check + typecheck + test |
-
-In-process integration tests use a fake worker stand-in
-(`tests/conftest.py::fake_worker_script`), so the entire suite passes
-without the real Aspose SDK present.
-
-### Host-side Python development (alternative, not preferred)
-
-If you prefer working with Python directly on the host (e.g., editor
-integration with the venv):
+### Go orchestrator
 
 ```bash
-uv sync                                    # creates .venv with [dev] extras
-source .venv/bin/activate
-python -m tests.corpus._generate           # generate corpus fixtures
-pytest                                     # run tests
-ruff check . && ruff format --check . && mypy office_convert
+make test-go          # unit + property + golden parity gate (runs in a golang:1.26 container)
+make golden-verify    # just the parity gate
 ```
 
-Host needs Python 3.11, `uv`, and `qpdf` installed. Docker-first
-workflow above avoids these prerequisites.
-
-### End-to-end tests (Docker + real Aspose)
-
-A separate test suite under `tests/e2e/` uses
-[Testcontainers](https://testcontainers.com/) to bring up the real container
-and exercise `/v1/convert` over real HTTP. These catch what in-process tests
-cannot: Dockerfile bugs, real Aspose linkage, real qpdf concat at real
-sizes, real `prlimit` enforcement.
-
-**Prerequisites**:
-
-1. Build the image with a real Aspose SDK in the build context
-   (see Build section above).
-2. Obtain an Aspose.Total **C++** scope Temporary License.
-3. Install the e2e extras:
-   ```bash
-   uv pip install -e .[dev,e2e]
-   ```
-
-**Run via Makefile (recommended — runs inside container, mounts Docker socket)**:
+To run the Go suite directly on the host (needs Go 1.26 + `util-linux` for the
+worker tests' `prlimit`):
 
 ```bash
-make test-e2e
+go build ./... && go vet ./...
+go test ./...
 ```
 
-**Or manually** (requires `pytest` + `testcontainers` installed on the host):
+### Next.js UI
 
 ```bash
-OFFICE_CONVERT_E2E_LICENSE=/path/to/license.lic \
-OFFICE_CONVERT_E2E_IMAGE=office-convert:dev \
-pytest tests/e2e -m e2e
+make ui-install       # npm ci
+make ui-dev           # dev server on :3000 (set API_URL to a running API)
+make ui-lint          # ESLint + tsc --noEmit
+make ui-build         # production standalone build
+npm --prefix ui test  # vitest component tests
 ```
 
-The suite is **skipped by default** (when `OFFICE_CONVERT_E2E_LICENSE` is
-unset), so CI without an Aspose license runs only the in-process tests.
-
-**Dual-mode design**: rendering tests accept either HTTP 200 (real Aspose
-linked) or 500 `render_failed` (scaffolded worker without Aspose SDK
-calls uncommented). The Docker plumbing is verified even before Aspose
-is fully wired in; once you uncomment the API calls and rebuild, the
-same tests transition to verifying real conversion fidelity without
-code changes.
+In-process Go integration tests use a fake worker stand-in, so the entire suite
+passes without the real Aspose SDK present.
 
 ---
 
@@ -761,7 +641,7 @@ code changes.
 
 The image and recommended `docker run` flags support:
 
-- **Non-root user** (`appuser:appgroup`, uid 1000) — image runs without root
+- **Non-root user** — image runs without root
 - **Read-only root filesystem** — compatible with `--read-only --tmpfs /tmp --tmpfs /var/run`
 - **Dropped Linux capabilities** — compatible with `--cap-drop=ALL`
 
@@ -771,16 +651,14 @@ format, page count, `request_id`).
 
 ### Vulnerability scanning
 
-Three layers, all wired up:
-
 | Layer | What it covers | Where |
 |---|---|---|
 | ECR scan-on-push (BASIC) | OS packages in the pushed image | AWS console / `aws ecr describe-image-scan-findings` |
-| `apt-get upgrade -y` in every Dockerfile apt stage | Base-image-inherited CVEs at build time | `Dockerfile`, `Dockerfile.ui`, `Dockerfile.test` |
-| Trivy filesystem + config scan in CI | Python deps + Dockerfile / Helm / k8s misconfig | `.github/workflows/security.yml`, SARIF → GitHub code scanning |
+| `apt-get upgrade -y` in the Dockerfile apt stages | Base-image-inherited CVEs at build time | `Dockerfile` |
+| Trivy filesystem + config scan in CI | Dependencies + Dockerfile / Helm / k8s misconfig | `.github/workflows/security.yml`, SARIF → GitHub code scanning |
 
-Dependabot (`.github/dependabot.yml`) opens weekly Monday PRs for `pip`,
-`docker` (base images), and `github-actions` ecosystems.
+Dependabot (`.github/dependabot.yml`) opens weekly Monday PRs for `npm` (the
+`ui/` dependencies), `docker` (base images), and `github-actions` ecosystems.
 
 For the full security testing matrix, see
 `aidlc-docs/construction/build-and-test/security-test-instructions.md`.
@@ -790,48 +668,32 @@ For the full security testing matrix, see
 ## Project Structure
 
 ```
-office_convert/        Python package — orchestrator, HTTP server, chunk
-├── py.typed             PEP 561 marker (this package ships type hints)
-├── types.py errors.py config.py logging.py license.py
-├── chunk_planner.py cache.py qpdf.py probe.py
-├── aspose_worker.py orchestrator.py server.py
-cmd/ + internal/       Go orchestrator (migration; backend-only, pre-cutover
-                       — see "Go orchestrator" above). net/http+chi server,
-                       planner, worker pool, qpdf, cache, obs, s3. Tests use
+cmd/ + internal/       Go orchestrator. net/http + chi server, planner,
+                       worker pool, qpdf, cache, observability, S3. Tests use
                        testify + go-cmp + rapid; the golden parity gate lives
-                       in internal/server/testdata/golden/.
+                       in internal/server/testdata/golden/ (14 cases).
 worker_cpp/            C++17 worker — main, error/license/render/probe
-                       coordinators, per-format dispatch (DOCX/PPTX/
-                       XLSX/PDF), CMakeLists.txt with Aspose linkage
-tests/
-├── unit/              ~80 unit tests
-├── property/          4 PBT files (Hypothesis: 500 examples for chunk
-                       planner, 100 elsewhere)
-├── integration/       In-process integration via FastAPI TestClient
-                       + fake worker
-├── e2e/               Testcontainers + real Docker container
-                       (gated by OFFICE_CONVERT_E2E_LICENSE)
-└── corpus/            Synthetic document fixtures + generator script
+                       coordinators, per-format dispatch (DOCX/PPTX/XLSX/
+                       PDF/Email), CMakeLists.txt with per-product Aspose linkage.
+ui/                    Next.js 15 operator dashboard (App Router, TypeScript,
+                       Tailwind, SWR, recharts). app/ components/ lib/ + vitest
+                       component tests. Built via ui/Dockerfile.
+testdata/corpus/       Static document fixtures for manual / acceptance testing.
+smoke_test/            Aspose.Words license + .so smoke test (pre-integration).
+vendor/                Go module vendor tree + Aspose product libraries
+                       (vendor/aspose/{Words,Cells,Slides,PDF,Email}).
 
-Dockerfile             Multi-stage production build (debian:bookworm
-                       builder → python:3.11-slim-bookworm runtime)
-Dockerfile.test        Test runner image (Python + dev deps; no Aspose)
-compose.yaml           Docker Compose definition for the prod service +
-                       opt-in test profile. Canonical entrypoint.
-go.Dockerfile          Go orchestrator image (C++ builder + Go builder +
-                       Python-free runtime). Build via make build-go.
-compose.go.yaml        Compose override swapping in the Go backend
-                       (make up-go); inherits everything else from compose.yaml.
-Makefile               Docker-first workflow orchestrator (delegates to
-                       compose; run `make help`)
-pyproject.toml         Python deps + tool config (PEP 621, PEP 561)
-ruff.toml              Linter + formatter rules
-README.md              You are here
-.gitignore             Defensive secrets + build artifact exclusions
-.dockerignore          Same, for the Docker build context
-aidlc-docs/            Full AI-DLC documentation (requirements,
-                       design, stories, plans, build/test instructions,
-                       audit log)
+Dockerfile             Multi-stage production build: C++ worker builder →
+                       Go builder → Python-free runtime (the only backend image).
+compose.yaml           Docker Compose definition for the full stack (API + UI +
+                       Gotenberg + LocalStack). Canonical entrypoint.
+Makefile               Docker-first workflow orchestrator (run `make help`).
+go.mod / go.sum        Go module definition.
+README.md              You are here.
+.gitignore             Defensive secrets + build artifact exclusions.
+.dockerignore          Same, for the Docker build context.
+aidlc-docs/            Full AI-DLC documentation (requirements, design, stories,
+                       plans, build/test instructions, audit log).
 ```
 
 ---
@@ -847,9 +709,7 @@ This README covers the operator-facing surface. For deeper material:
 | Who uses this and how? | `aidlc-docs/inception/user-stories/stories.md` |
 | How does the algorithm work? | `aidlc-docs/construction/office-converter/functional-design/business-logic-model.md` |
 | What are the concrete business rules? | `aidlc-docs/construction/office-converter/functional-design/business-rules.md` |
-| What are the non-functional commitments? | `aidlc-docs/construction/office-converter/nfr-requirements/nfr-requirements.md` |
-| What's the tech stack? Why these choices? | `aidlc-docs/construction/office-converter/nfr-requirements/tech-stack-decisions.md` |
-| How do specific patterns work in code? | `aidlc-docs/construction/office-converter/nfr-design/nfr-design-patterns.md` |
+| How is the Go orchestrator structured? | `aidlc-docs/construction/go-orchestrator/` |
 | How do I build, test, and ship this? | `aidlc-docs/construction/build-and-test/*.md` |
 | What were the actual decisions made? | `aidlc-docs/audit.md` (full ISO-timestamped log) |
 | What's deferred to v2 (cloud)? | `aidlc-docs/inception/requirements/requirement-verification-questions.md` |
@@ -858,6 +718,6 @@ This README covers the operator-facing surface. For deeper material:
 
 ## License of this code
 
-The Python orchestrator and the C++ worker scaffolding are provided as
-example code. **Aspose.Total C++ itself requires a separate commercial
+The Go orchestrator, the Next.js UI, and the C++ worker scaffolding are provided
+as example code. **Aspose.Total C++ itself requires a separate commercial
 license from Aspose**, not included here.

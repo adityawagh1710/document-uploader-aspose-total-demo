@@ -4,15 +4,13 @@ version: 2
 # with the Trivy job in .github/workflows/security.yml — Trivy detects
 # CVEs, dependabot opens the PR to fix them.
 #
-# Grouping rationale: the 2026-05-21 first-run opened 9 individual PRs
-# (5 pip + 3 actions + 1 docker). Groups collapse related minor/patch
-# bumps into single PRs so weekly cadence stays manageable. Majors
-# stay individual (a major bump deserves a focused review).
+# Grouping rationale: groups collapse related minor/patch bumps into
+# single PRs so weekly cadence stays manageable. Majors stay individual
+# (a major bump deserves a focused review).
 updates:
-  # Python deps declared in pyproject.toml ([project.dependencies] +
-  # [project.optional-dependencies].dev / .e2e).
-  - package-ecosystem: pip
-    directory: /
+  # Next.js UI dependencies declared in ui/package.json.
+  - package-ecosystem: npm
+    directory: /ui
     schedule:
       interval: weekly
       day: monday
@@ -21,54 +19,46 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
-      - python
+      - javascript
     commit-message:
       prefix: "chore(deps)"
       include: scope
     groups:
-      # FastAPI + the deps it tightly couples with. Bumping these
-      # together avoids the version-skew breakage class where e.g.
-      # fastapi 0.115 + python-multipart 0.0.29 + uvicorn lockstep is
-      # the supported combination but each lands in its own PR.
-      fastapi-stack:
+      # Next.js + React runtime stack. Bumping these together avoids the
+      # version-skew breakage class where next/react/react-dom must move
+      # in lockstep.
+      nextjs-stack:
         patterns:
-          - "fastapi"
-          - "starlette"
-          - "uvicorn*"
-          - "python-multipart"
-          - "pydantic"
-          - "pydantic-settings"
-          - "aiofiles"
-          - "types-aiofiles"
+          - "next"
+          - "react"
+          - "react-dom"
+          - "eslint-config-next"
+          - "@types/react"
+          - "@types/react-dom"
+          - "swr"
+          - "recharts"
         update-types:
           - "minor"
           - "patch"
-      # Test + lint tooling. None of these affect runtime behavior,
-      # safe to roll together.
+      # Test + lint + build tooling. None of these affect runtime
+      # behavior, safe to roll together.
       test-tooling:
         patterns:
-          - "pytest*"
-          - "hypothesis"
-          - "mypy*"
-          - "ruff"
-          - "httpx"
-          - "testcontainers"
-        update-types:
-          - "minor"
-          - "patch"
-      # Document-generation libs used by tests/corpus only.
-      doc-gen:
-        patterns:
-          - "python-docx"
-          - "python-pptx"
-          - "openpyxl"
-          - "reportlab"
+          - "vitest"
+          - "@vitejs/*"
+          - "@testing-library/*"
+          - "jsdom"
+          - "typescript"
+          - "@types/node"
+          - "tailwindcss"
+          - "postcss"
+          - "autoprefixer"
         update-types:
           - "minor"
           - "patch"
 
-  # Base images in all Dockerfiles. Picks up python:3.12-slim-bookworm
-  # → next point release, debian:bookworm → debian:bookworm-YYYYMMDD, etc.
+  # Base images in the Dockerfiles. Picks up golang:1.26-bookworm,
+  # node:22-alpine, gotenberg/gotenberg, localstack/localstack, etc.
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -84,19 +74,15 @@ updates:
       prefix: "chore(deps)"
       include: scope
     groups:
-      # All base-image bumps in one PR. Production Dockerfile +
-      # Dockerfile.ui + Dockerfile.test all use python:*-slim-bookworm
-      # (or debian:bookworm) and should advance together.
+      # All base-image bumps in one PR.
       base-images:
         patterns:
           - "*"
         update-types:
           - "minor"
           - "patch"
-    # Don't auto-bump majors — Python 3.14 isn't a stable release as
-    # of 2026-05; the 2026-05-21 PR #23 trying 3.11 → 3.14 failed CI
-    # and Trivy. Major Python bumps need manual review + alignment
-    # across all 3 Dockerfiles (prod uses 3.12, test uses 3.11).
+    # Don't auto-bump majors — major base-image bumps (Go toolchain,
+    # Node runtime) need manual review + local build verification.
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
