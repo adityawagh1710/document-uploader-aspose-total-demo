@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,6 +93,32 @@ func TestParseExpiryEarliestRegardlessOfOrder(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, has)
 	assert.Equal(t, 2025, exp.Year(), "earliest of the two binds regardless of element order")
+}
+
+// A license renewed in place (file rewritten) must be picked up WITHOUT a
+// restart — the manager re-parses when the file's mtime changes.
+func TestManagerAutoRefreshesOnFileChange(t *testing.T) {
+	dir := t.TempDir()
+	lic := filepath.Join(dir, "renewed.lic")
+
+	// Start expired (past LicenseExpiry).
+	mustWrite(t, lic, `<License><Data><LicenseExpiry>20200101</LicenseExpiry></Data></License>`)
+	older := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(lic, older, older))
+
+	m := NewManager(lic)
+	expired, err := m.IsExpired()
+	require.NoError(t, err)
+	require.True(t, expired, "past-dated license should be expired")
+
+	// Operator renews in place → future expiry, with a newer mtime.
+	mustWrite(t, lic, `<License><Data><LicenseExpiry>20990101</LicenseExpiry></Data></License>`)
+	newer := time.Now()
+	require.NoError(t, os.Chtimes(lic, newer, newer))
+
+	expired, err = m.IsExpired()
+	require.NoError(t, err)
+	assert.False(t, expired, "renewed license must be picked up without Refresh() or restart")
 }
 
 func mustWrite(t *testing.T, path, content string) {
