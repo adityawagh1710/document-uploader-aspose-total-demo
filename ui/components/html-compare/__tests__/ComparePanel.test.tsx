@@ -65,9 +65,11 @@ async function uploadHTML(name = 'sample.html') {
 }
 
 describe('ComparePanel', () => {
-  it('disables the run button until a file is chosen', () => {
+  it('disables the run button until a file is chosen', async () => {
     render(<ComparePanel />);
-    expect(screen.getByTestId('compare-both-button')).toBeDisabled();
+    // findBy* flushes the pending SWR (/v1/conversions/stats) state update
+    // inside act(), so the assertion doesn't race the async store write.
+    expect(await screen.findByTestId('compare-both-button')).toBeDisabled();
   });
 
   it('sends wait fields to gotenberg only (D4)', async () => {
