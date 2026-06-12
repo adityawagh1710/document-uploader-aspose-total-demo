@@ -15,6 +15,7 @@ export default function Page() {
   const dashboardUrl =
     process.env.NEXT_PUBLIC_DASHBOARD_URL ?? 'http://localhost:8080/v1/dashboard';
   const s3Enabled = (process.env.NEXT_PUBLIC_S3_ENABLED ?? 'false') === 'true';
+  const s3OutputBucket = process.env.NEXT_PUBLIC_S3_OUTPUT_BUCKET ?? 'office-convert-out';
 
   return (
     <div>
@@ -30,7 +31,7 @@ export default function Page() {
           <h2 id="convert-heading" className="mb-4 text-base font-semibold text-slate-200">
             Convert a document
           </h2>
-          <ConvertPanel s3Enabled={s3Enabled} />
+          <ConvertPanel s3Enabled={s3Enabled} s3OutputBucket={s3OutputBucket} />
         </section>
 
         <section aria-labelledby="compare-heading">

@@ -21,7 +21,13 @@ interface DoneState {
   s3Key: string | null;
 }
 
-export function ConvertPanel({ s3Enabled }: { s3Enabled: boolean }) {
+export function ConvertPanel({
+  s3Enabled,
+  s3OutputBucket = 'office-convert-out',
+}: {
+  s3Enabled: boolean;
+  s3OutputBucket?: string;
+}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [s3Output, setS3Output] = useState(false);
@@ -36,7 +42,9 @@ export function ConvertPanel({ s3Enabled }: { s3Enabled: boolean }) {
     setDone(null);
     const started = performance.now();
     try {
-      const res = await convertFile(file, s3Output ? { s3Output: 'office-convert-out' } : {});
+      // The API expects an `s3://bucket[/key]` URL, NOT a bare bucket name —
+      // a bucket-only URL falls back to the server's key template.
+      const res = await convertFile(file, s3Output ? { s3Output: `s3://${s3OutputBucket}` } : {});
       setDone({
         filename: file.name.replace(/\.[^.]+$/, '') + '.pdf',
         blob: res.blob,
@@ -84,7 +92,7 @@ export function ConvertPanel({ s3Enabled }: { s3Enabled: boolean }) {
               onChange={(e) => setS3Output(e.target.checked)}
               className="accent-cyan-400"
             />
-            Also store output in S3 (office-convert-out)
+            Also store output in S3 ({s3OutputBucket})
           </label>
         )}
 

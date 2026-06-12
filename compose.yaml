@@ -123,6 +123,8 @@ services:
       API_URL: "http://office-convert:8080"
       NEXT_PUBLIC_DASHBOARD_URL: "http://localhost:8080/v1/dashboard"
       NEXT_PUBLIC_S3_ENABLED: "${OFFICE_CONVERT_S3_ENABLED:-true}"
+      # Must match the API's OFFICE_CONVERT_S3_DEFAULT_OUTPUT_BUCKET / allowlist.
+      NEXT_PUBLIC_S3_OUTPUT_BUCKET: "office-convert-out"
       PORT: "3000"
     depends_on:
       - office-convert
