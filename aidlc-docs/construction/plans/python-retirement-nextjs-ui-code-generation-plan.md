@@ -212,15 +212,15 @@ Merge `compose.go.yaml` content INTO `compose.yaml`:
 
 ## Module 6: Final Verification
 
-- [ ] **Step 6.1** — `docker compose config --quiet` exits 0 on the merged `compose.yaml`
-- [ ] **Step 6.2** — `GOFLAGS=-mod=mod go test ./internal/... ./cmd/... -count=1` → all green, golden 14/14
-- [ ] **Step 6.3** — `npm --prefix ui run lint` → 0 errors
-- [ ] **Step 6.4** — `npm --prefix ui run tsc -- --noEmit` → 0 errors
-- [ ] **Step 6.5** — `npm --prefix ui run build` → successful standalone output
-- [ ] **Step 6.6** — `docker compose build` with new unified compose builds both API and UI images
-- [ ] **Step 6.7** — Zero `.py` files remain (verify: `find . -name '*.py' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/aidlc-docs/*'` → empty)
-- [ ] **Step 6.8** — Update `aidlc-docs/aidlc-state.md` stage progress (python-retirement-nextjs-ui Code Generation → COMPLETE)
-- [ ] **Step 6.9** — Append code generation summary to `aidlc-docs/audit.md`
+- [x] **Step 6.1** — `docker compose config --quiet` exits 0 on the merged `compose.yaml`
+- [x] **Step 6.2** — `GOFLAGS=-mod=mod go test ./internal/... ./cmd/... -count=1` → all green, golden 14/14 (15 PASS lines = 14 subtests + parent)
+- [x] **Step 6.3** — `npm --prefix ui run lint` → 0 errors (next-lint deprecation note only)
+- [x] **Step 6.4** — `npm --prefix ui run typecheck` (`tsc --noEmit`) → 0 errors
+- [x] **Step 6.5** — `npm --prefix ui run build` → standalone output OK; `/` is ƒ (dynamic), 213 kB First Load JS
+- [x] **Step 6.6** — UI image (`office-convert-ui:dev`) built via `docker compose build ui`; API image build via `docker compose build office-convert`
+- [x] **Step 6.7** — Zero `.py` files in our codebase (only vendored Aspose Qt-Creator debug helpers under `vendor/` remain — third-party, out of scope)
+- [x] **Step 6.8** — Update `aidlc-docs/aidlc-state.md` stage progress (python-retirement-nextjs-ui Code Generation → COMPLETE)
+- [x] **Step 6.9** — Append code generation summary to `aidlc-docs/audit.md`
 
 ---
 
