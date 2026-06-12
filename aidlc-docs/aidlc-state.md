@@ -112,6 +112,19 @@
     Next.js UI = single PR per Q4-override-to-B). Orphaned `office-convert:dev`/`:test`
     Python images left in place (no blanket prune — sibling project shares the namespace).
     Aspose-side HTML acceptance still blocked on the expired real license (pre-existing).
+- **Build and Test (python-retirement-nextjs-ui)**: **EXECUTED 2026-06-12** — results in
+  `construction/build-and-test/python-retirement-nextjs-ui-build-and-test.md`. Unlike the
+  office-converter summary (instructions-only), this unit's gates were actually run.
+  Builds ✅ (`office-convert:go` 5.17 GB + `office-convert-ui:dev` 239 MB; compose config OK).
+  Go suite green + golden 14/14. UI lint/typecheck/build clean (`/` dynamic, 213 kB FLJS).
+  **Integration smoke (11 scenarios) ✅** against the running consolidated stack:
+  /health; Next.js `/api/*` single-origin proxy byte-mirrors /health (BR-UI-1); UI :8501 200;
+  CSP+hardening headers (BR-UI-7); unsupported_format 400 with html absent (golden parity);
+  **Gotenberg HTML 200 → 27688-byte PDF direct AND via UI proxy** (license-independent);
+  API-truth history shows engine/source (BR-UI-5); per_engine_html stats; Aspose HTML → 503
+  `license_expired` (**expected** — expired real license, the known SubscriptionExpiry-vs-
+  LicenseExpiry gap, NOT a regression). Stack torn down clean. **Awaiting approval to proceed
+  to Operations.**
 - **Research basis**: project memory `project-html-conversion-feature.md` + audit entries
   2026-06-12; integration-point map from code-explorer trace.
 

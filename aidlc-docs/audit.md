@@ -2505,3 +2505,20 @@ Two doc-quality observations worth keeping:
 **Context**: Code Generation (python-retirement-nextjs-ui) COMPLETE. Next: Build and Test stage, or open the PR.
 
 ---
+## Code Generation APPROVED → Build and Test (python-retirement-nextjs-ui)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Continue to Next Stage"
+**AI Response**: Code Generation (python-retirement-nextjs-ui) approved. Proceeding to Build and Test stage — generating build + test instruction docs under construction/build-and-test/ and running the integration smoke against the running stack (Go API + Next.js UI + Gotenberg + LocalStack).
+**Context**: Build and Test stage starting for unit python-retirement-nextjs-ui.
+
+---
+## Build and Test Stage EXECUTED (python-retirement-nextjs-ui)
+**Timestamp**: 2026-06-12T00:00:00Z
+**Build Status**: Success — office-convert:go (5.17 GB) + office-convert-ui:dev (239 MB) built; docker compose config OK on merged compose.yaml.
+**Test Status**: Pass — Go suite green + golden 14/14; UI lint/typecheck/build clean (/ dynamic, 213 kB First Load JS); integration smoke 11/11 against the running consolidated stack (Go API + Next.js UI + Gotenberg + LocalStack).
+**AI Response**: Ran build + integration verification end-to-end. Highlights: Next.js /api/* single-origin proxy byte-mirrors direct /health (BR-UI-1); CSP + hardening headers present (BR-UI-7); unsupported_format 400 with html absent from accepted (golden parity); Gotenberg HTML conversion 200 → 27688-byte PDF both direct AND through the UI proxy (full browser→UI→API→Gotenberg→PDF path, license-independent); API-truth history shows engine/source fields (BR-UI-5); per_engine_html stats block populated (gotenberg count=2 avg 2864ms p95 5593ms); Aspose HTML → 503 license_expired (EXPECTED — expired real license, the pre-existing SubscriptionExpiry-vs-LicenseExpiry gap, not a regression). Stack torn down clean. Doc: construction/build-and-test/python-retirement-nextjs-ui-build-and-test.md.
+**Files Generated**:
+- python-retirement-nextjs-ui-build-and-test.md (consolidated per-unit build+test doc)
+**Context**: Build and Test EXECUTED for unit python-retirement-nextjs-ui; awaiting approval to proceed to Operations.
+
+---
