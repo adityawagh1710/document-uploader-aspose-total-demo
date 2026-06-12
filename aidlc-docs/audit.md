@@ -2458,3 +2458,43 @@ Two doc-quality observations worth keeping:
 **Context**: Unit html-conversion: all stages approved (Requirements → Workflow Planning → Functional Design → Code Generation → Build and Test).
 
 ---
+
+## Python retirement + Next.js UI rewrite — feasibility + Requirements Analysis INITIATED
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input** (sequence): 1. "Can we remove python entirly from this repo ??????" 2. "Remove python and rewrite the UI too in next js Is it possible ???"
+**AI Response**: Answered feasible (end-state Go + C++ + TypeScript/Next.js, zero Python). Surfaced: existing Phase 9 plan (construction/go-orchestrator/python-retirement-plan.md) covers the backend retirement mechanics; UI rewrite is the major new scope (~3k-line Streamlit app → Next.js); browser↔API origin needs proxy-vs-CORS decision; the plan's Phase 8 (dev05 cutover soak) gate is currently blocked by the expired Aspose license anyway — override requires explicit user decision; sequencing vs the unmerged feat/html-conversion PR. Started Requirements Analysis for unit `python-retirement-nextjs-ui`; question file created at inception/requirements/python-retirement-nextjs-ui-questions.md (Q1 UI parity scope, Q2 Next.js deployment shape/origin strategy, Q3 Phase 8 gate override, Q4 PR sequencing). Awaiting answers.
+**Context**: Requirements Analysis (python-retirement-nextjs-ui). Question gate open.
+
+---
+
+## Requirements Analysis (python-retirement-nextjs-ui) — answers received, requirements generated
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "all recommended"
+**AI Response**: Recorded Q1:A (core-first UI), Q2:A (Node container + rewrites proxy), Q3:A (retire now; Phase 8 gate overridden — license-blocked anyway; rollback = last-python-backend tag + ECR), Q4:A (merge feat/html-conversion first). Note: first answer-fill script corrupted prose [Answer] occurrences; repaired (4 clean answers verified). Generated `python-retirement-nextjs-ui-requirements.md`: FR-1 delete office_convert/+tests+packaging (golden fixtures kept frozen), FR-2 delete Streamlit → Next.js app `ui/` with 5 core surfaces (convert, engine comparison, history+presign, health/stats+perf, dashboard iframe; deep telemetry panels deferred), FR-3 rewrites proxy, FR-4 Dockerfile/compose/Make consolidation (office-convert:go tag kept), FR-5 CI ui-test job + dependabot npm, FR-6 rollback tag, FR-7 sequencing. NFRs: SECURITY-04 headers/CSP on the Next app + non-root (fixes UI-as-root TODO), TS strict + eslint + vitest components, recharts not plotly, wire-contract untouched, PBT survives via Go rapid suites. Extension compliance table included; no blocking findings. Presenting approval gate; recommendation: skip User Stories → Workflow Planning.
+**Context**: Requirements Analysis complete (python-retirement-nextjs-ui); approval gate open.
+
+---
+
+## Requirements APPROVED (Q4 overridden) + Workflow Planning executed (python-retirement-nextjs-ui)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Approve & Continue but everything in feat/html-conversion branch"
+**AI Response**: Recorded approval with Q4 override A→B: all retirement + Next.js work stacks on the existing `feat/html-conversion` branch (single PR). Updated question file + requirements FR-7 accordingly; `last-python-backend` tag will be placed on branch HEAD before deletion. Workflow Planning executed: execution plan at `inception/plans/python-retirement-nextjs-ui-execution-plan.md` — EXECUTE Functional Design / Code Generation / Build and Test; SKIP User Stories / Application Design / Units Generation / NFR stages / Infra Design. Module order = safety mechanism (tag → ADD ui/ → compose swap → DELETE python → consolidate → CI/docs → verify). Risk medium-high, mitigated by tag+ECR rollback and Go suite + golden fixtures as net. Presenting plan approval gate.
+**Context**: Workflow Planning complete (python-retirement-nextjs-ui); awaiting plan approval.
+
+---
+
+## Execution Plan APPROVED + Functional Design executed (python-retirement-nextjs-ui)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input**: "Approve & Continue"
+**AI Response**: Executed Functional Design: plan (defaults D1–D7: Next 15 App Router standalone / recharts / SWR / corpus→testdata / API-backed history fixing the UI-local-state pitfall / host port 8501→container 3000 / session-scoped re-run) + 4 artifacts at construction/python-retirement-nextjs-ui/functional-design/: frontend-components (ui/ layout, components↔endpoints↔polling map, rewrites proxy, data-testid conventions), business-rules (BR-R1 exact delete/move/keep inventory, BR-R2 consolidation mapping, BR-R3 CI/dependabot, BR-R4 rollback tag, BR-UI-1..9 incl. SECURITY-04 header set), business-logic-model (UI flows, retirement sequencing invariant: go test+golden green at every step; PBT-01: no UI properties, rationale documented), domain-entities (TS wire mirrors + env surface). Extension compliance: SECURITY-04 captured (BR-UI-7), SECURITY-03 unchanged-Go, PBT-01 compliant. No blocking findings. Presenting 2-option gate.
+**Context**: Functional Design complete (python-retirement-nextjs-ui); awaiting approval before Code Generation.
+
+---
+
+## Functional Design APPROVED + Code Generation Part 1 (python-retirement-nextjs-ui)
+**Timestamp**: 2026-06-12T00:00:00Z
+**User Input** (sequence): 1. "Continue to Next Stage" 2. "Approve & Generate"
+**AI Response**: Recorded Functional Design approval. Created Code Generation plan at construction/plans/python-retirement-nextjs-ui-code-generation-plan.md — 6 modules / 35 steps: Mod 0 rollback tag `last-python-backend` → Mod 1 ui/ Next.js app (scaffold, lib, app shell, 4 UI primitives, ConvertPanel, ComparePanel+EngineCard, HistoryPanel+PresignButton, HealthTiles+PerfPanel, DashboardFrame, ui/Dockerfile, vitest tests) → Mod 2 compose additive ui service + config verify → Mod 3 corpus move + Python deletion sweep + golden-green check → Mod 4 consolidation (go.Dockerfile→Dockerfile, compose merge, Makefile canonicalization) → Mod 5 CI qa→ui-test + dependabot pip→npm + README → Mod 6 final verification (incl. zero-.py check). User approved with "Approve & Generate" — Part 2 execution begins on feat/html-conversion.
+**Context**: Code Generation (python-retirement-nextjs-ui) Part 1 approved; Part 2 executing.
+
+---

@@ -66,6 +66,34 @@
   action: renewed license, then re-run aspose-side criteria 1–3. Build and Test **APPROVED
   2026-06-12** — unit `html-conversion` workflow COMPLETE (Operations = placeholder; next
   practical step is the `feat/html-conversion` PR + post-license re-verification).
+
+## Python Retirement + Next.js UI (2026-06-12) — Requirements Analysis
+
+- **Request**: remove ALL Python (orchestrator AND UI); rewrite the UI in Next.js/TypeScript.
+  End-state languages: Go + C++ + TypeScript.
+- **Decisions (Q&A 2026-06-12, all recommended)**: Q1:A core-first UI scope (deep telemetry
+  panels deferred; /v1/dashboard iframe covers live view) · Q2:A Node container + Next
+  rewrites proxy (no CORS change to Go) · Q3:A retire NOW, Phase 8 soak gate consciously
+  overridden (license-blocked anyway); rollback = `last-python-backend` tag + ECR images ·
+  Q4:A merge `feat/html-conversion` to main FIRST, then branch from main.
+- **Requirements doc**: `inception/requirements/python-retirement-nextjs-ui-requirements.md`
+  (FR-1…7, NFR-1…5; SECURITY-04 now applicable — headers on the Next.js app; supersedes the
+  Phase 9 plan's open UI question). **APPROVED 2026-06-12 with Q4 OVERRIDDEN to B**: all work
+  stacks on `feat/html-conversion` (single PR: html feature + retirement + Next.js UI).
+- **Workflow Planning**: COMPLETE 2026-06-12 —
+  `inception/plans/python-retirement-nextjs-ui-execution-plan.md`. Execute: Functional Design
+  → Code Generation → Build and Test. Skip: User Stories, Application Design, Units
+  Generation, NFR Req/Design, Infrastructure Design. **Module order is the safety mechanism**:
+  tag `last-python-backend` → build ui/ (additive) → compose swap → THEN delete Python →
+  consolidate → CI/docs → verify. Execution plan **APPROVED 2026-06-12**.
+- **Functional Design (python-retirement-nextjs-ui)**: COMPLETE 2026-06-12 — 4 artifacts at
+  `construction/python-retirement-nextjs-ui/functional-design/` + plan with defaults D1–D7.
+  **APPROVED 2026-06-12** ("Approve & Continue").
+- **Code Generation (python-retirement-nextjs-ui)**: Part 1 planning COMPLETE 2026-06-12 —
+  plan at `construction/plans/python-retirement-nextjs-ui-code-generation-plan.md`.
+  6 modules (Mod 0: rollback tag → Mod 1: ui/ Next.js app 11 steps → Mod 2: compose swap →
+  Mod 3: Python deletion sweep → Mod 4: consolidation → Mod 5: CI/docs → Mod 6: verify).
+  **Awaiting approval before Part 2 (Generation)**.
 - **Research basis**: project memory `project-html-conversion-feature.md` + audit entries
   2026-06-12; integration-point map from code-explorer trace.
 
