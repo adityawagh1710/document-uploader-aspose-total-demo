@@ -39,4 +39,10 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 USER node
 EXPOSE 3000
 
+# Liveness probe (Trivy DS-0026). Uses Node 22's built-in global fetch — no curl
+# or wget dependency — and honours $PORT. A 2xx/3xx from the root route means the
+# standalone server is up and serving.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["node", "server.js"]
